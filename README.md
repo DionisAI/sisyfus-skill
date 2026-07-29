@@ -1,5 +1,7 @@
 # sisyfus-research — an agent skill for verifier-gated autonomous research
 
+**English** | [简体中文](README.zh-CN.md)
+
 > A planner may propose experiments, but only a preregistered verifier and a
 > deterministic reducer may change research truth.
 
@@ -34,8 +36,8 @@ the same locked contract — no model in the loop.
 
 ## Install
 
-**One command** — installs the skill *and* the engine, idempotent, nothing
-touches system Python:
+**One command** — installs the skill *and* the engine, idempotent, no sudo,
+nothing touches system Python:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/DionisAI/sisyfus-skill/main/install.sh | bash
@@ -45,8 +47,10 @@ The installer:
 
 1. copies `SKILL.md` + `references/` + `templates/` into every detected skill
    directory (`~/.claude/skills/`, `~/.agents/skills/`) as `sisyfus-research`;
-2. installs the engine into its own venv at `~/.sisyfus/venv` and links the CLI
-   to `~/.local/bin/sisyfus` (avoids PEP 668 / system-Python issues entirely);
+2. installs the engine under `~/.local/share/sisyfus` and links the CLI to
+   `~/.local/bin/sisyfus` — preferring a dedicated venv, and falling back to a
+   pure-stdlib source install on machines missing `python3-venv`/`ensurepip`/pip
+   (sisyfus has zero runtime dependencies, so no sudo is ever needed);
 3. verifies `sisyfus --version` and warns if `~/.local/bin` is missing from
    `PATH`.
 
@@ -79,13 +83,13 @@ This is the primary interface. After install, any skills-aware harness
 - **Explicit** — name it:
 
   ```text
-  /sisyfus-research 验证「0-5c 做市在 Polymarket 是否可行」
+  /sisyfus-research verify "passive market making in the 0-5c band is viable"
   ```
 
-- **Automatic** — just describe the job in your own words: *"帮我验证这个假设
-  是否成立,要可复现"*, *"backtest this strategy properly"*, *"做一个
-  证据驱动的研究"*. The harness matches the skill's frontmatter description and
-  loads it without being asked.
+- **Automatic** — just describe the job in your own words: *"validate this
+  hypothesis properly, I want it reproducible"*, *"backtest this strategy with
+  preregistered criteria"*, *"run an evidence-driven study on X"*. The harness
+  matches the skill's frontmatter description and loads it without being asked.
 
 Either way the skill takes over end to end: it bootstraps the engine if the CLI
 is missing, compiles your question into a TaskSpec with preregistered
