@@ -41,12 +41,6 @@ touches system Python:
 curl -fsSL https://raw.githubusercontent.com/DionisAI/sisyfus-skill/main/install.sh | bash
 ```
 
-While this repository is private, use your GitHub credentials instead:
-
-```bash
-gh repo clone DionisAI/sisyfus-skill /tmp/sisyfus-skill && bash /tmp/sisyfus-skill/install.sh
-```
-
 The installer:
 
 1. copies `SKILL.md` + `references/` + `templates/` into every detected skill
@@ -77,7 +71,34 @@ bootstraps the engine on first use.
 
 </details>
 
-## Quickstart
+## Use it from your agent
+
+This is the primary interface. After install, any skills-aware harness
+(Claude Code, Codex, and friends) discovers `sisyfus-research` on its own:
+
+- **Explicit** — name it:
+
+  ```text
+  /sisyfus-research 验证「0-5c 做市在 Polymarket 是否可行」
+  ```
+
+- **Automatic** — just describe the job in your own words: *"帮我验证这个假设
+  是否成立,要可复现"*, *"backtest this strategy properly"*, *"做一个
+  证据驱动的研究"*. The harness matches the skill's frontmatter description and
+  loads it without being asked.
+
+Either way the skill takes over end to end: it bootstraps the engine if the CLI
+is missing, compiles your question into a TaskSpec with preregistered
+verification contracts, runs the propose → verify → commit loop, and hands you
+the Arena report. You never need to touch the Python directly.
+
+For harnesses without a skills registry, point your `AGENTS.md` at the installed
+`~/.claude/skills/sisyfus-research/SKILL.md` (or copy the skill into the
+project's own `.agents/skills/`).
+
+## Quickstart (CLI, for humans and scripts)
+
+The same engine, driven by hand:
 
 ```bash
 mkdir /tmp/sisyfus-demo && cd /tmp/sisyfus-demo

@@ -1,6 +1,6 @@
 ---
 name: sisyfus-research
-description: Run or supervise a resumable, branching, evidence-backed research loop. Use when a task requires repeated hypothesis generation, preregistered verification, structured trial and error, graph-based branch management, rollback, durable lessons, or an HTML research observatory.
+description: Run or supervise a resumable, branching, evidence-backed research loop with preregistered code-only verification. Use for hypothesis testing, strategy validation, backtests, calibration studies, and any research task needing verifier-gated truth, branching/rollback, durable lessons, or a live HTML observatory — 研究、验证、求证、假设检验、策略回测、可复现实验等任务均适用.
 ---
 
 # Sisyfus Research Skill
