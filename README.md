@@ -34,14 +34,39 @@ the same locked contract — no model in the loop.
 
 ## Install
 
-**The skill** (any skills-CLI-compatible agent setup, e.g. `~/.claude/skills/`
-or a repo-local `.agents/skills/`):
+**One command** — installs the skill *and* the engine, idempotent, nothing
+touches system Python:
 
 ```bash
-npx skills add github:DionisAI/sisyfus-skill   # or copy SKILL.md + references/ + templates/
+curl -fsSL https://raw.githubusercontent.com/DionisAI/sisyfus-skill/main/install.sh | bash
 ```
 
-**The engine** (pure standard library, Python >= 3.11):
+While this repository is private, use your GitHub credentials instead:
+
+```bash
+gh repo clone DionisAI/sisyfus-skill /tmp/sisyfus-skill && bash /tmp/sisyfus-skill/install.sh
+```
+
+The installer:
+
+1. copies `SKILL.md` + `references/` + `templates/` into every detected skill
+   directory (`~/.claude/skills/`, `~/.agents/skills/`) as `sisyfus-research`;
+2. installs the engine into its own venv at `~/.sisyfus/venv` and links the CLI
+   to `~/.local/bin/sisyfus` (avoids PEP 668 / system-Python issues entirely);
+3. verifies `sisyfus --version` and warns if `~/.local/bin` is missing from
+   `PATH`.
+
+Uninstall everything with `install.sh --uninstall` (per-project `.sisyfus/`
+state trees are never touched).
+
+<details>
+<summary>Manual install</summary>
+
+Skill: copy `SKILL.md`, `references/`, and `templates/` into
+`~/.claude/skills/sisyfus-research/` (or any skills directory your agent scans),
+or use a skills CLI: `npx skills add github:DionisAI/sisyfus-skill`.
+
+Engine (pure standard library, Python >= 3.11):
 
 ```bash
 python3 -m pip install "sisyfus @ git+https://github.com/DionisAI/sisyfus-skill"
@@ -49,6 +74,8 @@ python3 -m pip install "sisyfus @ git+https://github.com/DionisAI/sisyfus-skill"
 
 `SKILL.md` performs this check itself, so an agent landing on a clean machine
 bootstraps the engine on first use.
+
+</details>
 
 ## Quickstart
 
