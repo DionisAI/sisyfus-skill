@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# OS
+.DS_Store
+
+# Local research labs: run data, artifacts, and findings live outside the repo.
+# Any directory used as a --root gains a .sisyfus/ state tree — never commit it.
+funding-arb-lab/
+polymarket-lab/
+*-lab/
+.sisyfus/
+.gstack/

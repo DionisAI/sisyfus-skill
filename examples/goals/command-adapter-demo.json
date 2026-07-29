@@ -1,0 +1,18 @@
+{
+  "id": "command-adapter-demo",
+  "objective": "Demonstrate command adapter editing a file, then verify it exists.",
+  "done_when": {
+    "commands": ["test -f generated-by-sisyfus.txt"]
+  },
+  "loop": {
+    "max_rounds": 1
+  },
+  "agents": {
+    "explorer": {"enabled": false},
+    "implementer": {
+      "enabled": true,
+      "command": "sh -c 'printf \"hello from sisyfus\\n\" > generated-by-sisyfus.txt'"
+    },
+    "verifier": {"enabled": false}
+  }
+}

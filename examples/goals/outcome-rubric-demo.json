@@ -1,0 +1,25 @@
+{
+  "schema_version": "sisyfus.goal.v0.6",
+  "id": "outcome-rubric-demo",
+  "objective": "Demonstrate an Outcomes-style rubric loop with deterministic verification.",
+  "task_type": "implementation",
+  "done_when": {
+    "commands": [
+      "python -c \"print('ok')\""
+    ]
+  },
+  "loop": {
+    "max_rounds": 1
+  },
+  "outcome": {
+    "enabled": true,
+    "rubric_id": "coding_goal_v1",
+    "max_iterations": 1,
+    "grader": {
+      "role": "independent_grader",
+      "model_profile": "grader_strong",
+      "blind_to_worker_rationale": true,
+      "grade_artifacts_only": true
+    }
+  }
+}

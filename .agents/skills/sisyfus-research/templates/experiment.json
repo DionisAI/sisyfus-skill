@@ -1,0 +1,34 @@
+{
+  "id": "experiment-1",
+  "title": "A discriminating experiment",
+  "rationale": "Explain how this result changes the next decision",
+  "target_claim_ids": [
+    "claim-1"
+  ],
+  "contract_id": "verify-claim-1",
+  "mode": "validate",
+  "action_family": "experiment",
+  "context_id": "independent-context-a",
+  "action": {
+    "kind": "external"
+  },
+  "expected_outcomes": {
+    "pass": "What a pass supports",
+    "fail": "What a valid failure refutes",
+    "inconclusive": "Why the result may be indecisive",
+    "invalid": "What makes the measurement invalid"
+  },
+  "priority": {
+    "goal_progress": 0.8,
+    "information_gain": 0.9,
+    "reusable_value": 0.2,
+    "novelty": 0.3,
+    "cost": 1.0,
+    "invalidity_risk": 0.1,
+    "duplication": 0.0
+  },
+  "cost": {
+    "attempts": 1,
+    "units": 1.0
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "schema_version": "sisyfus.goal.v0.6",
+  "id": "factor-experiment-golf",
+  "objective": "Explore one crypto cross-sectional factor candidate and record an experiment card.",
+  "task_type": "factor_research",
+  "done_when": {
+    "commands": [
+      "python -c \"print('factor artifact placeholder')\""
+    ]
+  },
+  "loop": {
+    "max_rounds": 2
+  },
+  "outcome": {
+    "enabled": true,
+    "rubric_id": "crypto_factor_research_v1",
+    "max_iterations": 2,
+    "pass_threshold": 0.82
+  },
+  "experiment_policy": {
+    "enabled": true,
+    "min_structural_ratio": 0.45,
+    "max_scalar_chain_length": 3,
+    "require_invalidation_branch": true,
+    "require_baseline_comparison": true
+  }
+}

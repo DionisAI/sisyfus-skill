@@ -1,0 +1,17 @@
+{
+  "id": "passing-command",
+  "objective": "Demonstrate a goal that passes deterministic verification.",
+  "done_when": {
+    "commands": ["printf ok"],
+    "diff_requirements": []
+  },
+  "loop": {
+    "max_rounds": 1,
+    "stop_if_same_failure_repeats": 1
+  },
+  "agents": {
+    "explorer": {"enabled": true},
+    "implementer": {"enabled": true},
+    "verifier": {"enabled": false}
+  }
+}

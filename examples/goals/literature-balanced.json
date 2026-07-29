@@ -1,0 +1,33 @@
+{
+  "agents": {
+    "explorer": {
+      "enabled": true,
+      "model_profile": "balanced_ops"
+    },
+    "implementer": {
+      "enabled": false
+    },
+    "verifier": {
+      "enabled": false
+    }
+  },
+  "context": {
+    "extra_files": [
+      "research/notes.md"
+    ],
+    "read_memory": [
+      ".sisyfus/memory/index.md"
+    ],
+    "read_recent_sessions": true
+  },
+  "done_when": {
+    "commands": [],
+    "diff_requirements": []
+  },
+  "id": "summarize-market-microstructure-notes",
+  "loop": {
+    "max_rounds": 1
+  },
+  "objective": "Summarize supplied market microstructure notes into compact project memory candidates.",
+  "task_type": "literature"
+}

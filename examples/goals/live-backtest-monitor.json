@@ -1,0 +1,36 @@
+{
+  "agents": {
+    "explorer": {
+      "enabled": false
+    },
+    "implementer": {
+      "enabled": false
+    },
+    "verifier": {
+      "enabled": false
+    }
+  },
+  "done_when": {
+    "commands": [],
+    "diff_requirements": []
+  },
+  "id": "compare-live-backtest-fill-data",
+  "loop": {
+    "max_rounds": 1
+  },
+  "monitors": [
+    {
+      "id": "csv.numeric_close",
+      "params": {
+        "abs_tol": "1e-9",
+        "columns": "price,quantity,fee",
+        "key": "timestamp,symbol,order_id",
+        "left": "data/live_fills.csv",
+        "rel_tol": "1e-9",
+        "right": "data/backtest_fills.csv"
+      }
+    }
+  ],
+  "objective": "Compare live and backtest fill data for numeric equivalence within tolerance.",
+  "task_type": "backtest_monitor"
+}

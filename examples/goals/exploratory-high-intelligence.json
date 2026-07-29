@@ -1,0 +1,33 @@
+{
+  "agents": {
+    "explorer": {
+      "enabled": true,
+      "model_profile": "frontier_exploration"
+    },
+    "implementer": {
+      "enabled": false
+    },
+    "verifier": {
+      "enabled": false
+    }
+  },
+  "context": {
+    "extra_files": [],
+    "read_memory": [
+      ".sisyfus/memory/index.md"
+    ],
+    "read_recent_sessions": true
+  },
+  "done_when": {
+    "commands": [],
+    "diff_requirements": [
+      "Write design notes under the run directory; no code changes required"
+    ]
+  },
+  "id": "explore-new-execution-simulator",
+  "loop": {
+    "max_rounds": 1
+  },
+  "objective": "Explore architectural options for a new execution simulator; produce design notes only.",
+  "task_type": "exploratory"
+}

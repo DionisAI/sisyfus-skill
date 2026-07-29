@@ -1,0 +1,30 @@
+{
+  "id": "example-research",
+  "topic": "Define the research objective here",
+  "claims": [
+    {
+      "id": "claim-1",
+      "statement": "Define a falsifiable required claim",
+      "required": true,
+      "critical": true,
+      "weight": 1.0,
+      "depends_on": []
+    }
+  ],
+  "hard_constraints": [],
+  "action_space": ["search", "inspect", "compare", "compute", "experiment", "falsify"],
+  "verification_contracts": [
+    {
+      "id": "verify-claim-1",
+      "version": "1",
+      "target_claim_id": "claim-1",
+      "kind": "metric",
+      "pass_if": {"all": [{"path": "metrics.success", "op": "==", "value": true}]},
+      "fail_if": {"all": [{"path": "metrics.success", "op": "==", "value": false}]},
+      "invalid_if": {"any": [{"path": "metrics.invalid", "op": "==", "value": true}]},
+      "repetition": {"min_passes": 1, "min_independent_contexts": 1}
+    }
+  ],
+  "budget": {"max_attempts": 20, "max_cost_units": 20, "max_wall_minutes": 120},
+  "stop_policy": {"stop_on_goal_pass": true, "block_without_verifier": true, "allow_manual_verdict": false, "max_invalid_attempts_per_experiment": 2, "require_uncontested_solve": true, "allow_provisional_prereq": false}
+}

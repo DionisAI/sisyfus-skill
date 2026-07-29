@@ -1,0 +1,44 @@
+{
+  "schema_version": "sisyfus.goal.v0.6",
+  "id": "crypto-cross-sectional-factor-beam",
+  "objective": "Explore a crypto cross-sectional strategy through bounded beam search. Compare network-known factor families, handcrafted factors, and AlphaGPT-style symbolic formula variants. Each branch must end as a compact one-task session with distillable facts, failures, hypotheses, and next directions.",
+  "task_type": "beam_research",
+  "done_when": {
+    "commands": []
+  },
+  "loop": {
+    "max_rounds": 1
+  },
+  "beam": {
+    "enabled": true,
+    "id": "crypto-cross-sectional-factor-beam",
+    "width": 3,
+    "max_depth": 2,
+    "max_children_per_node": 2,
+    "max_sessions_total": 9,
+    "selection_metric": "score",
+    "directions": [
+      {
+        "id": "network-factor-search",
+        "title": "Search known factor ideas",
+        "objective": "Collect known crypto cross-sectional factor families from public/network memory and convert them into concrete factor definitions plus deterministic evaluation plans. Do not backtest manually unless a monitor/script exists.",
+        "task_type": "information_collection",
+        "priority": "P1"
+      },
+      {
+        "id": "handcrafted-factor-hypotheses",
+        "title": "Handcraft factor hypotheses",
+        "objective": "Generate first-principles crypto cross-sectional factor hypotheses: momentum, reversal, liquidity, volatility, funding/basis, market microstructure, and exchange-flow proxies. For each factor, specify exact inputs, formula, lagging rules, and validation monitors.",
+        "task_type": "factor_research",
+        "priority": "P1"
+      },
+      {
+        "id": "formula-alpha-mining",
+        "title": "AlphaGPT-style symbolic formulas",
+        "objective": "Explore formulaic alpha expression templates using operators such as rank, ts_rank, decay, zscore, neutralize, correlation, delta, and rolling aggregation. Propose bounded formula search seeds and write follow-up child directions to beam.children.json if needed.",
+        "task_type": "formula_alpha_mining",
+        "priority": "P1"
+      }
+    ]
+  }
+}
