@@ -7,6 +7,16 @@ description: Run or supervise a resumable, branching, evidence-backed research l
 
 Sisyfus is a control surface for an event-sourced research engine. The skill may plan, explain, call tools, and propose experiments. It must never treat its own prose as research truth. Only committed verifier verdicts may change the research state.
 
+## Engine setup
+
+This skill drives the `sisyfus` CLI (pure-stdlib Python >= 3.11). Check availability first:
+
+```bash
+sisyfus --version || python3 -m pip install "sisyfus @ git+https://github.com/DionisAI/sisyfus-skill"
+```
+
+Working from a clone of this repository, `python3 -m pip install -e .` is equivalent. All commands below take `--root <project>` — the project directory that owns the `.sisyfus/` state tree.
+
 ## Core model
 
 Keep these objects separate:

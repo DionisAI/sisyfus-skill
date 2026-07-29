@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Skill-first repository layout: the repo root is now the canonical skill — `SKILL.md` (with an engine bootstrap section), `references/`, and `templates/` live at the top level and are installable directly by a skills CLI; the Python engine under `src/` is the deterministic backend. `scripts/sync_skill_assets.py` mirrors the root skill into the wheel payload (`src/sisyfus/skill_assets/`, still installed per-project by `sisyfus init`), a regression test fails on drift, and the redundant `.agents/skills/` mirror is removed. README rewritten in skill form: what the skill does, install (skill + engine), quickstart, layout, design commitments.
+
 - Deterministic evidence reproduction: `sisyfus research reproduce <research_id> <evidence_id>` re-verifies the hashed measurement code, re-runs the recorded command, diffs fresh metrics against the recorded ones, and re-classifies under the same locked contract — no model involved. Results (`contract_intact`, `code_intact`, `deterministic_match`, `verdict_stable`, capped metric drift) are appended to the event chain as the new `EVIDENCE_REPRODUCED` event and surface as `reproductions` on the evidence record; originals stay immutable. Exit 0 = code intact and verdict stable, 2 = drift or flipped verdict. Command evidence only — external/manual measurements get independence from repetition contexts instead. The verifier trust model (code-only verdicts, metrics production as the trust boundary, declared-not-measured cost units, ERROR charging cost but not attempts) is now documented in `references/verifier-contract.md`.
 
 Arena second-pass polish: the broadcast now has a post-match ceremony, real replay navigation, reachable evidence, and a usable small-screen layout.

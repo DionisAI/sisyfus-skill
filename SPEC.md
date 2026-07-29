@@ -261,7 +261,7 @@ Visual semantics:
 
 ## Skill boundary
 
-The shipped `SKILL.md` instructs an agent how to operate the engine, not how to bypass it. The skill is installed to `.sisyfus/skills/sisyfus-research/` by `sisyfus init` and also exists repo-locally under `.agents/skills/`.
+The shipped `SKILL.md` instructs an agent how to operate the engine, not how to bypass it. The repository root is the canonical skill (SKILL.md + references/ + templates/); `scripts/sync_skill_assets.py` mirrors it into the wheel payload, and `sisyfus init` installs that copy to `.sisyfus/skills/sisyfus-research/` in each project.
 
 The engine does not include a provider-specific LLM planner. Any capable agent or external planner can use `research context`, write Experiment JSON, and call the CLI. This separation keeps planning replaceable and truth transitions deterministic.
 
