@@ -70,7 +70,7 @@ def grade_outcome(
     name = f"outcome-round-{round_index:02d}.json" if round_index is not None else "outcome.json"
     write_json(run_path / name, result)
     write_outcome_markdown(run_path / name.replace(".json", ".md"), result)
-    # Maintain a latest symlink-like copy for dashboard/API simplicity.
+    # Maintain a latest symlink-like copy for API/consumer simplicity.
     write_json(run_path / "outcome.latest.json", result)
     return result
 

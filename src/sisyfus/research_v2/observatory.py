@@ -113,7 +113,7 @@ body { margin:0; background:var(--arena-deep); color:var(--ink);
 .uc-num { font-weight:900; color:var(--gold); }
 .uc-label { font-size:16px; font-weight:900; }
 .uc-id { font-size:10px; color:var(--muted); }
-.uc-close { margin-left:auto; cursor:pointer; color:var(--muted); font-size:14px; padding:0 3px; }
+.uc-close { margin-left:auto; cursor:pointer; color:var(--muted); font-size:14px; padding:0 3px; background:none; border:none; font:inherit; }
 .uc-body { padding:0 13px 11px; font-size:11.5px; line-height:1.6; max-height:34vh; overflow-y:auto; }
 .uc-sec { margin-top:8px; padding-top:7px; border-top:1px solid oklch(0.24 0.02 80); }
 .uc-sec .k { font-size:9px; letter-spacing:.12em; color:var(--muted); text-transform:uppercase; font-weight:800; }
@@ -348,7 +348,7 @@ th { color:var(--muted); font-weight:700; position:sticky; top:0; background:var
 .endboard-btn.on { display:block; animation:ebfade .3s; }
 .endboard-btn:hover { background:var(--gold); color:oklch(0.16 0.02 80); }
 
-@media (prefers-reduced-motion: reduce) { .shake,.announcer span,.dmg,.feed-row,.hero-bob,
+@media (prefers-reduced-motion: reduce) { .shake,.announcer span,.dmg,.feed-row,.hero-bob,.bar-fx,
   .endboard.on,.eb-panel,.unit-card.on,.edge.hot{animation:none} .livechip .dot{animation:none} }
 @media (max-width: 960px) {
   .stage{grid-template-columns:1fr}
@@ -474,6 +474,7 @@ th { color:var(--muted); font-weight:700; position:sticky; top:0; background:var
 <section id="view-audit" class="view"><div class="grid"><div class="card span-12 card-pad"><div class="section-title"><h2 data-i18n="sec_contracts">验证合约</h2></div><div class="table-wrap"><table><thead><tr><th>ID</th><th>Claim</th><th>Version</th><th>Repetition</th><th>Rules</th></tr></thead><tbody id="contractRows"></tbody></table></div></div><div class="card span-12 card-pad"><div class="section-title"><h2 data-i18n="sec_attempts">尝试与判定</h2></div><div class="table-wrap"><table><thead><tr><th>Attempt</th><th>Experiment</th><th>Context</th><th>Status</th><th>Verdict</th><th>Reason</th><th>State</th></tr></thead><tbody id="attemptRows"></tbody></table></div></div><div class="card span-12 card-pad"><div class="section-title"><h2 data-i18n="sec_evidence">证据</h2></div><div class="list" id="evidenceList"></div></div><div class="card span-12 card-pad"><div class="section-title"><h2 data-i18n="sec_lessons">战利品</h2></div><div class="list" id="lessonList"></div></div></div></section>
 <section id="view-events" class="view"><div class="card card-pad"><div class="section-title"><h2 data-i18n="sec_events">只增事件流</h2><span class="badge" id="eventHead"></span></div><div class="ev-filter"><select id="evTypeFilter"></select><input id="evTextFilter" type="search" data-i18n-ph="ev_search" placeholder="过滤事件 JSON…"/></div><div id="eventList"></div></div></section>
 <div class="footer" id="footerLine">一切画面均由 task.json + events.jsonl 的确定性投影生成;回放的每一帧都是事件前缀的重新归约,可被 sisyfus research replay 哈希验证。MISS 不构成伤害:INVALID/ERROR 是测量失败,不是命题反证。</div>
+<div class="footer" id="legendLine" style="padding-top:0"></div>
 
 <script id="sisyfus-data" type="application/json">__PAYLOAD__</script>
 <script>
@@ -491,6 +492,7 @@ const LOCALES = {
     sec_goal:'目标图', sec_cov:'裁判覆盖', sec_dag:'状态图与实验', sec_contracts:'验证合约', sec_attempts:'尝试与判定',
     sec_evidence:'证据', sec_lessons:'战利品', sec_events:'只增事件流',
     footer:'一切画面均由 task.json + events.jsonl 的确定性投影生成;回放的每一帧都是事件前缀的重新归约,可被 sisyfus research replay 哈希验证。MISS 不构成伤害:INVALID/ERROR 是测量失败,不是命题反证。',
+    legend_line:'👑 命题被验证攻克(SUPPORTED) · ☠️ 命题被证伪(REFUTED)——也是花预算买到的知识 · ❌ INVALID/ERROR 是测量失败,不构成命题反证 · 💰 lesson 战利品,双实验门槛后晋升全局知识库 · ❤ attempts/cost 预算即血蓝条,打空即终局 · 🧍 推石头的英雄(agent)站在哪里,哪里就是当前进攻的命题',
     live:'直播', replay:'回放', attempts:'尝试', cost:'成本',
     events_n: n => `${n} 事件`, claims_n: n => `${n} 命题`, combo: n => `连击 ×${n}`,
     awaiting_evidence:'等证据', no_waiting:'无待命实验',
@@ -499,6 +501,7 @@ const LOCALES = {
     evidence_n: n => `证据 ${n}`, provisional_n: n => `临时通过 ${n}`, cited_n: n => `被引用 ×${n}`,
     uc_status:'状态', uc_contracts:'裁判合约', uc_engagements:'交战记录',
     uc_gate: (p, c) => `需 ${p} 次通过 / ${c} 个独立环境`, tip_click:'点击查看单位卡',
+    uc_more: n => `+${n} 更多…`,
     cov_full:'必需命题全部有裁判合约', cov_missing:'以下必需命题缺少裁判', empty_evidence:'尚无证据', empty_lessons:'尚未拾取任何战利品', root:'根节点',
     ann_supported: c => `命题攻克 · ${c}`, ann_refuted: c => `命题被证伪 · ${c}`, ann_first:'首个证据!', ann_cascade:'连锁崩塌!',
     ann_loot:'战利品入库!', ann_victory:'大获全胜', ann_budget:'弹尽粮绝', ann_goal_refuted:'目标被证伪',
@@ -563,6 +566,7 @@ const LOCALES = {
     sec_goal:'Goal Graph', sec_cov:'Verifier Coverage', sec_dag:'State DAG & Experiments', sec_contracts:'Verification Contracts', sec_attempts:'Attempts & Verdicts',
     sec_evidence:'Evidence', sec_lessons:'Lessons', sec_events:'Append-only Event Stream',
     footer:'Everything on screen is a deterministic projection of task.json + events.jsonl; every replay frame is a re-reduction of the event prefix, verifiable via sisyfus research replay. A MISS deals no damage: INVALID/ERROR are measurement failures, not refutations.',
+    legend_line:'👑 claim verified (SUPPORTED) · ☠️ claim refuted (REFUTED) — knowledge bought with budget · ❌ INVALID/ERROR are measurement failures, not refutations · 💰 lessons join the global library after the two-experiment gate · ❤ attempts/cost budgets are your HP/mana — empty bars end the match · 🧍 the boulder-pushing hero (agent) stands at the claim under assault',
     live:'LIVE', replay:'REPLAY', attempts:'ATTEMPTS', cost:'COST',
     events_n: n => `${n} events`, claims_n: n => `${n} claims`, combo: n => `COMBO ×${n}`,
     awaiting_evidence:'awaiting evidence', no_waiting:'no waiting experiments',
@@ -571,6 +575,7 @@ const LOCALES = {
     evidence_n: n => `evidence ${n}`, provisional_n: n => `provisional ${n}`, cited_n: n => `cited ×${n}`,
     uc_status:'STATUS', uc_contracts:'VERIFIER CONTRACTS', uc_engagements:'ENGAGEMENTS',
     uc_gate: (p, c) => `needs ${p} passes / ${c} independent contexts`, tip_click:'click for unit card',
+    uc_more: n => `+${n} more…`,
     cov_full:'Full required-claim verifier coverage', cov_missing:'Required claims without a verifier', empty_evidence:'No evidence recorded.', empty_lessons:'No lessons looted yet.', root:'root',
     ann_supported: c => `CLAIM TAKEN · ${c}`, ann_refuted: c => `REFUTED · ${c}`, ann_first:'FIRST EVIDENCE!', ann_cascade:'CASCADE!',
     ann_loot:'LOOT SECURED!', ann_victory:'VICTORY', ann_budget:'OUT OF BUDGET', ann_goal_refuted:'GOAL REFUTED',
@@ -663,6 +668,7 @@ function applyStaticI18n() {
   document.querySelectorAll('[data-i18n]').forEach(el => { el.textContent = t(el.dataset.i18n); });
   document.querySelectorAll('[data-i18n-ph]').forEach(el => { el.placeholder = t(el.dataset.i18nPh); });
   $('footerLine').textContent = t('footer');
+  $('legendLine').textContent = t('legend_line');
   $('langBtn').textContent = lang === 'zh' ? 'EN' : '中文';
   $('topic').textContent = trTopic();
   $('topic').title = trTopic();
@@ -678,7 +684,7 @@ function setLang(next) {
 }
 
 /* ================= derived match data ================= */
-let CLAIM_POS = {}, TARGET_BY_SEQ = [], MARKERS = [], FIRST_PASS_SEQ = 0;
+let CLAIM_POS = {}, TARGET_BY_SEQ = [], TOUCHED_BY_SEQ = [], COMBO_BY_SEQ = [], MARKERS = [], FIRST_PASS_SEQ = 0;
 
 function shortClaim(id) { return id.length > 22 ? id.slice(0, 20) + '…' : id; }
 function claimLabel(c) { return trClaimF(c, 'label') || (c.tags && c.tags[0]) || shortClaim(c.id); }
@@ -721,23 +727,28 @@ function verdictClass(st) {
 }
 
 function deriveTimeline() {
-  TARGET_BY_SEQ = []; MARKERS = []; FIRST_PASS_SEQ = 0;
-  let current = null;
+  TARGET_BY_SEQ = []; TOUCHED_BY_SEQ = []; COMBO_BY_SEQ = []; MARKERS = []; FIRST_PASS_SEQ = 0;
+  let current = null, combo = 0;
+  const touched = new Set();
   E.forEach(ev => {
     const d = ev.data || {};
     const expId = expIdOf(d);
     const exp = expId && S.experiments[expId];
     if (exp && exp.target_claim_ids && exp.target_claim_ids[0]) current = exp.target_claim_ids[0];
     TARGET_BY_SEQ[ev.seq] = current;
+    if (current) touched.add(current);
+    TOUCHED_BY_SEQ[ev.seq] = new Set(touched);
     if (ev.event_type === 'VERDICT_ISSUED') {
       const st = (d.verdict || {}).status;
       MARKERS.push({ seq: ev.seq, cls: verdictClass(st), label: `${expId} → ${st}` });
       if (st === 'PASS' && !FIRST_PASS_SEQ) FIRST_PASS_SEQ = ev.seq;
+      if (st === 'PASS') combo += 1; else if (st === 'FAIL' || st === 'INCONCLUSIVE') combo = 0;
     } else if (ev.event_type.startsWith('LESSON_')) {
       MARKERS.push({ seq: ev.seq, cls: 'loot', label: ev.event_type });
     } else if (ev.event_type === 'RUN_FINALIZED') {
       MARKERS.push({ seq: ev.seq, cls: 'flag', label: (d.status || '') });
     }
+    COMBO_BY_SEQ[ev.seq] = combo;
   });
 }
 
@@ -821,7 +832,11 @@ function bossSkin(st, touched) {
   return { ring:'var(--line)', fill:'oklch(0.22 0.02 80)', mark:'', op: touched ? 0.95 : 0.45, lock: !touched };
 }
 
+let bossSig = '';
 function renderBosses(claimStatuses, targetClaim, touchedSet) {
+  const sig = JSON.stringify(claimStatuses || {}) + '|' + (targetClaim || '') + '|' + [...touchedSet].sort().join(',') + '|' + (SELECTED || '') + '|' + lang;
+  if (sig === bossSig) return;
+  bossSig = sig;
   const g = $('bosses'); g.innerHTML = '';
   Object.values(CLAIM_POS).forEach(p => {
     const st = (claimStatuses || {})[p.claim.id] || 'OPEN';
@@ -829,7 +844,7 @@ function renderBosses(claimStatuses, targetClaim, touchedSet) {
     const targeted = p.claim.id === targetClaim && st !== 'SUPPORTED' && st !== 'REFUTED';
     const num = CLAIM_INDEX[p.claim.id] || '·';
     g.insertAdjacentHTML('beforeend', `
-      <g class="claim-node${SELECTED === p.claim.id ? ' selected' : ''}" data-claim="${esc(p.claim.id)}" opacity="${skin.op}">
+      <g class="claim-node${SELECTED === p.claim.id ? ' selected' : ''}" data-claim="${esc(p.claim.id)}" opacity="${skin.op}" tabindex="0" role="button" aria-label="${esc(claimLabel(p.claim))}">
         ${targeted ? `<circle cx="${p.x}" cy="${p.y}" r="40" fill="none" stroke="${skin.ring}" stroke-width="2" opacity="0.7"><animate attributeName="r" values="34;44;34" dur="1.6s" repeatCount="indefinite"/><animate attributeName="opacity" values="0.8;0.15;0.8" dur="1.6s" repeatCount="indefinite"/></circle>` : ''}
         <circle class="sel-ring" cx="${p.x}" cy="${p.y}" r="39" fill="none" stroke="var(--gold)" stroke-width="2.5" stroke-dasharray="6 5"/>
         <circle cx="${p.x}" cy="${p.y}" r="30" fill="${skin.fill}" stroke="${skin.ring}" stroke-width="3.5"/>
@@ -853,14 +868,14 @@ function renderUnitCard(claimId, statuses) {
   const contracts = Object.values(S.contracts).filter(c => c.target_claim_id === claimId);
   const exps = Object.values(S.experiments).filter(x => (x.target_claim_ids || []).includes(claimId));
   card.innerHTML = `
-    <div class="uc-head"><span class="uc-num">${CLAIM_INDEX[claimId] || ''}</span><span class="uc-label">${esc(claimLabel(claim))}</span><span class="uc-id mono">${esc(claimId)}</span><span class="uc-close" id="ucClose">✕</span></div>
+    <div class="uc-head"><span class="uc-num">${CLAIM_INDEX[claimId] || ''}</span><span class="uc-label">${esc(claimLabel(claim))}</span><span class="uc-id mono">${esc(claimId)}</span><button class="uc-close" id="ucClose" type="button" aria-label="close">✕</button></div>
     <div class="uc-body">
       ${trClaimConclusion(claim) ? `<div class="uc-conc">${esc(trClaimConclusion(claim))}</div>` : ''}
       <div${trClaimConclusion(claim) ? ' class="tiny"' : ''}>${esc(trClaimF(claim, 'statement') || '')}</div>
       <div class="uc-sec"><span class="k">${esc(t('uc_status'))}</span> ${status(st)} <span class="tiny">· ${esc(claim.required ? t('required') : t('optional'))}</span>${claim.critical ? `<span class="tiny" style="color:var(--dire)"> · ${esc(t('critical'))}</span>` : ''}
         <span class="tiny"> · ${esc(L.evidence_n((claim.evidence_ids || []).length))} · ${esc(L.provisional_n(claim.provisional_passes || 0))}</span></div>
       ${contracts.length ? `<div class="uc-sec"><span class="k">${esc(t('uc_contracts'))}</span>${contracts.map(c => `<div class="tiny mono">${esc(c.id)} v${esc(c.version)} · ${esc(L.uc_gate(c.repetition.min_passes, c.repetition.min_independent_contexts))}</div>`).join('')}</div>` : ''}
-      ${exps.length ? `<div class="uc-sec"><span class="k">${esc(t('uc_engagements'))}</span>${exps.slice(0, 6).map(x => `<div class="uc-exp"><span>${esc(String(trExpTitle(x))).slice(0, 40)}</span>${status((x.last_verdict || {}).status || x.status)}</div>`).join('')}</div>` : ''}
+      ${exps.length ? `<div class="uc-sec"><span class="k">${esc(t('uc_engagements'))}</span>${exps.slice(0, 6).map(x => `<div class="uc-exp"><span>${esc(String(trExpTitle(x))).slice(0, 40)}</span>${status((x.last_verdict || {}).status || x.status)}</div>`).join('')}${exps.length > 6 ? `<div class="tiny" style="margin-top:4px">${esc(L.uc_more(exps.length - 6))}</div>` : ''}</div>` : ''}
     </div>`;
   card.classList.add('on');
   const close = $('ucClose');
@@ -878,6 +893,11 @@ function currentStatuses() { const f = frameAt(Number($('replaySlider').value));
 function initArenaPointer() {
   const bossOf = t => { const n = t.closest && t.closest('g.claim-node'); return n && n.dataset.claim; };
   $('arena').addEventListener('click', e => { const id = bossOf(e.target); if (id) selectClaim(id); });
+  $('arena').addEventListener('keydown', e => {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    const id = bossOf(e.target);
+    if (id) { e.preventDefault(); selectClaim(id); }
+  });
   $('arena').addEventListener('mousemove', e => {
     const id = bossOf(e.target);
     const tip = $('tip');
@@ -885,7 +905,7 @@ function initArenaPointer() {
     const wrap = $('arenaWrap').getBoundingClientRect();
     tip.innerHTML = tipHtml(S.claims[id], currentStatuses()[id] || 'OPEN');
     tip.style.display = 'block';
-    tip.style.left = Math.min(e.clientX - wrap.left + 16, wrap.width - 310) + 'px';
+    tip.style.left = Math.max(4, Math.min(e.clientX - wrap.left + 16, wrap.width - 310)) + 'px';
     tip.style.top = (e.clientY - wrap.top + 14) + 'px';
   });
   $('arena').addEventListener('mouseleave', () => { $('tip').style.display = 'none'; });
@@ -919,11 +939,13 @@ function damageNumber(claimId, text, cls) {
   $('fxLayer').appendChild(el);
   setTimeout(() => el.remove(), 1600);
 }
-let annBusy = Promise.resolve();
-function announce(text, cls) {
+let annBusy = Promise.resolve(), annPending = 0;
+function announce(text, cls, force) {
+  if (!force && annPending >= 2) return;  // cap backlog during fast playback; terminal slams pass force
+  annPending += 1;
   annBusy = annBusy.then(() => new Promise(done => {
     $('announcer').innerHTML = `<span class="${cls}">${esc(text)}</span>`;
-    setTimeout(() => { $('announcer').innerHTML = ''; done(); }, 1400);
+    setTimeout(() => { $('announcer').innerHTML = ''; annPending -= 1; done(); }, 1400);
   }));
 }
 function shake() { const w = $('arenaWrap'); w.classList.remove('shake'); void w.offsetWidth; w.classList.add('shake'); }
@@ -954,26 +976,12 @@ function fireFx(ev) {
     announce(t('ann_loot'), 'gold');
   } else if (ev.event_type === 'RUN_FINALIZED') {
     const st = (d.status || '');
-    announce(st === 'SOLVED' ? t('ann_victory') : st === 'REFUTED' ? t('ann_goal_refuted') : st === 'BUDGET_EXHAUSTED' ? t('ann_budget') : st, st === 'SOLVED' ? 'radiant' : 'dire');
+    announce(st === 'SOLVED' ? t('ann_victory') : st === 'REFUTED' ? t('ann_goal_refuted') : st === 'BUDGET_EXHAUSTED' ? t('ann_budget') : st, st === 'SOLVED' ? 'radiant' : 'dire', true);
   }
 }
 
 /* ================= HUD / frame application ================= */
 function frameAt(i) { return FRAMES[Math.max(0, Math.min(FRAMES.length - 1, i))]; }
-function touchedClaimsUpTo(seq) {
-  const set = new Set();
-  E.forEach(ev => { if (ev.seq <= seq) { const t = TARGET_BY_SEQ[ev.seq]; if (t) set.add(t); } });
-  return set;
-}
-function comboAt(seq) {
-  let combo = 0;
-  E.forEach(ev => {
-    if (ev.seq > seq || ev.event_type !== 'VERDICT_ISSUED') return;
-    const st = ((ev.data || {}).verdict || {}).status;
-    if (st === 'PASS') combo += 1; else if (st === 'FAIL' || st === 'INCONCLUSIVE') combo = 0;
-  });
-  return combo;
-}
 
 let prevAtt = null, prevCost = null;
 function barFloat(kind, text) {
@@ -1019,9 +1027,9 @@ function applyFrame(i, opts) {
   $('matchMeta').textContent = `seq ${f.seq}/${E.length} · ${runStatusLabel(f.run_status)} · ${t('obj_label')} ${f.objective}% · ${t('epi_label')} ${f.epistemic}%`;
   $('lootMeta').textContent = f.n_lessons ? `💰×${f.n_lessons}` : '';
   const target = TARGET_BY_SEQ[f.seq];
-  renderBosses(statuses, target, touchedClaimsUpTo(f.seq));
+  renderBosses(statuses, target, TOUCHED_BY_SEQ[f.seq] || new Set());
   moveHero(target, opts.instant);
-  const combo = comboAt(f.seq);
+  const combo = COMBO_BY_SEQ[f.seq] || 0;
   $('combo').textContent = combo >= 2 ? L.combo(combo) : '';
   $('combo').classList.toggle('on', combo >= 2);
   renderQuest(statuses);
@@ -1059,7 +1067,11 @@ function updateEndboard(f) {
   $('endboard').classList.toggle('on', show);
   $('endboardBtn').classList.toggle('on', final && follow && ebDismissed);
 }
+let ebSig = '';
 function renderEndboard(f) {
+  const sig = (f && f.seq) + '|' + lang;
+  if (sig === ebSig) return;
+  ebSig = sig;
   const statuses = f.claim_statuses || {};
   const verified = Object.values(statuses).filter(x => x === 'SUPPORTED').length;
   const refuted = Object.values(statuses).filter(x => x === 'REFUTED').length;
@@ -1126,7 +1138,11 @@ function renderWaiting() {
     return `<div class="feed-row info"><span>⏳</span><span>${esc(trExpTitle(x) || w.experiment_id)}<span class="tiny"> · ${esc(cond)}</span></span></div>`;
   }).join('');
 }
+let questSig = '';
 function renderQuest(statuses) {
+  const sig = JSON.stringify(statuses || {}) + '|' + lang;
+  if (sig === questSig) return;
+  questSig = sig;
   const rows = Object.values(S.claims).map(c => {
     const st = (statuses || {})[c.id] || c.status || 'OPEN';
     const mark = st === 'SUPPORTED' ? '👑' : st === 'REFUTED' ? '☠️' : st === 'INVALIDATED' ? '🌀' : c.required ? '⚔️' : '◇';
@@ -1139,7 +1155,7 @@ function renderQuest(statuses) {
 }
 
 /* ================= playback deck ================= */
-let follow = true, playTimer = null, speed = 2;
+let follow = true, playTimer = null, speed = 2, liveChain = 0;
 function setLiveChip() {
   const runFinal = isFinalStatus((FRAMES[FRAMES.length - 1] || {}).run_status);
   $('liveChip').classList.toggle('replaying', !follow);
@@ -1154,7 +1170,7 @@ function showIndex(i, opts) {
   setLiveChip();
   applyFrame(i, opts || { feedRebuild: true });
 }
-function stopPlay() { if (playTimer) { clearInterval(playTimer); playTimer = null; $('playBtn').textContent = '▶'; $('playBtn').classList.remove('active'); } }
+function stopPlay() { liveChain += 1; if (playTimer) { clearInterval(playTimer); playTimer = null; $('playBtn').textContent = '▶'; $('playBtn').classList.remove('active'); } }
 function startPlay() {
   if (!FRAMES.length) return;
   stopPlay();
@@ -1212,6 +1228,7 @@ function initDeck() {
 
 /* ================= live broadcast polling ================= */
 async function poll() {
+  if (document.hidden) return;
   try {
     const r = await fetch(`snapshot.json?ts=${Date.now()}`, { cache: 'no-store' });
     const fresh = await r.json();
@@ -1221,8 +1238,10 @@ async function poll() {
     ebDismissed = false;
     deriveTimeline(); renderArenaStatic(); renderMarkers(); renderDetailTabs(); renderWaiting();
     if (follow && !playTimer) {
+      const chain = ++liveChain;
       let i = Math.max(0, oldLen - 1);
       const step = () => {
+        if (chain !== liveChain) return;
         i += 1;
         if (i >= FRAMES.length) { showIndex(FRAMES.length - 1, {}); return; }
         applyFrame(i, { fx: true });
@@ -1248,7 +1267,8 @@ function initTabs() {
     }
   }));
   $('evTypeFilter').addEventListener('change', renderEventList);
-  $('evTextFilter').addEventListener('input', renderEventList);
+  let evDebounce = null;
+  $('evTextFilter').addEventListener('input', () => { clearTimeout(evDebounce); evDebounce = setTimeout(renderEventList, 150); });
 }
 function graphDepth(nodes, root) { const map = Object.fromEntries(nodes.map(n => [n.id, n])); const depth = {}; const walk = (id, d) => { depth[id] = Math.max(depth[id] ?? 0, d); (map[id]?.children || []).forEach(c => walk(c, d + 1)); }; walk(root, 0); return depth; }
 function fmtMetricVal(v) { let s = typeof v === 'number' ? (Number.isInteger(v) ? String(v) : String(Math.round(v * 10000) / 10000)) : (v !== null && typeof v === 'object') ? JSON.stringify(v) : String(v); return s.length > 64 ? s.slice(0, 61) + '…' : s; }
@@ -1354,15 +1374,20 @@ function renderDetailTabs() {
   renderEventList();
   renderReport();
 }
+let evSig = '';
 function renderEventList() {
   const sel = $('evTypeFilter'), tf = $('evTextFilter');
   if (!sel || !tf) return;
   const cur = sel.value || '';
+  const textF = (tf.value || '').toLowerCase();
+  const sig = cur + '|' + textF + '|' + E.length + '|' + lang;
+  if (sig === evSig) return;
+  evSig = sig;
+  const openSeqs = new Set([...document.querySelectorAll('#eventList .ev-details[open]')].map(d => d.dataset.seq));
   const types = [...new Set(E.map(ev => ev.event_type))].sort();
   sel.innerHTML = `<option value="">${esc(t('ev_all_types'))}</option>` + types.map(x => `<option value="${esc(x)}"${x === cur ? ' selected' : ''}>${esc(x)}</option>`).join('');
-  const textF = (tf.value || '').toLowerCase();
   const rows = [...E].reverse().filter(ev => (!cur || ev.event_type === cur) && (!textF || ev.event_type.toLowerCase().includes(textF) || JSON.stringify(ev.data).toLowerCase().includes(textF)));
-  $('eventList').innerHTML = rows.length ? rows.map(ev => { const n = narrate(ev); return `<details class="ev-details"><summary><span class="mono tiny">#${ev.seq}</span><span class="ev-type ${n.cls}">${esc(ev.event_type)}</span><span class="tiny">${esc(ev.actor)} · ${esc((ev.ts || '').slice(11, 19))}</span><span class="ev-sum">${esc(n.feed)}</span></summary><pre class="ev-json mono">${esc(JSON.stringify(ev.data, null, 2))}</pre></details>`; }).join('') : `<div class="empty">—</div>`;
+  $('eventList').innerHTML = rows.length ? rows.map(ev => { const n = narrate(ev); return `<details class="ev-details" data-seq="${ev.seq}"${openSeqs.has(String(ev.seq)) ? ' open' : ''}><summary><span class="mono tiny">#${ev.seq}</span><span class="ev-type ${n.cls}">${esc(ev.event_type)}</span><span class="tiny">${esc(ev.actor)} · ${esc((ev.ts || '').slice(11, 19))}</span><span class="ev-sum">${esc(n.feed)}</span></summary><pre class="ev-json mono">${esc(JSON.stringify(ev.data, null, 2))}</pre></details>`; }).join('') : `<div class="empty">—</div>`;
 }
 
 /* ================= boot ================= */
@@ -1400,13 +1425,6 @@ def render_observatory(
         "events": events,
         "frames": frames or [],
         "translations": translations,
-        "legend": {
-            "crown": "命题被验证攻克(SUPPORTED)",
-            "skull": "命题被证伪(REFUTED)——也是花预算买到的知识",
-            "miss": "INVALID/ERROR 是测量失败,不构成命题反证",
-            "loot": "lesson 战利品,双实验门槛后晋升全局知识库",
-            "hp": "attempts/cost 预算即血蓝条,打空即终局",
-        },
     }
     atomic_write_json(workspace.report_snapshot_path, public_snapshot)
     topic = html.escape(str(snapshot.get("topic") or "Sisyfus Research"))

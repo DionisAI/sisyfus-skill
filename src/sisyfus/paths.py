@@ -8,7 +8,6 @@ LAYOUT_DIRS = [
     "beams",
     "beams/specs",
     "beams/runs",
-    "dashboard",
     "evals",
     "evals/runs",
     "experiments",

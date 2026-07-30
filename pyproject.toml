@@ -37,4 +37,4 @@ pythonpath = ["src"]
 testpaths = ["tests"]
 
 [tool.setuptools.package-data]
-sisyfus = ["dashboard_static/*", "skill_assets/sisyfus-research/*", "skill_assets/sisyfus-research/references/*", "skill_assets/sisyfus-research/templates/*"]
+sisyfus = ["skill_assets/sisyfus-research/*", "skill_assets/sisyfus-research/references/*", "skill_assets/sisyfus-research/templates/*"]

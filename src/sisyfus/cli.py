@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Any
 
 from .beam import BeamRunner, BeamStore
-from .dashboard import build_dashboard_state, export_dashboard_snapshot, serve_dashboard
 from .distill import make_distill
 from .evals import run_builtin_evals
 from .experiment_ledger import experiment_chart_data, experiment_summary, list_experiments, load_experiment
@@ -365,33 +364,6 @@ def cmd_review_context(args: argparse.Namespace) -> int:
     root = find_project_root(args.root)
     print(load_review_context(root, max_chars=args.max_chars))
     return 0
-
-
-def cmd_dashboard(args: argparse.Namespace) -> int:
-    root = find_project_root(args.root)
-    server, url = serve_dashboard(root=root, host=args.host, port=args.port, verbose=args.verbose, open_browser=args.open)
-    print(f"Sisyfus dashboard listening on {url}")
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        print("\nDashboard stopped.")
-    finally:
-        server.server_close()
-    return 0
-
-
-def cmd_panel_state(args: argparse.Namespace) -> int:
-    root = find_project_root(args.root)
-    _print_json(build_dashboard_state(root=root, session_limit=args.session_limit))
-    return 0
-
-
-def cmd_panel_snapshot(args: argparse.Namespace) -> int:
-    root = find_project_root(args.root)
-    path = export_dashboard_snapshot(root=root, out=Path(args.out) if args.out else None)
-    print(path)
-    return 0
-
 
 
 def cmd_rubric_list(args: argparse.Namespace) -> int:
@@ -1107,33 +1079,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_list_g.add_argument("--include-archived", action="store_true")
     p_list_g.add_argument("--json", action="store_true")
     p_list_g.set_defaults(func=cmd_guidance_list)
-
-    p_dash = sub.add_parser("dashboard", help="serve local Sisyfus human review dashboard")
-    p_dash.add_argument("--root")
-    p_dash.add_argument("--host", default="127.0.0.1")
-    p_dash.add_argument("--port", type=int, default=8765)
-    p_dash.add_argument("--open", action="store_true")
-    p_dash.add_argument("--verbose", action="store_true")
-    p_dash.set_defaults(func=cmd_dashboard)
-
-    p_panel = sub.add_parser("panel", help="dashboard serve/state/export operations")
-    panel_sub = p_panel.add_subparsers(dest="panel_command", required=True)
-    p_serve = panel_sub.add_parser("serve", help="serve local Sisyfus human review panel")
-    p_serve.add_argument("--root")
-    p_serve.add_argument("--host", default="127.0.0.1")
-    p_serve.add_argument("--port", type=int, default=8765)
-    p_serve.add_argument("--open", action="store_true")
-    p_serve.add_argument("--verbose", action="store_true")
-    p_serve.set_defaults(func=cmd_dashboard)
-    p_state = panel_sub.add_parser("state", help="print dashboard JSON state")
-    p_state.add_argument("--root")
-    p_state.add_argument("--session-limit", type=int, default=200)
-    p_state.set_defaults(func=cmd_panel_state)
-    p_snap = panel_sub.add_parser("snapshot", help="write static dashboard JSON snapshot")
-    p_snap.add_argument("--root")
-    p_snap.add_argument("--out")
-    p_snap.set_defaults(func=cmd_panel_snapshot)
-
 
     p_rubric = sub.add_parser("rubric", help="rubric / Outcomes grader operations")
     rubric_sub = p_rubric.add_subparsers(dest="rubric_command", required=True)

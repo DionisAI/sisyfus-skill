@@ -72,22 +72,6 @@ Future sessions read compact human review context before recent machine-generate
 """,
         force=force,
     )
-    _write_if_missing(
-        sf / "dashboard" / "README.md",
-        """# Sisyfus Dashboard
-
-Run:
-
-```bash
-sisyfus dashboard --open
-```
-
-The dashboard is a local panel for sessions, claims, human verdicts, guidance, open tasks, and run artifacts.
-It is intentionally backed by `.sisyfus/` JSONL artifacts rather than a remote database.
-""",
-        force=force,
-    )
-
     _write_if_missing(sf / "beams" / "index.jsonl", "", force=force)
     _write_if_missing(
         sf / "beams" / "README.md",
@@ -109,7 +93,7 @@ Rules:
 3. The beam coordinator reads `beam.compact.md` and child compact summaries, not raw transcripts.
 4. `max_rounds`, `max_children_per_node`, `width`, and `max_total_sessions` prevent exponential explosion.
 5. A branch can propose future branches by writing `beam_result.json` with `next_directions`.
-6. Human review can mark branch conclusions correct, wrong, uncertain, stale, or accepted from the dashboard.
+6. Human review can mark branch conclusions correct, wrong, uncertain, stale, or accepted via the `sisyfus review` CLI.
 
 Commands:
 
@@ -117,7 +101,6 @@ Commands:
 sisyfus beam template crypto-factor-research --objective "Explore a crypto cross-sectional strategy"
 sisyfus beam run .sisyfus/goals/crypto-factor-research.beam.json
 sisyfus beam status <beam_id>
-sisyfus dashboard --open
 ```
 """,
         force=force,
