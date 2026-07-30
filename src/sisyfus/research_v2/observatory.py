@@ -1431,7 +1431,40 @@ def render_observatory(
     payload = _json_for_script(public_snapshot)
     document = _TEMPLATE.replace("__TOPIC__", topic).replace("__PAYLOAD__", payload)
     workspace.report_path.write_text(document, encoding="utf-8")
+    _render_stable_entry(workspace, document)
     return workspace.report_path
+
+
+_ENTRY_BOOTSTRAP = """<script>
+/* Stable entry page: hop to the live Observatory whenever the local daemon is up. */
+(function () {
+  if (location.protocol !== 'file:') return;
+  var base = 'http://127.0.0.1:__PORT__';
+  var probe = function () {
+    fetch(base + '/snapshot.json', {mode: 'no-cors', cache: 'no-store'})
+      .then(function () { location.replace(base + '/index.html'); })
+      .catch(function () { setTimeout(probe, 3000); });
+  };
+  probe();
+})();
+</script>"""
+
+
+def _render_stable_entry(workspace: ResearchWorkspace, document: str) -> None:
+    """Refresh `<root>/.sisyfus/observatory.html` — the one bookmarkable entry.
+
+    The copy shows the state as of the last engine operation even with no
+    server running, and redirects to the live daemon the moment one answers
+    on this project's port.
+    """
+    from .live import derived_port, observatory_entry_path, read_live_state
+
+    state = read_live_state(workspace.root)
+    port = int(state["port"]) if state else derived_port(workspace.root)
+    bootstrap = _ENTRY_BOOTSTRAP.replace("__PORT__", str(port))
+    entry = observatory_entry_path(workspace.root)
+    entry.parent.mkdir(parents=True, exist_ok=True)
+    entry.write_text(document.replace("</body>", bootstrap + "\n</body>"), encoding="utf-8")
 
 
 class _ObservatoryHandler(SimpleHTTPRequestHandler):

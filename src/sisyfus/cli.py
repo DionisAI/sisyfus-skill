@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,15 @@ from .paths import ensure_layout, find_project_root
 from .promote import promote_repeated_failures
 from .review import ReviewStore, load_review_context
 from .research_v2.engine import ResearchEngine, build_demo, load_json_object
+from .research_v2.live import (
+    AlreadyServing,
+    clear_live_state,
+    ensure_observatory,
+    live_observatory_url,
+    observatory_entry_path,
+    resolve_serve_port,
+    write_live_state,
+)
 from .research_v2.workspace import ResearchWorkspace
 from .scaffold import init_project
 from .session import list_sessions, load_recent_session_context
@@ -526,11 +536,14 @@ def cmd_eval_run(args: argparse.Namespace) -> int:
 
 
 
-def _research_engine(args: argparse.Namespace) -> ResearchEngine:
-    return ResearchEngine.load(args.root, args.research_id)
+def _research_engine(args: argparse.Namespace, *, ensure_live: bool = True) -> ResearchEngine:
+    engine = ResearchEngine.load(args.root, args.research_id)
+    if ensure_live:
+        ensure_observatory(engine.workspace.root, engine.workspace.research_id)
+    return engine
 
 
-def _research_summary(snapshot: dict[str, Any], report_path: Path | None = None) -> dict[str, Any]:
+def _research_summary(snapshot: dict[str, Any], engine: ResearchEngine | None = None) -> dict[str, Any]:
     result = {
         "research_id": snapshot.get("research_id"),
         "topic": snapshot.get("topic"),
@@ -550,8 +563,12 @@ def _research_summary(snapshot: dict[str, Any], report_path: Path | None = None)
         "verifier_gaps": snapshot.get("verifier_gaps") or [],
         "contested_claims": snapshot.get("contested_claims") or [],
     }
-    if report_path is not None:
-        result["report_path"] = str(report_path)
+    if engine is not None:
+        result["report_path"] = str(engine.workspace.report_path)
+        result["observatory_entry"] = str(observatory_entry_path(engine.workspace.root))
+        live = live_observatory_url(engine.workspace.root)
+        if live:
+            result["observatory_url"] = live
     return result
 
 
@@ -591,8 +608,9 @@ def _verdict_brief(result: dict[str, Any]) -> dict[str, Any]:
 
 def cmd_research_new(args: argparse.Namespace) -> int:
     engine = ResearchEngine.create(args.root, load_json_object(args.spec), actor=args.actor)
+    ensure_observatory(engine.workspace.root, engine.workspace.research_id)
     snapshot = engine.snapshot()
-    summary = _research_summary(snapshot, engine.workspace.report_path)
+    summary = _research_summary(snapshot, engine)
     hard_constraints = engine.task.get("hard_constraints") or []
     if hard_constraints:
         summary["warnings"] = [
@@ -630,7 +648,7 @@ def cmd_research_status(args: argparse.Namespace) -> int:
     elif getattr(args, "brief", False):
         _print_json(_research_brief(snapshot))
     else:
-        _print_json(_research_summary(snapshot, engine.workspace.report_path))
+        _print_json(_research_summary(snapshot, engine))
     return 0
 
 
@@ -674,7 +692,7 @@ def cmd_research_execute(args: argparse.Namespace) -> int:
                 "verdict": result["verdict"],
                 "claim_effects": result["claim_effects"],
                 "evidence": result["evidence"],
-                "state": _research_summary(result["snapshot"], engine.workspace.report_path),
+                "state": _research_summary(result["snapshot"], engine),
             }
         )
     return 0 if result["verdict"]["status"] == "PASS" else 2
@@ -696,7 +714,7 @@ def cmd_research_settle(args: argparse.Namespace) -> int:
                 "verdict": result["verdict"],
                 "claim_effects": result["claim_effects"],
                 "evidence": result["evidence"],
-                "state": _research_summary(result["snapshot"], engine.workspace.report_path),
+                "state": _research_summary(result["snapshot"], engine),
             }
         )
     return 0 if result["verdict"]["status"] == "PASS" else 2
@@ -753,13 +771,14 @@ def cmd_research_wake(args: argparse.Namespace) -> int:
 def cmd_research_recover(args: argparse.Namespace) -> int:
     engine = _research_engine(args)
     recovered = engine.recover_stranded(actor=args.actor)
-    _print_json({"research_id": engine.workspace.research_id, "recovered_attempts": len(recovered), "state": _research_summary(engine.sync())})
+    _print_json({"research_id": engine.workspace.research_id, "recovered_attempts": len(recovered), "state": _research_summary(engine.sync(), engine)})
     return 0
 
 
 def cmd_research_prune(args: argparse.Namespace) -> int:
-    snapshot = _research_engine(args).prune_experiment(args.experiment_id, reason=args.reason, actor=args.actor)
-    _print_json(_research_summary(snapshot))
+    engine = _research_engine(args)
+    snapshot = engine.prune_experiment(args.experiment_id, reason=args.reason, actor=args.actor)
+    _print_json(_research_summary(snapshot, engine))
     return 0
 
 
@@ -771,10 +790,32 @@ def cmd_research_report(args: argparse.Namespace) -> int:
 
 
 def cmd_research_serve(args: argparse.Namespace) -> int:
-    engine = _research_engine(args)
-    server, url = engine.serve_report(
-        host=args.host, port=args.port, open_browser=args.open, verbose=args.verbose
+    engine = _research_engine(args, ensure_live=False)
+    root = engine.workspace.root
+    try:
+        port = resolve_serve_port(root, engine.workspace.research_id, args.port)
+    except AlreadyServing as running:
+        print(f"Sisyfus Research Observatory already live at {running.url}")
+        return 0
+    try:
+        server, url = engine.serve_report(
+            host=args.host, port=port, open_browser=args.open, verbose=args.verbose
+        )
+    except OSError:
+        if args.port is not None:
+            raise
+        # Stable port held by a foreign process; an ephemeral port still gives
+        # a live page, and the entry page re-renders below with the real port.
+        server, url = engine.serve_report(
+            host=args.host, port=0, open_browser=args.open, verbose=args.verbose
+        )
+    write_live_state(
+        root,
+        host=args.host,
+        port=int(server.server_address[1]),
+        research_id=engine.workspace.research_id,
     )
+    engine.sync(render=True)
     print(f"Sisyfus Research Observatory listening on {url}")
     try:
         server.serve_forever()
@@ -782,6 +823,7 @@ def cmd_research_serve(args: argparse.Namespace) -> int:
         print("\nResearch Observatory stopped.")
     finally:
         server.server_close()
+        clear_live_state(root, pid=os.getpid())
     return 0
 
 
@@ -839,25 +881,28 @@ def cmd_research_lesson_stats(args: argparse.Namespace) -> int:
 
 
 def cmd_research_pause(args: argparse.Namespace) -> int:
-    _print_json(_research_summary(_research_engine(args).pause(actor=args.actor, reason=args.reason)))
+    engine = _research_engine(args)
+    _print_json(_research_summary(engine.pause(actor=args.actor, reason=args.reason), engine))
     return 0
 
 
 def cmd_research_resume(args: argparse.Namespace) -> int:
-    _print_json(_research_summary(_research_engine(args).resume(actor=args.actor)))
+    engine = _research_engine(args)
+    _print_json(_research_summary(engine.resume(actor=args.actor), engine))
     return 0
 
 
 def cmd_research_finalize(args: argparse.Namespace) -> int:
-    snapshot = _research_engine(args).finalize(status=args.status, actor=args.actor, reason=args.reason)
-    _print_json(_research_summary(snapshot))
+    engine = _research_engine(args)
+    snapshot = engine.finalize(status=args.status, actor=args.actor, reason=args.reason)
+    _print_json(_research_summary(snapshot, engine))
     return 0 if snapshot["run_status"] == "SOLVED" else 2
 
 
 def cmd_research_demo(args: argparse.Namespace) -> int:
     engine = build_demo(args.root)
     snapshot = engine.snapshot()
-    _print_json(_research_summary(snapshot, engine.workspace.report_path))
+    _print_json(_research_summary(snapshot, engine))
     return 0 if snapshot["run_status"] == "SOLVED" else 2
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1278,7 +1323,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_rserve.add_argument("research_id", nargs="?", default="latest")
     p_rserve.add_argument("--root")
     p_rserve.add_argument("--host", default="127.0.0.1")
-    p_rserve.add_argument("--port", type=int, default=8787)
+    p_rserve.add_argument(
+        "--port", type=int, default=None,
+        help="explicit port; default is a stable per-project port derived from the root path",
+    )
     p_rserve.add_argument("--open", action="store_true")
     p_rserve.add_argument("--verbose", action="store_true")
     p_rserve.set_defaults(func=cmd_research_serve)

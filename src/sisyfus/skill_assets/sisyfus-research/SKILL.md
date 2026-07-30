@@ -294,8 +294,8 @@ For optimization of this skill itself, use batches of scored trajectories, bound
 Two delivery modes share the same projection:
 
 ```bash
-sisyfus research report <research_id> --open --root <project>              # static, self-contained HTML file
-sisyfus research serve <research_id> --open --port 8787 --root <project>   # hosted live monitor
+sisyfus research report <research_id> --open --root <project>   # static, self-contained HTML file
+sisyfus research serve <research_id> --open --root <project>    # hosted live monitor (stable per-project port)
 ```
 
 - **`report`** writes `report/index.html` — a single offline file for archiving and sharing.
@@ -305,10 +305,21 @@ sisyfus research serve <research_id> --open --port 8787 --root <project>   # hos
   `snapshot.json` every 2 seconds and reloads whenever the snapshot hash changes — no manual
   refresh. Note the side effect: a running serve page is itself a wake surface; due time
   waits fire as soon as the next poll lands.
+- **Stable entry page** — every engine operation also refreshes
+  `<root>/.sisyfus/observatory.html`: a self-contained copy of the Arena showing the state
+  as of the last engine event, which redirects to the live daemon the moment one answers
+  on this project's port. Give the user this one path to bookmark; it works with or
+  without a server.
+- **Self-healing live monitor** — every `sisyfus research` command (except `serve` itself)
+  guarantees a live daemon for the project: a dead or missing one is respawned detached on
+  a stable per-project port derived from the root path (so the URL survives restarts), and
+  one serving a different run is retargeted. Daemon coordinates persist in
+  `<root>/.sisyfus/observatory.json`; liveness is always verified by probing the port,
+  never by trusting the file. The live URL surfaces as `observatory_url` in every command's
+  JSON summary. Set `SISYFUS_AUTO_SERVE=0` to disable respawning (CI, tests, replays).
 
-Prefer `serve` while a run is active (especially one with waits — the Waiting card shows
-each held experiment, its release condition, and `next_wake_at`); use `report` for a
-finalized run.
+A bare `serve` is idempotent: if a daemon already serves this run it prints the existing
+URL and exits. Use `report` for archiving a finalized run.
 
 The Observatory is an esports-broadcast Arena. The default view maps research onto
 spectator-game idioms so an observer understands the exploration at a glance:
@@ -365,6 +376,7 @@ When reporting to the user, include:
 - waiting experiments and `next_wake_at` whenever a wait is pending;
 - verifier gaps and invalid/error rates;
 - budget remaining;
-- exact HTML report path (and the serve URL if a live monitor is running).
+- the Observatory: the live `observatory_url` from the latest command summary and the
+  bookmarkable entry page `<root>/.sisyfus/observatory.html`.
 
 Never collapse `FAIL`, `INVALID`, `ERROR`, and `INCONCLUSIVE` into a generic failure count.
