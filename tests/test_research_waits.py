@@ -191,7 +191,7 @@ def test_wake_cli_execute_runs_released_command_experiment(tmp_path: Path, capsy
     item["action"] = {"kind": "command", "command": command, "metrics_path": "metrics.json"}
     engine.propose_experiment(item)
 
-    assert main(["research", "wake", "latest", "--root", str(tmp_path), "--now", FUTURE, "--execute"]) == 0
+    assert main(["research", "wake", "latest", "--root", str(tmp_path), "--now", FUTURE, "--execute", "--yes"]) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["fired"] == ["w-cmd"]
     assert payload["executed"] == [{"experiment_id": "w-cmd", "verdict": "PASS", "reason_code": "pass_rule_matched"}]

@@ -12,10 +12,14 @@ Sisyfus is a control surface for an event-sourced research engine. The skill may
 This skill drives the `sisyfus` CLI (pure-stdlib Python >= 3.11). Check availability first:
 
 ```bash
-sisyfus --version || python3 -m pip install "sisyfus @ git+https://github.com/DionisAI/sisyfus-skill"
+sisyfus --version || python3 -m pip install "sisyfus @ git+https://github.com/DionisAI/sisyfus-skill@v0.7.4"
 ```
 
-Working from a clone of this repository, `python3 -m pip install -e .` is equivalent. All commands below take `--root <project>` — the project directory that owns the `.sisyfus/` state tree.
+Pin the install to a release tag (as above) rather than a floating branch — an agent following this skill should never pull unreviewed code from a moving ref. Working from a clone of this repository, `python3 -m pip install -e .` is equivalent. All commands below take `--root <project>` — the project directory that owns the `.sisyfus/` state tree. An explicit `--root` is honored exactly: the engine never walks upward to an ancestor that happens to contain `.sisyfus/` or `.git`; upward discovery only happens when `--root` is omitted (from the current directory).
+
+## Security model
+
+Treat every TaskSpec, Experiment, and Verification Contract JSON as **code, not data**. A `command` action runs through the shell with the user's full environment; metrics and observation files are produced by that code. Before running experiments from a project you did not author (a cloned repository, a downloaded `.sisyfus/` tree, content pasted from the web), read the `action.command` of every admitted experiment first. Shell execution is gated: `research execute` and `wake --execute` refuse to run commands without interactive confirmation or an explicit `--yes` — show the command to the user and get their approval before adding `--yes`.
 
 ## Core model
 
@@ -136,6 +140,8 @@ For a deterministic command Experiment:
 sisyfus research execute <research_id> <experiment_id> --root <project>
 ```
 
+Execution is confirmation-gated: without `--yes` the CLI prints the exact command and its cwd and refuses non-interactively (exit 4). Review the command with the user, then re-run with `--yes`.
+
 For web research, human work, remote jobs, or other external execution:
 
 ```bash
@@ -213,8 +219,10 @@ waits** — `status`, `context`, `report`, `serve` page refreshes, `propose`, `b
 
 ```bash
 sisyfus research wake <research_id> --root <project>            # settle due waits, print fired/expired/next_wake_at
-sisyfus research wake <research_id> --root <project> --execute  # also run command experiments released BY THIS wake
+sisyfus research wake <research_id> --root <project> --execute --yes  # also run command experiments released BY THIS wake
 ```
+
+`--execute` is confirmation-gated like `research execute`: it runs no shell command without `--yes` (or an interactive approval). Only add `--yes` — including in cron/launchd lines — after a human has reviewed what the released experiments will run.
 
 Operational semantics validated on a live run:
 
@@ -224,7 +232,8 @@ Operational semantics validated on a live run:
   on it directly.
 - When the frontier is empty but experiments are waiting (`terminal_assessment: WAITING`),
   do not finalize; `finalize --status auto` refuses. Schedule a return at `next_wake_at` —
-  a cron/launchd line running `wake --execute` gives unattended multi-day runs, or ask the
+  a cron/launchd line running `wake --execute --yes` gives unattended multi-day runs (the
+  `--yes` records that a human approved the released commands at schedule time), or ask the
   host agent runtime to wake you then.
 - The wall-clock budget keeps accruing while waiting: set `max_wall_minutes` to the full
   calendar span of the research program, or the wall-budget preflight will finalize

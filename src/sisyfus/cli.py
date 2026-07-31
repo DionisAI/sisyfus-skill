@@ -44,6 +44,63 @@ def _print_json(data: Any) -> None:
     print(json.dumps(data, indent=2, sort_keys=True, default=str))
 
 
+def _command_exec_previews(engine: ResearchEngine, experiment_ids: list[str], *, workdir: str | None = None) -> list[dict[str, str]]:
+    """Describe the shell commands an execute/wake would run, before running them."""
+    snapshot = engine.snapshot()
+    experiments = snapshot.get("experiments") or {}
+    previews: list[dict[str, str]] = []
+    for experiment_id in experiment_ids:
+        action = dict((experiments.get(experiment_id) or {}).get("action") or {})
+        if action.get("kind") != "command":
+            continue
+        cwd = workdir or action.get("cwd") or str(engine.workspace.root)
+        previews.append(
+            {
+                "experiment_id": experiment_id,
+                "command": str(action.get("command") or ""),
+                "cwd": str(cwd),
+            }
+        )
+    return previews
+
+
+def _confirm_command_execution(previews: list[dict[str, str]], *, assume_yes: bool) -> bool:
+    """Gate shell-command experiments behind explicit confirmation.
+
+    Experiment JSON is code: `action.command` runs through the shell with the
+    user's full environment, so executing it must be a deliberate decision.
+    Interactive sessions approve at a prompt; non-interactive callers (agents,
+    cron) must pass --yes after a human has reviewed the command.
+    """
+    if not previews or assume_yes:
+        return True
+    import sys
+
+    for preview in previews:
+        print(
+            f"[sisyfus] experiment {preview['experiment_id']} will execute (cwd={preview['cwd']}):\n  {preview['command']}",
+            file=sys.stderr,
+        )
+    if sys.stdin.isatty():
+        answer = input("Execute the command experiment(s) above? [y/N] ")
+        return answer.strip().lower() in {"y", "yes"}
+    print(
+        json.dumps(
+            {
+                "error": {
+                    "type": "ConfirmationRequired",
+                    "message": "Refusing to run shell command experiment(s) without confirmation. "
+                    "Review the command(s) above and re-run with --yes to proceed.",
+                    "actions": previews,
+                }
+            },
+            indent=2,
+        ),
+        file=sys.stderr,
+    )
+    return False
+
+
 def cmd_init(args: argparse.Namespace) -> int:
     root = Path(args.root or Path.cwd()).resolve()
     sf = init_project(root, force=args.force)
@@ -684,6 +741,9 @@ def cmd_research_propose(args: argparse.Namespace) -> int:
 
 def cmd_research_execute(args: argparse.Namespace) -> int:
     engine = _research_engine(args)
+    previews = _command_exec_previews(engine, [args.experiment_id], workdir=args.workdir)
+    if not _confirm_command_execution(previews, assume_yes=args.yes):
+        return 4
     result = engine.execute_experiment(args.experiment_id, workdir=args.workdir, actor=args.actor)
     if getattr(args, "brief", False):
         _print_json(_verdict_brief(result))
@@ -740,10 +800,15 @@ def cmd_research_wake(args: argparse.Namespace) -> int:
     executed = []
     if args.execute:
         released = [item["experiment_id"] for item in snapshot.get("waits") or [] if item.get("released")]
+        candidates = []
         for experiment_id in fired + [item for item in released if item in expired]:
             experiment = snapshot["experiments"].get(experiment_id) or {}
             if experiment.get("status") != "ADMITTED" or (experiment.get("action") or {}).get("kind") != "command":
                 continue
+            candidates.append(experiment_id)
+        if not _confirm_command_execution(_command_exec_previews(engine, candidates), assume_yes=args.yes):
+            return 4
+        for experiment_id in candidates:
             result = engine.execute_experiment(experiment_id, actor=args.actor)
             executed.append(
                 {
@@ -1279,6 +1344,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_rexec.add_argument("--workdir")
     p_rexec.add_argument("--actor", default="command-executor")
     p_rexec.add_argument("--brief", action="store_true", help="compact agent-friendly summary")
+    p_rexec.add_argument("--yes", action="store_true", help="confirm running the experiment's shell command (required non-interactively)")
     p_rexec.set_defaults(func=cmd_research_execute)
 
     p_rbegin = research_sub.add_parser("begin", help="reserve/start an external or manual attempt")
@@ -1302,6 +1368,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_rwake.add_argument("--root")
     p_rwake.add_argument("--now", help="ISO timestamp override for deterministic wakes")
     p_rwake.add_argument("--execute", action="store_true", help="execute command experiments released by this wake")
+    p_rwake.add_argument("--yes", action="store_true", help="confirm running released shell commands (required non-interactively)")
     p_rwake.add_argument("--actor", default="wake")
     p_rwake.add_argument("--no-report", action="store_true")
     p_rwake.set_defaults(func=cmd_research_wake)

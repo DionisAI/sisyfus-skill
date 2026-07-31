@@ -67,7 +67,7 @@ or use a skills CLI: `npx skills add github:DionisAI/sisyfus-skill`.
 Engine (pure standard library, Python >= 3.11):
 
 ```bash
-python3 -m pip install "sisyfus @ git+https://github.com/DionisAI/sisyfus-skill"
+python3 -m pip install "sisyfus @ git+https://github.com/DionisAI/sisyfus-skill@v0.7.4"
 ```
 
 `SKILL.md` performs this check itself, so an agent landing on a clean machine

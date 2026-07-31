@@ -4,6 +4,7 @@ import csv
 import json
 import os
 import re
+import shlex
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -522,9 +523,12 @@ class MonitorRegistry:
                 "SISYFUS_MONITOR_RUN_DIR": str(run_dir),
             }
         )
-        formatted = command.replace("{workdir}", str(workdir)).replace("{run_dir}", str(run_dir))
+        # Quote every interpolated value: monitor params are external input and
+        # must not gain shell metacharacter meaning (shlex quoting stays a
+        # single word even inside template-supplied quotes).
+        formatted = command.replace("{workdir}", shlex.quote(str(workdir))).replace("{run_dir}", shlex.quote(str(run_dir)))
         for key, value in params.items():
-            formatted = formatted.replace("{param." + str(key) + "}", str(value))
+            formatted = formatted.replace("{param." + str(key) + "}", shlex.quote(str(value)))
         proc = run_process(formatted, cwd=workdir, timeout=int(spec.get("timeout_seconds", 600) or 600), shell=True, env=env)
         stdout = proc.get("stdout", "")
         stderr = proc.get("stderr", "")

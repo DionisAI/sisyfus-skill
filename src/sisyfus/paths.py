@@ -35,9 +35,19 @@ LAYOUT_DIRS = [
 
 
 def find_project_root(start: str | Path | None = None) -> Path:
-    cur = Path(start or Path.cwd()).resolve()
-    if cur.is_file():
-        cur = cur.parent
+    """Resolve the project root.
+
+    An explicit `start` (e.g. the CLI's ``--root``) is honored exactly and
+    never traded for an ancestor directory that happens to contain
+    ``.sisyfus/`` or ``.git`` — silently walking above the requested root used
+    to relocate state and command execution outside the intended project
+    (an ancestor such as ``$HOME`` with a ``.sisyfus/`` would win). Upward
+    discovery only happens when no root is given, starting from the cwd.
+    """
+    if start is not None:
+        cur = Path(start).resolve()
+        return cur.parent if cur.is_file() else cur
+    cur = Path.cwd().resolve()
     for candidate in [cur, *cur.parents]:
         if (candidate / ".sisyfus").exists():
             return candidate

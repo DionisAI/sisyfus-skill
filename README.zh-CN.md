@@ -58,7 +58,7 @@ Skill:把 `SKILL.md`、`references/`、`templates/` 复制进
 引擎(纯标准库,Python >= 3.11):
 
 ```bash
-python3 -m pip install "sisyfus @ git+https://github.com/DionisAI/sisyfus-skill"
+python3 -m pip install "sisyfus @ git+https://github.com/DionisAI/sisyfus-skill@v0.7.4"
 ```
 
 `SKILL.md` 自带这项检查,agent 落到干净机器上首次使用时会自行装好引擎。

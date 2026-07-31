@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -300,7 +301,11 @@ class CommandAgentAdapter:
         }
         formatted = command
         for token, value in replacements.items():
-            formatted = formatted.replace(token, value)
+            # Values are interpolated into a shell command line: quote them so
+            # shell metacharacters in ids, paths, or routes stay inert. Quoting
+            # is safe even inside template-supplied quotes ("{workdir}" still
+            # parses as a single word).
+            formatted = formatted.replace(token, shlex.quote(value))
         start = time.monotonic()
         proc = run_process(formatted, cwd=workdir, timeout=self.timeout, env=env, shell=True)
         elapsed = time.monotonic() - start
