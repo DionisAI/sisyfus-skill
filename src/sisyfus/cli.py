@@ -28,6 +28,7 @@ from .research_v2.live import (
     ensure_observatory,
     live_observatory_url,
     observatory_entry_path,
+    read_live_state,
     resolve_serve_port,
     write_live_state,
 )
@@ -804,8 +805,15 @@ def cmd_research_serve(args: argparse.Namespace) -> int:
     except OSError:
         if args.port is not None:
             raise
-        # Stable port held by a foreign process; an ephemeral port still gives
-        # a live page, and the entry page re-renders below with the real port.
+        # Bind failure usually means a concurrent spawn won the stable port
+        # between our resolve and bind — if its daemon serves this run, defer.
+        state = read_live_state(root)
+        rival = live_observatory_url(root)
+        if rival is not None and (state or {}).get("research_id") == engine.workspace.research_id:
+            print(f"Sisyfus Research Observatory already live at {rival}")
+            return 0
+        # Otherwise a foreign process holds the port; an ephemeral port still
+        # gives a live page, and the entry page re-renders with the real port.
         server, url = engine.serve_report(
             host=args.host, port=0, open_browser=args.open, verbose=args.verbose
         )

@@ -58,7 +58,13 @@ def read_live_state(root: Path) -> dict[str, Any] | None:
         state = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
-    return state if isinstance(state, dict) and state.get("port") else None
+    if not isinstance(state, dict) or not state.get("port"):
+        return None
+    # A copied project directory carries the old state file; its daemon serves
+    # the original path, so a root mismatch makes the state meaningless here.
+    if state.get("root") and str(state["root"]) != str(Path(root).resolve()):
+        return None
+    return state
 
 
 def write_live_state(root: Path, *, host: str, port: int, research_id: str) -> dict[str, Any]:

@@ -153,3 +153,71 @@ def test_clear_live_state_respects_newer_owner(tmp_path: Path) -> None:
     assert live.read_live_state(tmp_path) is not None  # someone else's file survives
     live.clear_live_state(tmp_path)
     assert live.read_live_state(tmp_path) is None
+
+
+def test_state_from_copied_project_dir_is_ignored(tmp_path: Path) -> None:
+    original, copy = tmp_path / "orig", tmp_path / "copy"
+    (original / ".sisyfus").mkdir(parents=True)
+    server, port = _listening_server()
+    try:
+        live.write_live_state(original, host="127.0.0.1", port=port, research_id="research-r")
+        assert live.live_observatory_url(original) is not None
+        # Simulate copying the whole project directory elsewhere.
+        (copy / ".sisyfus").mkdir(parents=True)
+        state_text = live.observatory_state_path(original).read_text(encoding="utf-8")
+        live.observatory_state_path(copy).write_text(state_text, encoding="utf-8")
+        assert live.read_live_state(copy) is None
+        assert live.live_observatory_url(copy) is None  # even though the old daemon answers
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+class _FakeServer:
+    server_address = ("127.0.0.1", 54321)
+
+    def serve_forever(self) -> None:
+        raise KeyboardInterrupt
+
+    def server_close(self) -> None:
+        pass
+
+
+def test_serve_defers_when_concurrent_spawn_wins_the_port(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    engine = ResearchEngine.create(tmp_path, spec())
+    root, rid = engine.workspace.root, engine.workspace.research_id
+    server, port = _listening_server()
+
+    def racing_bind(self, **kwargs):  # rival registers between our resolve and bind
+        live.write_live_state(root, host="127.0.0.1", port=port, research_id=rid)
+        raise OSError(48, "address already in use")
+
+    monkeypatch.setattr(ResearchEngine, "serve_report", racing_bind)
+    try:
+        assert main(["research", "serve", "latest", "--root", str(tmp_path)]) == 0
+        assert f"already live at http://127.0.0.1:{port}/index.html" in capsys.readouterr().out
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_serve_falls_back_to_ephemeral_port_for_foreign_occupier(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    engine = ResearchEngine.create(tmp_path, spec())
+    root = engine.workspace.root
+    ports: list[object] = []
+
+    def flaky_bind(self, *, host, port, open_browser, verbose):
+        ports.append(port)
+        if len(ports) == 1:
+            raise OSError(48, "address already in use")
+        return _FakeServer(), "http://127.0.0.1:54321/index.html"
+
+    monkeypatch.setattr(ResearchEngine, "serve_report", flaky_bind)
+    assert main(["research", "serve", "latest", "--root", str(tmp_path)]) == 0
+    assert ports == [live.derived_port(root), 0]
+    assert "listening on http://127.0.0.1:54321" in capsys.readouterr().out
+    assert live.read_live_state(root) is None  # cleared on shutdown by its owner

@@ -5,10 +5,16 @@ import json
 import os
 import shutil
 import tempfile
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - non-POSIX platform
+    fcntl = None  # type: ignore[assignment]
 
 from ..paths import ensure_layout, find_project_root
 from ..utils import read_jsonl, run_id as make_run_id
@@ -237,6 +243,26 @@ class ResearchWorkspace:
                 previous_hash = expected
         return events
 
+    @contextmanager
+    def _event_write_lock(self) -> Iterator[None]:
+        """Serialize read-chain-then-append across processes.
+
+        The event chain is seq-numbered and hash-linked; two concurrent
+        appenders (a CLI command and the live Observatory daemon settling a
+        due wait) that both read length N would both write seq N+1 and break
+        the chain. An exclusive advisory lock makes the critical section
+        atomic; on platforms without fcntl it degrades to the old behavior.
+        """
+        if fcntl is None:
+            yield
+            return
+        with (self.path / ".events.lock").open("w") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
     def append_event(
         self,
         event_type: str,
@@ -249,6 +275,20 @@ class ResearchWorkspace:
         event_type = str(event_type).upper()
         if event_type not in EVENT_TYPES:
             raise ValueError(f"unsupported research event type: {event_type}")
+        with self._event_write_lock():
+            return self._append_event_locked(
+                event_type, actor=actor, data=data, visibility=visibility, expected_seq=expected_seq
+            )
+
+    def _append_event_locked(
+        self,
+        event_type: str,
+        *,
+        actor: str,
+        data: dict[str, Any] | None,
+        visibility: str,
+        expected_seq: int | None,
+    ) -> dict[str, Any]:
         events = self.read_events(verify_chain=True)
         seq = len(events) + 1
         if expected_seq is not None and expected_seq != seq:

@@ -250,3 +250,29 @@ def test_planner_context_redacts_host_only_event_details(tmp_path: Path):
     assert hidden_rows
     assert all("data" not in row for row in hidden_rows)
     assert all("secret case" not in json.dumps(row) for row in hidden_rows)
+
+
+def test_concurrent_event_appends_keep_chain_intact(tmp_path: Path) -> None:
+    engine = ResearchEngine.create(tmp_path, base_spec())
+    workspace = engine.workspace
+    baseline = len(workspace.read_events(verify_chain=True))
+    threads_n, per_thread = 4, 15
+    errors: list[Exception] = []
+
+    def spam(worker: int) -> None:
+        try:
+            for i in range(per_thread):
+                workspace.append_event(
+                    "REPORT_RENDERED", actor=f"worker-{worker}", data={"note": f"{worker}:{i}"}
+                )
+        except Exception as exc:  # noqa: BLE001 - collected for assertion
+            errors.append(exc)
+
+    workers = [threading.Thread(target=spam, args=(n,)) for n in range(threads_n)]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join()
+    assert errors == []
+    events = workspace.read_events(verify_chain=True)  # raises on any seq/hash break
+    assert len(events) == baseline + threads_n * per_thread
