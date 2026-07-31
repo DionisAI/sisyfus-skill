@@ -20,3 +20,4 @@ polymarket-lab/
 *-lab/
 .sisyfus/
 .gstack/
+.playwright-mcp/

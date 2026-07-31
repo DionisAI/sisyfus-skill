@@ -1,7 +1,0 @@
-[     100ms] [ERROR] Failed to load resource: the server responded with a status of 404 (File not found) @ http://127.0.0.1:9911/favicon.ico:0
-[     143ms] [ERROR] Failed to load resource: the server responded with a status of 404 (File not found) @ http://127.0.0.1:8757/favicon.ico:0
-[   36129ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8757/snapshot.json?ts=1785481523048:0
-[   38128ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8757/snapshot.json?ts=1785481525047:0
-[   40128ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8757/snapshot.json?ts=1785481527047:0
-[   42128ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8757/snapshot.json?ts=1785481529047:0
-[   44127ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:8757/snapshot.json?ts=1785481531047:0
