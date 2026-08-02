@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Fix: `required_artifacts` now matches on repeat attempts. The artifact store dedupes name collisions by hash-suffixing the copy (`summary-1a2b3c4d.json`), which made every attempt after the first fail its contract with a false `required_artifact_missing` INVALID. Artifact records now carry `source_name` (the declared pre-dedupe name) and the verifier matches it. Found live by the predictfun-calibration-exante run's second collection attempt.
+
 - Security hardening: an explicit `--root` is now honored exactly — `find_project_root` no longer walks upward from a requested root to an ancestor that happens to contain `.sisyfus/` or `.git` (previously a stray `~/.sisyfus` silently relocated run state and command execution outside the intended project). Upward discovery now only happens when `--root` is omitted, from the current directory.
 - Security hardening: shell-command experiments are confirmation-gated. `research execute` and `wake --execute` print the exact command and cwd and refuse to run without an interactive approval or `--yes` (exit 4, structured `ConfirmationRequired` error on stderr). Experiment/contract JSON is code — review it before admitting; SKILL.md gained a Security model section and now pins the bootstrap install to a release tag instead of a floating git ref.
 - Security hardening: shell metacharacter injection closed in command templates — values interpolated into agent commands (`runner.py`: goal ids, paths, model routes) and custom monitor commands (`monitor.py`: `{workdir}`, `{run_dir}`, `{param.*}`) are now `shlex.quote`d before the command runs with `shell=True`.

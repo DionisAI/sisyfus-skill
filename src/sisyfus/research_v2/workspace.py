@@ -351,6 +351,9 @@ class ResearchWorkspace:
         return {
             "id": f"artifact-{digest[:12]}",
             "path": str(target.relative_to(self.path)),
+            # The declared name survives store-level dedupe renames so
+            # required_artifacts can match on repeat attempts.
+            "source_name": target_name,
             "sha256": digest,
             "size_bytes": target.stat().st_size,
         }

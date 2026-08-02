@@ -114,7 +114,7 @@ def _artifact_names(observation: dict[str, Any]) -> set[str]:
             names.add(artifact)
             names.add(Path(artifact).name)
         elif isinstance(artifact, dict):
-            for key in ("id", "path", "name", "filename"):
+            for key in ("id", "path", "name", "filename", "source_name"):
                 value = artifact.get(key)
                 if value:
                     names.add(str(value))
