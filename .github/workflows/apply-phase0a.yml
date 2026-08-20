@@ -10,7 +10,7 @@ permissions:
 
 concurrency:
   group: apply-phase0a-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   apply-and-test:
@@ -19,7 +19,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: feat/autonomous-agent-v08
+          ref: ${{ github.sha }}
           fetch-depth: 0
 
       - uses: actions/setup-python@v5
@@ -27,46 +27,66 @@ jobs:
           python-version: "3.12"
           cache: pip
 
-      - name: Reconstruct and verify patch
+      - name: Reconstruct, apply, and test
+        id: validate
         shell: bash
         run: |
-          set -euo pipefail
+          set -o pipefail
+          exec > >(tee /tmp/phase0a.log) 2>&1
+          set -euxo pipefail
           base64 -d .github/phase0a-patch/patch.gz.b64 | gzip -d > /tmp/phase0a.patch
           echo "d32086148f1dab70b416d55bf7226014623e4eba1429e9416c89cbb476b32955  /tmp/phase0a.patch" | sha256sum -c -
           git apply --check /tmp/phase0a.patch
+          git apply /tmp/phase0a.patch
+          python -m pip install --upgrade pip pytest
+          python -m pip install -e .
+          python -m compileall -q src
+          SISYFUS_AUTO_SERVE=0 python -m pytest -q
 
-      - name: Apply patch
-        run: git apply /tmp/phase0a.patch
-
-      - name: Install package and tests
-        run: python -m pip install --upgrade pip pytest && python -m pip install -e .
-
-      - name: Compile package
-        run: python -m compileall -q src
-
-      - name: Run tests
-        env:
-          SISYFUS_AUTO_SERVE: "0"
-        run: python -m pytest -q
-
-      - name: Commit validated changes
+      - name: Publish validated commit or failure report
+        if: always()
         shell: bash
+        env:
+          VALIDATION_OUTCOME: ${{ steps.validate.outcome }}
+          SOURCE_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          rm -f .github/phase0a-patch/part-00.b64
-          rm -f .github/phase0a-patch/patch.gz.b64
-          rmdir .github/phase0a-patch
-          rm -f .github/workflows/apply-phase0a.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -- \
-            .github/workflows/ci.yml \
-            src/sisyfus/research_v2/engine.py \
-            src/sisyfus/research_v2/workspace.py \
-            tests/test_research_engine.py \
-            .github/phase0a-patch/part-00.b64 \
-            .github/phase0a-patch/patch.gz.b64 \
-            .github/workflows/apply-phase0a.yml
-          git diff --cached --check
-          git commit -m "phase0: serialize state transitions and trust engine telemetry"
+
+          if [ "$VALIDATION_OUTCOME" = "success" ]; then
+            rm -f .github/phase0a-patch/part-00.b64
+            rm -f .github/phase0a-patch/patch.gz.b64
+            rm -f .github/phase0a-patch/result.txt
+            rmdir .github/phase0a-patch
+            rm -f .github/workflows/apply-phase0a.yml
+            git add -- \
+              .github/workflows/ci.yml \
+              src/sisyfus/research_v2/engine.py \
+              src/sisyfus/research_v2/workspace.py \
+              tests/test_research_engine.py \
+              .github/phase0a-patch/part-00.b64 \
+              .github/phase0a-patch/patch.gz.b64 \
+              .github/phase0a-patch/result.txt \
+              .github/workflows/apply-phase0a.yml
+            git diff --cached --check
+            git commit -m "phase0: serialize state transitions and trust engine telemetry"
+          else
+            git reset --hard "$SOURCE_SHA"
+            {
+              echo "outcome=$VALIDATION_OUTCOME"
+              echo "source_sha=$SOURCE_SHA"
+              echo "generated_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+              echo
+              echo "--- validation log tail ---"
+              if [ -f /tmp/phase0a.log ]; then
+                tail -n 240 /tmp/phase0a.log
+              else
+                echo "validation step did not create a log"
+              fi
+            } > .github/phase0a-patch/result.txt
+            git add -- .github/phase0a-patch/result.txt
+            git commit -m "ci: record phase0a validation failure"
+          fi
+
           git push origin HEAD:feat/autonomous-agent-v08
