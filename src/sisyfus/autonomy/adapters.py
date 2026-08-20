@@ -4,89 +4,141 @@ import hashlib
 import json
 import os
 import shlex
+import shutil
+import signal
 import subprocess
+import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from .discovery import OpportunitySignal
-from .runtime import Decision
+from .discovery import SensorError, SensorScanResult
+from .models import Decision, DecisionKind, OpportunitySignal
 
 
 def _json(value: Any) -> str:
-    return json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True, allow_nan=False) + "\n"
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        indent=2,
+        sort_keys=True,
+        allow_nan=False,
+        default=str,
+    ) + "\n"
+
+
+def _utc_after(seconds: float) -> str:
+    return (
+        datetime.now(timezone.utc) + timedelta(seconds=max(0.0, float(seconds)))
+    ).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
 def decision_from_mapping(raw: Mapping[str, Any]) -> Decision:
-    """Convert an untrusted planner response into the narrow Decision schema."""
+    kind = str(raw.get("kind") or raw.get("action") or "").upper()
+    wait_seconds = raw.get("wait_seconds")
+    if kind == DecisionKind.WAIT.value and wait_seconds is None and raw.get("wait_until"):
+        target = datetime.fromisoformat(str(raw["wait_until"]).replace("Z", "+00:00"))
+        wait_seconds = max(0.0, (target - datetime.now(timezone.utc)).total_seconds())
     return Decision(
-        kind=str(raw.get("kind") or "").upper(),  # type: ignore[arg-type]
+        kind=kind,
+        reason=str(raw.get("reason") or raw.get("rationale") or "planner proposal"),
         capability=str(raw["capability"]) if raw.get("capability") is not None else None,
         arguments=dict(raw.get("arguments") or {}),
+        risk_tier=int(raw.get("risk_tier") or 0),
+        verifier_id=str(raw.get("verifier_id") or "default"),
         idempotency_key=(
             str(raw["idempotency_key"]) if raw.get("idempotency_key") is not None else None
         ),
         evidence_id=str(raw["evidence_id"]) if raw.get("evidence_id") is not None else None,
-        wait_seconds=float(raw["wait_seconds"]) if raw.get("wait_seconds") is not None else None,
-        reason=str(raw.get("reason") or ""),
+        wait_seconds=float(wait_seconds) if wait_seconds is not None else None,
+        terminal_on_pass=bool(raw.get("terminal_on_pass", False)),
+        experience_key=(
+            str(raw["experience_key"]) if raw.get("experience_key") is not None else None
+        ),
+        experience_scope=dict(raw.get("experience_scope") or {}),
     ).normalized()
 
 
 @dataclass(frozen=True)
 class CommandPlanner:
-    """Call any model/agent CLI as a proposal-only planner.
+    """Proposal-only process adapter with bounded streamed output.
 
-    The command is executed without a shell. It receives immutable context via
-    ``SISYFUS_AUTONOMY_CONTEXT_PATH`` and should write one Decision JSON object
-    either to ``SISYFUS_AUTONOMY_RESPONSE_PATH`` or stdout. The adapter never
-    grants the command authority to settle evidence or mutate runtime truth.
+    This reduces ambient authority by using an environment allowlist. It is not
+    an OS sandbox; the continuous CLI therefore requires an explicit opt-in.
     """
 
     command: Sequence[str] | str
     workspace: str | Path
     timeout_seconds: float = 300.0
     max_response_bytes: int = 1_000_000
+    poll_interval_seconds: float = 0.02
+    environment_allowlist: frozenset[str] = field(
+        default_factory=lambda: frozenset(
+            {
+                "PATH",
+                "HOME",
+                "USER",
+                "LOGNAME",
+                "LANG",
+                "LC_ALL",
+                "LC_CTYPE",
+                "TMPDIR",
+                "TEMP",
+                "TMP",
+                "PYTHONPATH",
+                "VIRTUAL_ENV",
+                "SYSTEMROOT",
+                "WINDIR",
+                "PATHEXT",
+            }
+        )
+    )
 
-    def _argv(self, *, context_path: Path, response_path: Path, workspace: Path) -> list[str]:
+    def _argv(self) -> list[str]:
         raw = shlex.split(self.command) if isinstance(self.command, str) else [str(x) for x in self.command]
         if not raw:
             raise ValueError("planner command must not be empty")
-        replacements = {
-            "{context_path}": str(context_path),
-            "{response_path}": str(response_path),
-            "{workspace}": str(workspace),
-        }
-        return [
-            token.replace("{context_path}", replacements["{context_path}"])
-            .replace("{response_path}", replacements["{response_path}"])
-            .replace("{workspace}", replacements["{workspace}"])
-            for token in raw
-        ]
+        return raw
 
-    def __call__(self, continuation: dict[str, Any], context: Mapping[str, Any]) -> Decision:
+    @staticmethod
+    def _kill(process: subprocess.Popen[Any]) -> None:
+        if process.poll() is not None:
+            return
+        try:
+            if os.name == "posix":
+                os.killpg(process.pid, signal.SIGKILL)
+            else:  # pragma: no cover - Windows
+                process.kill()
+        except ProcessLookupError:
+            pass
+        process.wait(timeout=5)
+
+    def __call__(self, continuation: Mapping[str, Any], context: Mapping[str, Any]) -> Decision:
         workspace = Path(self.workspace).expanduser().resolve()
-        runs_dir = workspace / ".sisyfus" / "autonomy" / "planner-runs"
-        runs_dir.mkdir(parents=True, exist_ok=True)
-        run_id = f"planner-{uuid.uuid4().hex}"
-        run_dir = runs_dir / run_id
-        run_dir.mkdir(parents=False, exist_ok=False)
+        workspace.mkdir(parents=True, exist_ok=True)
+        run_dir = workspace / ".sisyfus" / "autonomy" / "planner-runs" / f"planner-{uuid.uuid4().hex}"
+        run_dir.mkdir(parents=True, exist_ok=False)
         context_path = run_dir / "context.json"
         response_path = run_dir / "response.json"
-        stdout_path = run_dir / "stdout.txt"
-        stderr_path = run_dir / "stderr.txt"
+        stdout_path = run_dir / "stdout.bin"
+        stderr_path = run_dir / "stderr.bin"
         context_path.write_text(
             _json(
                 {
                     "schema_version": "sisyfus.autonomy_planner_context.v0.8",
-                    "continuation": continuation,
+                    "continuation": dict(continuation),
                     "context": dict(context),
                 }
             ),
             encoding="utf-8",
         )
-        argv = self._argv(context_path=context_path, response_path=response_path, workspace=workspace)
-        env = os.environ.copy()
+        env = {
+            key: value
+            for key, value in os.environ.items()
+            if key in self.environment_allowlist
+        }
         env.update(
             {
                 "SISYFUS_AUTONOMY_CONTEXT_PATH": str(context_path),
@@ -96,119 +148,181 @@ class CommandPlanner:
                 "SISYFUS_AUTONOMY_EXPECTED_VERSION": str(continuation.get("version") or ""),
             }
         )
-        try:
-            completed = subprocess.run(
-                argv,
+        started = time.monotonic()
+        with stdout_path.open("wb") as stdout_handle, stderr_path.open("wb") as stderr_handle:
+            process = subprocess.Popen(
+                self._argv(),
                 cwd=str(workspace),
                 env=env,
+                stdin=subprocess.DEVNULL,
+                stdout=stdout_handle,
+                stderr=stderr_handle,
                 shell=False,
-                text=False,
-                capture_output=True,
-                timeout=float(self.timeout_seconds),
-                check=False,
+                start_new_session=(os.name == "posix"),
             )
-        except subprocess.TimeoutExpired as exc:
-            stdout = bytes(exc.stdout or b"")
-            stderr = bytes(exc.stderr or b"") + f"\nTIMEOUT after {self.timeout_seconds}s".encode()
-            stdout_path.write_bytes(stdout[: self.max_response_bytes])
-            stderr_path.write_bytes(stderr[: self.max_response_bytes])
-            raise RuntimeError(f"planner command timed out after {self.timeout_seconds}s") from exc
-        stdout_path.write_bytes(completed.stdout[: self.max_response_bytes])
-        stderr_path.write_bytes(completed.stderr[: self.max_response_bytes])
-        if len(completed.stdout) > self.max_response_bytes or len(completed.stderr) > self.max_response_bytes:
-            raise RuntimeError("planner output exceeded configured byte limit")
-        if completed.returncode != 0:
-            tail = completed.stderr.decode("utf-8", errors="replace")[-2000:]
-            raise RuntimeError(f"planner command exited {completed.returncode}: {tail}")
-        if response_path.exists():
-            if response_path.stat().st_size > self.max_response_bytes:
-                raise RuntimeError("planner response file exceeded configured byte limit")
-            raw_text = response_path.read_text(encoding="utf-8")
-        else:
-            raw_text = completed.stdout.decode("utf-8", errors="strict")
+            limit_error: str | None = None
+            while process.poll() is None:
+                elapsed = time.monotonic() - started
+                if elapsed > float(self.timeout_seconds):
+                    limit_error = f"planner command timed out after {self.timeout_seconds}s"
+                    break
+                stdout_size = stdout_path.stat().st_size
+                stderr_size = stderr_path.stat().st_size
+                response_size = response_path.stat().st_size if response_path.exists() else 0
+                if max(stdout_size, stderr_size, response_size) > int(self.max_response_bytes):
+                    limit_error = "planner output exceeded configured byte limit"
+                    break
+                time.sleep(max(0.001, float(self.poll_interval_seconds)))
+            if limit_error is not None:
+                self._kill(process)
+                raise RuntimeError(limit_error)
+            returncode = process.wait()
+        for path in (stdout_path, stderr_path, response_path):
+            if path.exists() and path.stat().st_size > int(self.max_response_bytes):
+                raise RuntimeError("planner output exceeded configured byte limit")
+        if returncode != 0:
+            tail = stderr_path.read_bytes()[-2000:].decode("utf-8", errors="replace")
+            raise RuntimeError(f"planner command exited {returncode}: {tail}")
+        raw_text = (
+            response_path.read_text(encoding="utf-8")
+            if response_path.exists()
+            else stdout_path.read_text(encoding="utf-8")
+        )
         try:
             raw = json.loads(raw_text)
         except json.JSONDecodeError as exc:
             raise ValueError(f"planner response is not valid JSON: {exc}") from exc
         if not isinstance(raw, dict):
             raise ValueError("planner response must be one JSON object")
-        normalized = decision_from_mapping(raw)
         response_path.write_text(_json(raw), encoding="utf-8")
-        return normalized
+        return decision_from_mapping(raw)
+
+    def decide(self, context: Any) -> Decision:
+        continuation = (
+            dict(context.continuation)
+            if hasattr(context, "continuation")
+            else dict(context.get("continuation") or {})
+        )
+        raw_context = context.as_dict() if hasattr(context, "as_dict") else dict(context)
+        return self(continuation, raw_context)
 
 
-@dataclass(frozen=True)
+@dataclass
 class RunbookPlanner:
-    """Deterministic planner for audited runbooks and integration tests."""
-
     decisions: Sequence[Mapping[str, Any]]
     repeat_last: bool = False
 
-    def __call__(self, continuation: dict[str, Any], _context: Mapping[str, Any]) -> Decision:
-        index = int(continuation.get("attempt_count") or 0)
+    def __call__(self, continuation: Mapping[str, Any], _context: Mapping[str, Any]) -> Decision:
+        index = int(continuation.get("step_index") or continuation.get("attempt_count") or 0)
         if index >= len(self.decisions):
-            if not self.repeat_last or not self.decisions:
-                return Decision(kind="WAIT", wait_seconds=60, reason="runbook exhausted")
-            index = len(self.decisions) - 1
+            if self.repeat_last and self.decisions:
+                index = len(self.decisions) - 1
+            else:
+                return Decision(
+                    kind=DecisionKind.WAIT,
+                    reason="runbook exhausted",
+                    wait_seconds=60,
+                )
         return decision_from_mapping(self.decisions[index])
+
+    def decide(self, context: Any) -> Decision:
+        continuation = (
+            dict(context.continuation)
+            if hasattr(context, "continuation")
+            else dict(context.get("continuation") or {})
+        )
+        return self(continuation, {})
 
 
 @dataclass(frozen=True)
 class JsonInboxSensor:
-    """Discover OpportunitySignal objects from a local JSON inbox.
-
-    Each file can contain one signal object, a list of signal objects, or
-    ``{"signals": [...]}``. Files are not deleted; durable content-based dedupe
-    makes repeated scans safe. Operators can archive files after observing the
-    admitted continuation.
-    """
-
     inbox: str | Path
     name: str = "json-inbox"
     source: str = "json-inbox"
+    quarantine_dir: str | Path | None = None
     max_files: int = 1000
     max_file_bytes: int = 2_000_000
 
-    def scan(self, _context: Mapping[str, Any]) -> list[OpportunitySignal]:
+    def _quarantine(self, path: Path) -> Path | None:
+        if self.quarantine_dir is None:
+            return None
+        root = Path(self.quarantine_dir).expanduser().resolve()
+        root.mkdir(parents=True, exist_ok=True)
+        target = root / path.name
+        counter = 1
+        while target.exists():
+            target = root / f"{path.stem}-{counter}{path.suffix}"
+            counter += 1
+        shutil.move(str(path), str(target))
+        return target
+
+    def scan(self, _context: Mapping[str, Any]) -> SensorScanResult:
         inbox = Path(self.inbox).expanduser().resolve()
         inbox.mkdir(parents=True, exist_ok=True)
-        paths = sorted(path for path in inbox.glob("*.json") if path.is_file())[: int(self.max_files)]
         signals: list[OpportunitySignal] = []
+        errors: list[SensorError] = []
+        paths = sorted(path for path in inbox.glob("*.json") if path.is_file())[: int(self.max_files)]
         for path in paths:
-            raw_bytes = path.read_bytes()
-            if len(raw_bytes) > int(self.max_file_bytes):
-                raise ValueError(f"inbox file exceeds byte limit: {path.name}")
             try:
+                size = path.stat().st_size
+                if size > int(self.max_file_bytes):
+                    raise ValueError(f"inbox file exceeds byte limit: {path.name}")
+                raw_bytes = path.read_bytes()
+                if len(raw_bytes) > int(self.max_file_bytes):
+                    raise ValueError(f"inbox file exceeds byte limit: {path.name}")
                 decoded = json.loads(raw_bytes.decode("utf-8"))
-            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-                raise ValueError(f"invalid inbox JSON {path.name}: {exc}") from exc
-            if isinstance(decoded, dict) and isinstance(decoded.get("signals"), list):
-                items = decoded["signals"]
-            elif isinstance(decoded, list):
-                items = decoded
-            else:
-                items = [decoded]
-            content_hash = hashlib.sha256(raw_bytes).hexdigest()
-            for index, item in enumerate(items):
-                if not isinstance(item, dict):
-                    raise ValueError(f"inbox item {path.name}#{index} must be an object")
-                payload = dict(item.get("payload") or {})
-                payload.setdefault("_inbox_file", path.name)
-                payload.setdefault("_inbox_sha256", content_hash)
-                signal = OpportunitySignal(
-                    source=str(item.get("source") or self.source),
-                    title=str(item.get("title") or path.stem),
-                    objective=str(item.get("objective") or ""),
-                    payload=payload,
-                    priority=float(item.get("priority") or 0.0),
-                    dedupe_key=str(
-                        item.get("dedupe_key")
-                        or f"json-inbox:{path.name}:{index}:{content_hash}"
-                    ),
-                    max_attempts=(
-                        int(item["max_attempts"]) if item.get("max_attempts") is not None else None
-                    ),
-                    context=dict(item.get("context") or {}),
-                ).normalized()
-                signals.append(signal)
-        return signals
+                if isinstance(decoded, dict) and isinstance(decoded.get("signals"), list):
+                    items = decoded["signals"]
+                elif isinstance(decoded, list):
+                    items = decoded
+                else:
+                    items = [decoded]
+                content_hash = hashlib.sha256(raw_bytes).hexdigest()
+                for index, raw in enumerate(items):
+                    if not isinstance(raw, dict):
+                        raise ValueError(f"inbox item {path.name}#{index} must be an object")
+                    payload = dict(raw.get("payload") or {})
+                    payload.setdefault("_inbox_file", path.name)
+                    payload.setdefault("_inbox_sha256", content_hash)
+                    signals.append(
+                        OpportunitySignal(
+                            source=str(raw.get("source") or self.source),
+                            kind=str(raw.get("kind") or "research_need"),
+                            title=str(raw.get("title") or path.stem),
+                            objective=str(raw.get("objective") or ""),
+                            payload=payload,
+                            priority=float(raw.get("priority") or 0.0),
+                            confidence=float(raw.get("confidence") or 0.5),
+                            dedupe_key=str(
+                                raw.get("dedupe_key")
+                                or f"json-inbox:{path.name}:{index}:{content_hash}"
+                            ),
+                            max_attempts=(
+                                int(raw["max_attempts"])
+                                if raw.get("max_attempts") is not None
+                                else None
+                            ),
+                            context=dict(raw.get("context") or {}),
+                            not_before=(
+                                str(raw["not_before"])
+                                if raw.get("not_before") is not None
+                                else None
+                            ),
+                            expires_at=(
+                                str(raw["expires_at"])
+                                if raw.get("expires_at") is not None
+                                else None
+                            ),
+                        ).normalized()
+                    )
+            except BaseException as exc:
+                quarantined = self._quarantine(path)
+                errors.append(
+                    SensorError(
+                        source=self.name,
+                        item=str(quarantined or path),
+                        error_type=type(exc).__name__,
+                        message=str(exc),
+                    )
+                )
+        return SensorScanResult(tuple(signals), tuple(errors))

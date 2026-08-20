@@ -1,126 +1,149 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from threading import RLock
 from typing import Any, Mapping, Protocol
 
-from .models import CapabilityResult, Decision, DecisionAction, RiskTier, VerificationResult
+from .models import CapabilityResult, Decision, DecisionKind, VerificationResult
 
 
-class Planner(Protocol):
-    """Proposal generator. A planner never writes truth directly."""
+class AutonomyError(RuntimeError):
+    pass
 
-    def decide(self, context: "ContinuationContext") -> Decision: ...
+
+class IncompatibleSchemaError(AutonomyError):
+    pass
+
+
+class NotFoundError(AutonomyError):
+    pass
+
+
+class ConcurrentUpdate(AutonomyError):
+    pass
+
+
+class LeaseLost(AutonomyError):
+    pass
+
+
+class InvalidTransition(AutonomyError):
+    pass
+
+
+class PolicyDeniedError(AutonomyError):
+    pass
+
+
+class IdempotencyConflictError(AutonomyError):
+    pass
+
+
+class UnknownCommitError(AutonomyError):
+    pass
+
+
+class VerificationRequiredError(AutonomyError):
+    pass
+
+
+class AttemptBudgetExceeded(AutonomyError):
+    pass
+
+
+class Capability(Protocol):
+    name: str
+    risk_tier: int
+    replay_safe: bool
+    description: str
+
+    def execute(self, arguments: Mapping[str, Any], *, idempotency_key: str) -> CapabilityResult: ...
 
 
 class Verifier(Protocol):
-    """Independent evidence classifier. Only its verdict advances belief."""
+    verifier_id: str
 
     def verify(
         self,
-        context: "ContinuationContext",
+        context: Mapping[str, Any],
         decision: Decision,
         result: CapabilityResult,
     ) -> VerificationResult: ...
 
 
-class Capability(Protocol):
-    """Typed, bounded action surface exposed to autonomous decisions."""
-
-    name: str
-    risk_tier: RiskTier
-
-    def execute(self, arguments: Mapping[str, Any], *, idempotency_key: str) -> CapabilityResult: ...
+class Planner(Protocol):
+    def __call__(self, continuation: Mapping[str, Any], context: Mapping[str, Any]) -> Decision: ...
 
 
 @dataclass(frozen=True)
-class ContinuationContext:
-    opportunity: Mapping[str, Any]
-    continuation: Mapping[str, Any]
-    events: tuple[Mapping[str, Any], ...]
-    decisions: tuple[Mapping[str, Any], ...]
-    evidence: tuple[Mapping[str, Any], ...]
-    experiences: tuple[Mapping[str, Any], ...]
+class CapabilityBinding:
+    capability: Capability
+    verifier: Verifier
 
-    @classmethod
-    def from_snapshot(cls, snapshot: Mapping[str, Any]) -> "ContinuationContext":
-        return cls(
-            opportunity=dict(snapshot.get("opportunity") or {}),
-            continuation=dict(snapshot.get("continuation") or {}),
-            events=tuple(dict(item or {}) for item in snapshot.get("events") or []),
-            decisions=tuple(dict(item or {}) for item in snapshot.get("decisions") or []),
-            evidence=tuple(dict(item or {}) for item in snapshot.get("evidence") or []),
-            experiences=tuple(dict(item or {}) for item in snapshot.get("experiences") or []),
-        )
+
+class CapabilityRegistry:
+    def __init__(self) -> None:
+        self._items: dict[str, CapabilityBinding] = {}
+        self._lock = RLock()
+
+    def register(self, capability: Capability, verifier: Verifier) -> None:
+        name = str(capability.name).strip()
+        if not name:
+            raise ValueError("capability name must not be empty")
+        if int(capability.risk_tier) not in {0, 1, 2, 3, 4}:
+            raise ValueError("capability risk_tier must be between 0 and 4")
+        with self._lock:
+            if name in self._items:
+                raise ValueError(f"capability already registered: {name}")
+            self._items[name] = CapabilityBinding(capability, verifier)
+
+    def get(self, name: str | None) -> CapabilityBinding:
+        key = str(name or "")
+        with self._lock:
+            try:
+                return self._items[key]
+            except KeyError as exc:
+                raise PolicyDeniedError(f"unregistered capability: {key}") from exc
+
+    def list(self) -> list[CapabilityBinding]:
+        with self._lock:
+            return [self._items[key] for key in sorted(self._items)]
 
 
 @dataclass(frozen=True)
-class PolicyDecision:
+class Authorization:
     allowed: bool
     reason: str
 
 
 @dataclass(frozen=True)
 class AutonomyPolicy:
-    """Capability admission policy for unattended execution.
-
-    Defaults permit only deterministic/read-only and reversible local actions.
-    Arbitrary shell, deployments, outbound messages, trading and destructive
-    operations require an explicitly supplied policy rather than a global
-    ``--yes`` switch.
-    """
-
-    allowed_risk_tiers: frozenset[RiskTier] = frozenset({RiskTier.R0, RiskTier.R1})
-    denied_capabilities: frozenset[str] = frozenset(
-        {
-            "shell",
-            "process.shell",
-            "system.exec",
-            "deployment.apply",
-            "messaging.send",
-            "trading.place_order",
-            "filesystem.delete",
-        }
-    )
+    max_unattended_risk: int = 1
     allowed_capabilities: frozenset[str] | None = None
+    denied_capabilities: frozenset[str] = field(default_factory=frozenset)
+    require_idempotency_from_risk: int = 1
 
-    def authorize(self, decision: Decision, capability: Capability | None = None) -> PolicyDecision:
-        if decision.action != DecisionAction.EXECUTE:
-            return PolicyDecision(True, "non-execution decision")
-        name = str(decision.capability or "")
-        if name in self.denied_capabilities:
-            return PolicyDecision(False, f"capability {name!r} is explicitly denied")
-        if self.allowed_capabilities is not None and name not in self.allowed_capabilities:
-            return PolicyDecision(False, f"capability {name!r} is not in the allowlist")
-        if decision.risk_tier not in self.allowed_risk_tiers:
-            return PolicyDecision(False, f"risk tier {decision.risk_tier.value} is not authorized")
+    def authorize(self, decision: Decision, capability: Capability | None) -> Authorization:
+        item = decision.normalized()
+        if item.kind != DecisionKind.EXECUTE:
+            return Authorization(True, "non-execution decision")
         if capability is None:
-            return PolicyDecision(False, f"capability {name!r} is not registered")
-        if capability.name != name:
-            return PolicyDecision(False, f"capability registry mismatch: requested {name!r}, got {capability.name!r}")
-        if capability.risk_tier != decision.risk_tier:
-            return PolicyDecision(
+            return Authorization(False, f"unregistered capability: {item.capability}")
+        name = str(capability.name)
+        if name in self.denied_capabilities:
+            return Authorization(False, f"capability explicitly denied: {name}")
+        if self.allowed_capabilities is not None and name not in self.allowed_capabilities:
+            return Authorization(False, f"capability not in allowlist: {name}")
+        if int(capability.risk_tier) > int(self.max_unattended_risk):
+            return Authorization(
                 False,
-                f"risk declaration mismatch: decision={decision.risk_tier.value}, capability={capability.risk_tier.value}",
+                f"capability {name} is R{capability.risk_tier}; unattended ceiling is R{self.max_unattended_risk}",
             )
-        return PolicyDecision(True, "authorized")
-
-
-class CapabilityRegistry:
-    def __init__(self) -> None:
-        self._capabilities: dict[str, Capability] = {}
-
-    def register(self, capability: Capability) -> None:
-        name = str(capability.name).strip()
-        if not name:
-            raise ValueError("capability name must not be empty")
-        if name in self._capabilities:
-            raise ValueError(f"capability already registered: {name}")
-        self._capabilities[name] = capability
-
-    def get(self, name: str | None) -> Capability | None:
-        return self._capabilities.get(str(name or ""))
-
-    def names(self) -> tuple[str, ...]:
-        return tuple(sorted(self._capabilities))
-
-
+        if int(capability.risk_tier) >= int(self.require_idempotency_from_risk) and not item.idempotency_key:
+            return Authorization(False, f"capability {name} requires an idempotency_key")
+        if int(item.risk_tier) != int(capability.risk_tier):
+            return Authorization(
+                False,
+                f"planner declared R{item.risk_tier} but capability {name} is R{capability.risk_tier}",
+            )
+        return Authorization(True, "authorized")

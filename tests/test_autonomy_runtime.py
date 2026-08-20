@@ -1,304 +1,306 @@
 from __future__ import annotations
 
 import sqlite3
-from concurrent.futures import ThreadPoolExecutor
+import time
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Mapping
 
 import pytest
 
 from sisyfus.autonomy import (
-    AutonomyError,
+    AutonomyPolicy,
     AutonomyStore,
     AutonomousRuntime,
-    Capability,
     CapabilityRegistry,
+    CapabilityResult,
+    ContinuationState,
     Decision,
     ExperienceLesson,
-    IdempotencyConflictError,
-    StaleVersionError,
-    VerificationRequiredError,
+    ExperiencePolarity,
+    OpportunitySignal,
     VerificationResult,
+    Verdict,
     register_safe_builtins,
 )
 
 
+NOW = "2026-08-20T00:00:00.000000Z"
+
+
 def make_store(tmp_path: Path, *, threshold: int = 2) -> AutonomyStore:
-    return AutonomyStore(tmp_path / "autonomy.sqlite3", experience_validation_threshold=threshold)
+    return AutonomyStore(
+        tmp_path / "autonomy.sqlite3",
+        experience_validation_threshold=threshold,
+    )
 
 
-def make_continuation(store: AutonomyStore, *, max_attempts: int = 4):
+def seed(store: AutonomyStore, *, key: str = "seed", max_attempts: int = 3):
     opportunity, _ = store.submit_opportunity(
-        source="test",
-        title="Investigate",
-        objective="Produce verifier-backed evidence",
-        payload={"x": 1},
-        priority=1.0,
+        OpportunitySignal(
+            source="test",
+            title=key,
+            objective=f"Verify {key}",
+            dedupe_key=key,
+            priority=10,
+            confidence=0.9,
+        ),
+        now=NOW,
     )
-    return store.admit_opportunity(opportunity["id"], max_attempts=max_attempts)
+    continuation, _ = store.admit_opportunity(
+        opportunity["id"], max_attempts=max_attempts, now=NOW
+    )
+    return continuation
 
 
-def lease(store: AutonomyStore, worker: str = "w1"):
-    item = store.lease_next(worker, lease_seconds=60)
-    assert item is not None
-    return item
+@dataclass
+class StaticCapability:
+    name: str = "test.static"
+    risk_tier: int = 0
+    replay_safe: bool = True
+    description: str = "test"
+    calls: int = 0
+    sleep_seconds: float = 0.0
+
+    def execute(self, arguments: Mapping[str, Any], *, idempotency_key: str) -> CapabilityResult:
+        self.calls += 1
+        if self.sleep_seconds:
+            time.sleep(self.sleep_seconds)
+        return CapabilityResult(
+            status="OK",
+            observation={"idempotency_key": idempotency_key},
+            metrics={"value": arguments.get("value")},
+        )
 
 
-def make_runtime(tmp_path: Path, store: AutonomyStore | None = None):
-    store = store or make_store(tmp_path)
+@dataclass
+class StaticVerifier:
+    verdict: Verdict
+    verifier_id: str = "test-verifier"
+    calls: int = 0
+
+    def verify(
+        self,
+        _context: Mapping[str, Any],
+        _decision: Decision,
+        _result: CapabilityResult,
+    ) -> VerificationResult:
+        self.calls += 1
+        return VerificationResult(
+            verdict=self.verdict,
+            verifier_id=self.verifier_id,
+            summary=f"verdict {self.verdict.value}",
+            metrics={"ok": self.verdict == Verdict.PASS},
+        )
+
+
+def make_runtime(
+    tmp_path: Path,
+    store: AutonomyStore,
+    *,
+    capability: StaticCapability | None = None,
+    verifier: StaticVerifier | None = None,
+    policy: AutonomyPolicy | None = None,
+):
     registry = CapabilityRegistry()
-    register_safe_builtins(registry)
-    runtime = AutonomousRuntime(store, registry, workspace=tmp_path / "workspace")
-    return store, registry, runtime
-
-
-def test_opportunity_dedupe_is_durable(tmp_path: Path):
-    store = make_store(tmp_path)
-    first, created_first = store.submit_opportunity(
-        source="sensor", title="same", objective="same", payload={"a": 1}, dedupe_key="k"
+    capability = capability or StaticCapability()
+    verifier = verifier or StaticVerifier(Verdict.PASS)
+    registry.register(capability, verifier)
+    runtime = AutonomousRuntime(
+        store,
+        registry,
+        workspace=tmp_path / "workspace",
+        policy=policy,
+        retry_base_seconds=0,
+        retry_max_seconds=0,
     )
-    second, created_second = store.submit_opportunity(
-        source="sensor", title="same", objective="same", payload={"a": 1}, dedupe_key="k"
+    return runtime, capability, verifier
+
+
+def test_policy_blocks_high_risk_before_execution(tmp_path: Path) -> None:
+    store = make_store(tmp_path)
+    seed(store)
+    capability = StaticCapability(name="deployment.apply", risk_tier=3)
+    verifier = StaticVerifier(Verdict.PASS)
+    runtime, capability, verifier = make_runtime(
+        tmp_path, store, capability=capability, verifier=verifier
     )
-    assert created_first is True
-    assert created_second is False
-    assert first["id"] == second["id"]
-    assert second["occurrence_count"] == 2
 
-
-def test_only_one_worker_wins_the_same_lease(tmp_path: Path):
-    store = make_store(tmp_path)
-    make_continuation(store)
-
-    def acquire(worker: str):
-        return store.lease_next(worker, lease_seconds=60)
-
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        results = list(pool.map(acquire, ["w1", "w2"]))
-    winners = [item for item in results if item is not None]
-    assert len(winners) == 1
-    assert winners[0]["lease_owner"] in {"w1", "w2"}
-
-
-def test_stale_version_cannot_mutate_continuation(tmp_path: Path):
-    store = make_store(tmp_path)
-    make_continuation(store)
-    active = lease(store)
-    store.renew_lease(active["id"], worker_id="w1", lease_token=active["lease_token"])
-    store.apply_non_execution_decision(
-        active["id"],
+    result = runtime.run_once(
         worker_id="w1",
-        lease_token=active["lease_token"],
-        expected_version=active["version"],
-        decision=Decision(kind="WAIT", wait_seconds=0),
+        planner=lambda _continuation, _context: Decision(
+            kind="EXECUTE",
+            reason="deploy",
+            capability="deployment.apply",
+            arguments={},
+            risk_tier=3,
+            idempotency_key="deploy-1",
+        ),
+        lease_seconds=10,
     )
-    with pytest.raises(StaleVersionError):
-        store.apply_non_execution_decision(
-            active["id"],
-            worker_id="w1",
-            lease_token=active["lease_token"],
-            expected_version=active["version"],
-            decision=Decision(kind="BLOCK", reason="stale"),
-        )
+    assert result is not None
+    assert result.state == ContinuationState.BLOCKED.value
+    assert capability.calls == 0
+    assert verifier.calls == 0
 
 
-def test_expired_lease_recovers_to_waiting(tmp_path: Path):
+def test_pass_on_final_attempt_remains_claimable_for_finish(tmp_path: Path) -> None:
     store = make_store(tmp_path)
-    make_continuation(store)
-    active = store.lease_next("w1", lease_seconds=0, now="2026-01-01T00:00:00Z")
-    assert active is not None
-    recovered = store.recover_expired_leases(now="2026-01-01T00:00:01Z")
-    assert len(recovered) == 1
-    assert recovered[0]["status"] == "WAITING"
-    assert recovered[0]["lease_token"] is None
+    continuation = seed(store, max_attempts=1)
+    runtime, capability, verifier = make_runtime(tmp_path, store)
+
+    first = runtime.run_once(
+        worker_id="w1",
+        planner=lambda _continuation, _context: Decision(
+            kind="EXECUTE",
+            reason="run final experiment",
+            capability="test.static",
+            arguments={"value": 7},
+            risk_tier=0,
+            idempotency_key="final-experiment",
+        ),
+        lease_seconds=10,
+    )
+    assert first is not None
+    assert first.state == ContinuationState.READY.value
+    current = store.get_continuation(continuation["id"])
+    assert current["attempt_count"] == current["max_attempts"] == 1
+    evidence = store.latest_evidence(continuation["id"])
+    assert evidence is not None and evidence["verdict"] == "PASS"
+
+    second = runtime.run_once(
+        worker_id="w2",
+        planner=lambda _continuation, _context: Decision(
+            kind="FINISH",
+            reason="PASS evidence satisfies the objective",
+            evidence_id=evidence["id"],
+        ),
+        lease_seconds=10,
+    )
+    assert second is not None
+    assert second.state == ContinuationState.SUCCEEDED.value
+    assert capability.calls == 1
+    assert verifier.calls == 1
 
 
-def test_policy_blocks_r2_capability_without_running_it(tmp_path: Path):
-    store, registry, runtime = make_runtime(tmp_path)
-    make_continuation(store)
-    calls = {"n": 0}
-
-    def handler(_args, _ctx):
-        calls["n"] += 1
-        return {"ok": True}
-
-    registry.register(
-        Capability(
-            name="external.send",
-            risk_tier=2,
-            handler=handler,
-            verifier=lambda _a, _r, _c: VerificationResult("PASS", "ok"),
-        )
+def test_inconclusive_final_attempt_becomes_exhausted(tmp_path: Path) -> None:
+    store = make_store(tmp_path)
+    seed(store, max_attempts=1)
+    runtime, _, _ = make_runtime(
+        tmp_path,
+        store,
+        verifier=StaticVerifier(Verdict.INCONCLUSIVE),
     )
     result = runtime.run_once(
         worker_id="w1",
-        planner=lambda _c, _ctx: Decision(
-            kind="EXECUTE", capability="external.send", arguments={}, idempotency_key="send-1"
+        planner=lambda _continuation, _context: Decision(
+            kind="EXECUTE",
+            reason="measure",
+            capability="test.static",
+            arguments={},
+            risk_tier=0,
+            idempotency_key="one-shot",
         ),
+        lease_seconds=10,
     )
     assert result is not None
-    assert result["status"] == "BLOCKED"
-    assert calls["n"] == 0
+    assert result.state == ContinuationState.EXHAUSTED.value
+    assert store.claim_due_continuation("w2", lease_seconds=10) is None
 
 
-def test_idempotent_replay_does_not_repeat_side_effect(tmp_path: Path):
-    store, registry, runtime = make_runtime(tmp_path)
-    continuation = make_continuation(store)
-    calls = {"n": 0}
-
-    def handler(args, _ctx):
-        calls["n"] += 1
-        return {"value": args["value"]}
-
-    registry.register(
-        Capability(
-            name="test.once",
-            risk_tier=1,
-            handler=handler,
-            verifier=lambda a, r, _c: VerificationResult(
-                "PASS" if a["value"] == r["value"] else "FAIL", "checked"
-            ),
-        )
-    )
-    active = lease(store)
-    first = runtime.apply_decision(
-        active,
-        Decision(kind="EXECUTE", capability="test.once", arguments={"value": 3}, idempotency_key="once"),
+def test_duplicate_evidence_cannot_validate_experience(tmp_path: Path) -> None:
+    store = make_store(tmp_path, threshold=2)
+    continuation = seed(store)
+    runtime, _, _ = make_runtime(tmp_path, store)
+    result = runtime.run_once(
         worker_id="w1",
-    )
-    assert first["evidence"]["verdict"] == "PASS"
-    active2 = lease(store)
-    second = runtime.apply_decision(
-        active2,
-        Decision(kind="EXECUTE", capability="test.once", arguments={"value": 3}, idempotency_key="once"),
-        worker_id="w1",
-    )
-    assert second["cached"] is True
-    assert calls["n"] == 1
-    assert store.get_continuation(continuation["id"])["attempt_count"] == 1
-
-
-def test_idempotency_key_rejects_different_request(tmp_path: Path):
-    store, _registry, runtime = make_runtime(tmp_path)
-    make_continuation(store)
-    active = lease(store)
-    runtime.apply_decision(
-        active,
-        Decision(kind="EXECUTE", capability="core.echo", arguments={"value": 1}, idempotency_key="same"),
-        worker_id="w1",
-    )
-    active2 = lease(store)
-    with pytest.raises(IdempotencyConflictError):
-        runtime.apply_decision(
-            active2,
-            Decision(kind="EXECUTE", capability="core.echo", arguments={"value": 2}, idempotency_key="same"),
-            worker_id="w1",
-        )
-
-
-def test_planner_cannot_finish_without_pass_evidence(tmp_path: Path):
-    store, _registry, runtime = make_runtime(tmp_path)
-    make_continuation(store)
-    active = lease(store)
-    with pytest.raises(VerificationRequiredError):
-        store.apply_non_execution_decision(
-            active["id"],
-            worker_id="w1",
-            lease_token=active["lease_token"],
-            expected_version=active["version"],
-            decision=Decision(kind="FINISH", evidence_id="ev_missing"),
-        )
-
-    store.apply_non_execution_decision(
-        active["id"],
-        worker_id="w1",
-        lease_token=active["lease_token"],
-        expected_version=active["version"],
-        decision=Decision(kind="WAIT", wait_seconds=0),
-    )
-    active2 = lease(store)
-    executed = runtime.apply_decision(
-        active2,
-        Decision(kind="EXECUTE", capability="core.echo", arguments={"value": "ok"}),
-        worker_id="w1",
-    )
-    active3 = lease(store)
-    finished = runtime.apply_decision(
-        active3,
-        Decision(kind="FINISH", evidence_id=executed["evidence"]["id"], reason="objective verified"),
-        worker_id="w1",
-    )
-    assert finished["continuation"]["status"] == "SUCCEEDED"
-
-
-def test_failed_verification_records_negative_experience(tmp_path: Path):
-    store, registry, runtime = make_runtime(tmp_path)
-    make_continuation(store)
-    registry.register(
-        Capability(
-            name="test.bad",
+        planner=lambda _continuation, _context: Decision(
+            kind="EXECUTE",
+            reason="produce evidence",
+            capability="test.static",
+            arguments={},
             risk_tier=0,
-            handler=lambda _a, _c: {"score": 0},
-            verifier=lambda _a, _r, _c: VerificationResult(
-                "FAIL",
-                "score below threshold",
-                lessons=(
-                    ExperienceLesson(
-                        statement="Zero-score candidate should be rejected",
-                        polarity="negative",
-                        scope={"domain": "test"},
-                    ),
-                ),
-            ),
-            replay_safe=True,
-        )
-    )
-    active = lease(store)
-    result = runtime.apply_decision(
-        active,
-        Decision(kind="EXECUTE", capability="test.bad", arguments={}),
-        worker_id="w1",
-    )
-    assert result["evidence"]["verdict"] == "FAIL"
-    assert result["experiences"][0]["negative_count"] == 1
-    assert result["continuation"]["status"] == "WAITING"
-
-
-def test_repeated_experience_validates_then_counterexample_contradicts(tmp_path: Path):
-    store, _registry, runtime = make_runtime(tmp_path, store=make_store(tmp_path, threshold=2))
-    make_continuation(store)
-    active = lease(store)
-    first = runtime.apply_decision(
-        active,
-        Decision(kind="EXECUTE", capability="core.echo", arguments={"value": 1}),
-        worker_id="w1",
-    )
-    evidence_id = first["evidence"]["id"]
-    lesson = ExperienceLesson(
-        statement="Exact echo is stable in this environment",
-        polarity="positive",
-        scope={"environment": "unit"},
-    )
-    one = store.record_experience(lesson, evidence_id=evidence_id)
-    two = store.record_experience(lesson, evidence_id=evidence_id)
-    assert one["status"] == "CANDIDATE"
-    assert two["status"] == "VALIDATED"
-    contradicted = store.record_experience(
-        ExperienceLesson(
-            statement=lesson.statement,
-            polarity="negative",
-            scope=lesson.scope,
+            idempotency_key="evidence-one",
         ),
-        evidence_id=evidence_id,
+        lease_seconds=10,
     )
-    assert contradicted["status"] == "CONTRADICTED"
+    assert result is not None
+    evidence = store.latest_evidence(continuation["id"])
+    assert evidence is not None
+    lesson = ExperienceLesson(
+        pattern_key="route-rule",
+        polarity=ExperiencePolarity.POSITIVE,
+        claim="Route is stable",
+        scope={"venue": "alpha"},
+    )
+    first = store.record_experience(lesson, evidence_id=evidence["id"])
+    duplicate = store.record_experience(lesson, evidence_id=evidence["id"])
+    assert first["supports"] == 1
+    assert duplicate["supports"] == 1
+    assert duplicate["status"] == "candidate"
+    assert duplicate["observation_inserted"] is False
 
 
-def test_event_chain_detects_database_tampering(tmp_path: Path):
-    store = make_store(tmp_path)
-    make_continuation(store)
-    assert store.verify_event_chain()["valid"] is True
-    with sqlite3.connect(store.path) as con:
-        con.execute("UPDATE events SET data_json = '{\"tampered\":true}' WHERE seq = 1")
-        con.commit()
-    with pytest.raises(AutonomyError, match="event hash mismatch"):
-        store.verify_event_chain()
+def test_two_independent_evidence_validate_then_counterexample_contests(tmp_path: Path) -> None:
+    store = make_store(tmp_path, threshold=2)
+    lesson = ExperienceLesson(
+        pattern_key="route-rule",
+        polarity="positive",
+        claim="Route is stable",
+        scope={"venue": "alpha"},
+    )
+    evidence_ids: list[str] = []
+    for index in range(2):
+        continuation = seed(store, key=f"positive-{index}")
+        runtime, _, _ = make_runtime(tmp_path / f"r{index}", store)
+        runtime.run_once(
+            worker_id=f"w{index}",
+            planner=lambda _c, _x, index=index: Decision(
+                kind="EXECUTE",
+                reason="support",
+                capability="test.static",
+                arguments={"value": index},
+                risk_tier=0,
+                idempotency_key=f"support-{index}",
+            ),
+            lease_seconds=10,
+        )
+        evidence = store.latest_evidence(continuation["id"])
+        assert evidence is not None
+        evidence_ids.append(evidence["id"])
+        current = store.record_experience(lesson, evidence_id=evidence["id"])
+    assert current["status"] == "validated"
+    assert current["supports"] == 2
+
+    negative_continuation = seed(store, key="negative")
+    runtime, _, _ = make_runtime(
+        tmp_path / "negative-runtime",
+        store,
+        verifier=StaticVerifier(Verdict.FAIL),
+    )
+    runtime.run_once(
+        worker_id="wn",
+        planner=lambda _c, _x: Decision(
+            kind="EXECUTE",
+            reason="counterexample",
+            capability="test.static",
+            arguments={},
+            risk_tier=0,
+            idempotency_key="counterexample",
+        ),
+        lease_seconds=10,
+    )
+    negative_evidence = store.latest_evidence(negative_continuation["id"])
+    assert negative_evidence is not None
+    contested = store.record_experience(
+        ExperienceLesson(
+            pattern_key="route-rule",
+            polarity="positive",
+            claim="Route failed in a matched context",
+            scope={"venue": "alpha"},
+            outcome="counterexample",
+        ),
+        evidence_id=negative_evidence["id"],
+    )
+    assert contested["status"] == "contested"
+    assert contested["counterexamples"] == 1

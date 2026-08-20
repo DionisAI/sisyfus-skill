@@ -1,40 +1,95 @@
-"""Durable primitives for verifier-gated, continuously running agents.
+"""Canonical verifier-gated autonomy runtime for Sisyfus."""
 
-The autonomy package is intentionally provider-neutral. Language models propose
-bounded decisions; typed capabilities execute them; independent verifiers own
-truth; :class:`AutonomyStore` owns durable state, leases and idempotency.
-"""
-
+from .adapters import CommandPlanner, JsonInboxSensor, RunbookPlanner, decision_from_mapping
+from .discovery import DiscoveryPolicy, OpportunityDiscovery, Sensor, SensorError, SensorScanResult
 from .models import (
+    AssuranceLevel,
     CapabilityResult,
     ContinuationState,
     Decision,
     DecisionAction,
+    DecisionKind,
+    ExperienceLesson,
+    ExperiencePolarity,
     OpportunityProposal,
+    OpportunitySignal,
+    OpportunityStatus,
     RiskTier,
     TickResult,
     Verdict,
+    VerificationMode,
     VerificationResult,
 )
-from .store import AutonomyStore, ConcurrentUpdate, LeaseLost
-from .policy import AutonomyPolicy, CapabilityRegistry, ContinuationContext
-from .supervisor import Supervisor
+from .policy import (
+    AttemptBudgetExceeded,
+    AutonomyError,
+    AutonomyPolicy,
+    Capability,
+    CapabilityRegistry,
+    ConcurrentUpdate,
+    IdempotencyConflictError,
+    IncompatibleSchemaError,
+    InvalidTransition,
+    LeaseLost,
+    NotFoundError,
+    Planner,
+    PolicyDeniedError,
+    UnknownCommitError,
+    VerificationRequiredError,
+    Verifier,
+)
+from .runtime import AutonomousRuntime, LeaseHeartbeat, register_safe_builtins
+from .store import AutonomyStore
+from .supervisor import AutonomousSupervisor, Supervisor, SupervisorConfig, SupervisorStats
 
 __all__ = [
+    "AssuranceLevel",
+    "AttemptBudgetExceeded",
+    "AutonomyError",
     "AutonomyPolicy",
     "AutonomyStore",
+    "AutonomousRuntime",
+    "AutonomousSupervisor",
+    "Capability",
     "CapabilityRegistry",
     "CapabilityResult",
+    "CommandPlanner",
     "ConcurrentUpdate",
-    "ContinuationContext",
     "ContinuationState",
     "Decision",
     "DecisionAction",
+    "DecisionKind",
+    "DiscoveryPolicy",
+    "ExperienceLesson",
+    "ExperiencePolarity",
+    "IdempotencyConflictError",
+    "IncompatibleSchemaError",
+    "InvalidTransition",
+    "JsonInboxSensor",
+    "LeaseHeartbeat",
     "LeaseLost",
+    "NotFoundError",
+    "OpportunityDiscovery",
     "OpportunityProposal",
+    "OpportunitySignal",
+    "OpportunityStatus",
+    "Planner",
+    "PolicyDeniedError",
     "RiskTier",
+    "RunbookPlanner",
+    "Sensor",
+    "SensorError",
+    "SensorScanResult",
     "Supervisor",
+    "SupervisorConfig",
+    "SupervisorStats",
     "TickResult",
+    "UnknownCommitError",
     "Verdict",
+    "VerificationMode",
+    "VerificationRequiredError",
     "VerificationResult",
+    "Verifier",
+    "decision_from_mapping",
+    "register_safe_builtins",
 ]
