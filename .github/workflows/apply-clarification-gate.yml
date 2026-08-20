@@ -32,6 +32,16 @@ jobs:
 
       - name: Apply clarification gate
         run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('.github/clarification-gate/apply.py')
+          text = path.read_text(encoding='utf-8')
+          before = ' .sf-dot { background:#e0b14b;box-shadow:0 0 12px #e0b14b;animation:none; }'
+          after = ' .sf-dot {{ background:#e0b14b;box-shadow:0 0 12px #e0b14b;animation:none; }}'
+          if text.count(before) != 2:
+              raise SystemExit(f'unexpected CSS marker count: {text.count(before)}')
+          path.write_text(text.replace(before, after), encoding='utf-8')
+          PY
           python .github/clarification-gate/apply.py
           python scripts/sync_skill_assets.py
 
