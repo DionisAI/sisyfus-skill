@@ -7,12 +7,18 @@ on:
     paths:
       - .github/unified-arena/**
       - .github/workflows/apply-unified-arena.yml
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/unified-arena/**
+      - .github/workflows/apply-unified-arena.yml
 
 permissions:
   contents: write
 
 concurrency:
-  group: apply-unified-arena-${{ github.ref }}
+  group: apply-unified-arena-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 # Materialize, test, and publish one visual system for preflight and research maps.
