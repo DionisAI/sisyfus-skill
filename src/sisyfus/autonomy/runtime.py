@@ -4,6 +4,7 @@ import hashlib
 import os
 import tempfile
 import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -47,18 +48,22 @@ class LeaseHeartbeat:
     lease_token: str
     lease_seconds: float
     interval_seconds: float | None = None
+    initial_now: str | None = None
 
     def __post_init__(self) -> None:
         interval = self.interval_seconds
         if interval is None:
-            interval = max(0.1, min(10.0, float(self.lease_seconds) / 3.0))
+            interval = max(0.02, min(5.0, float(self.lease_seconds) / 6.0))
         self.interval_seconds = float(interval)
         self._stop = threading.Event()
         self._lost = threading.Event()
         self._error: BaseException | None = None
         self._thread: threading.Thread | None = None
+        self._renew_lock = threading.Lock()
+        self._started_monotonic = time.monotonic()
 
     def __enter__(self) -> "LeaseHeartbeat":
+        self.refresh()
         self._thread = threading.Thread(
             target=self._run,
             name=f"sisyfus-heartbeat-{self.continuation_id[:12]}",
@@ -67,19 +72,42 @@ class LeaseHeartbeat:
         self._thread.start()
         return self
 
-    def _run(self) -> None:
-        assert self.interval_seconds is not None
-        while not self._stop.wait(self.interval_seconds):
-            try:
+    def _now(self) -> str | None:
+        if self.initial_now is None:
+            return None
+        base = datetime.fromisoformat(self.initial_now.replace("Z", "+00:00"))
+        if base.tzinfo is None:
+            base = base.replace(tzinfo=timezone.utc)
+        elapsed = max(0.0, time.monotonic() - self._started_monotonic)
+        return (
+            base.astimezone(timezone.utc) + timedelta(seconds=elapsed)
+        ).isoformat(timespec="microseconds").replace("+00:00", "Z")
+
+    def refresh(self) -> None:
+        self.check()
+        try:
+            with self._renew_lock:
                 self.store.renew_lease(
                     self.continuation_id,
                     worker_id=self.worker_id,
                     lease_token=self.lease_token,
                     lease_seconds=self.lease_seconds,
+                    now=self._now(),
+                    record_event=False,
                 )
-            except BaseException as exc:
-                self._error = exc
-                self._lost.set()
+        except BaseException as exc:
+            self._error = exc
+            self._lost.set()
+            raise LeaseLost(
+                f"lease renewal failed for {self.continuation_id}: {exc}"
+            ) from exc
+
+    def _run(self) -> None:
+        assert self.interval_seconds is not None
+        while not self._stop.wait(self.interval_seconds):
+            try:
+                self.refresh()
+            except LeaseLost:
                 return
 
     def check(self) -> None:
@@ -169,6 +197,7 @@ class AutonomousRuntime:
             worker_id,
             str(continuation["lease_token"]),
             lease_seconds,
+            initial_now=now,
         )
         try:
             with heartbeat:
@@ -366,7 +395,7 @@ class AutonomousRuntime:
                 expected_version=int(current["version"]),
                 now=now,
             )
-        heartbeat.check()
+        heartbeat.refresh()
         try:
             result = binding.capability.execute(
                 dict(decision.arguments),
@@ -384,7 +413,7 @@ class AutonomousRuntime:
                 observation={"exception_type": type(exc).__name__},
                 error=str(exc),
             )
-        heartbeat.check()
+        heartbeat.refresh()
         current = self._current_owned(str(current["id"]), worker_id)
         _, verifying = self.store.record_execution(
             str(record["id"]),
@@ -417,7 +446,7 @@ class AutonomousRuntime:
         heartbeat: LeaseHeartbeat,
         now: str | None,
     ) -> TickResult:
-        heartbeat.check()
+        heartbeat.refresh()
         try:
             verification = binding.verifier.verify(
                 self.planner_context(continuation),
@@ -438,7 +467,7 @@ class AutonomousRuntime:
                 assurance=AssuranceLevel.U,
                 verification_mode=VerificationMode.ENGINE,
             )
-        heartbeat.check()
+        heartbeat.refresh()
         current = self._current_owned(str(continuation["id"]), worker_id)
         return self._settle(
             current,

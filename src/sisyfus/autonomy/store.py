@@ -686,6 +686,7 @@ class AutonomyStore:
         lease_token: str,
         lease_seconds: float = 60.0,
         now: str | None = None,
+        record_event: bool = True,
     ) -> dict[str, Any]:
         current = _canonical_ts(now or utc_now())
         expires = _add_seconds(current, lease_seconds)
@@ -699,29 +700,20 @@ class AutonomyStore:
                   AND state IN (?, ?)
                 """,
                 (
-                    expires,
-                    current,
-                    current,
-                    continuation_id,
-                    worker_id,
-                    lease_token,
-                    current,
-                    ContinuationState.RUNNING.value,
+                    expires, current, current, continuation_id, worker_id,
+                    lease_token, current, ContinuationState.RUNNING.value,
                     ContinuationState.VERIFYING.value,
                 ),
             )
             if cursor.rowcount != 1:
                 raise LeaseLost(f"lease expired or is not owned by {worker_id!r}")
-            self._append_event(
-                connection,
-                continuation_id=continuation_id,
-                entity_type="continuation",
-                entity_id=continuation_id,
-                event_type="LEASE_RENEWED",
-                actor=worker_id,
-                data={"lease_expires_at": expires},
-                now=current,
-            )
+            if record_event:
+                self._append_event(
+                    connection, continuation_id=continuation_id,
+                    entity_type="continuation", entity_id=continuation_id,
+                    event_type="LEASE_RENEWED", actor=worker_id,
+                    data={"lease_expires_at": expires}, now=current,
+                )
             row = connection.execute(
                 "SELECT * FROM continuations WHERE id = ?", (continuation_id,)
             ).fetchone()

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -52,9 +52,12 @@ class CountingCapability:
     description: str = "test"
     calls: int = 0
     sleep_seconds: float = 0.0
+    started: threading.Event | None = field(default=None, repr=False)
 
     def execute(self, arguments: Mapping[str, Any], *, idempotency_key: str) -> CapabilityResult:
         self.calls += 1
+        if self.started is not None:
+            self.started.set()
         if self.sleep_seconds:
             time.sleep(self.sleep_seconds)
         return CapabilityResult(
@@ -227,7 +230,10 @@ def test_executed_decision_resumes_verification_without_reexecution(tmp_path: Pa
 def test_heartbeat_prevents_second_worker_during_slow_capability(tmp_path: Path) -> None:
     store = make_store(tmp_path)
     seed(store, key="slow")
-    capability = CountingCapability(replay_safe=True, sleep_seconds=1.4)
+    started = threading.Event()
+    capability = CountingCapability(
+        replay_safe=True, sleep_seconds=3.4, started=started
+    )
     verifier = CountingVerifier()
     runtime = make_runtime(tmp_path, store, capability, verifier)
     result_box: list[Any] = []
@@ -237,16 +243,17 @@ def test_heartbeat_prevents_second_worker_during_slow_capability(tmp_path: Path)
             runtime.run_once(
                 worker_id="worker-a",
                 planner=lambda _c, _x: decision(),
-                lease_seconds=0.6,
+                lease_seconds=2.0,
             )
         )
 
     thread = threading.Thread(target=run_first)
     thread.start()
-    time.sleep(0.9)
+    assert started.wait(timeout=2)
+    time.sleep(2.6)
     store.recover_expired_leases()
     assert store.claim_due_continuation("worker-b", lease_seconds=1.0) is None
-    thread.join(timeout=5)
+    thread.join(timeout=6)
     assert not thread.is_alive()
     assert result_box[0].state == ContinuationState.SUCCEEDED.value
     assert capability.calls == 1
