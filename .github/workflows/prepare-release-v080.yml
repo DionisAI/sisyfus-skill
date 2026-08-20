@@ -1,0 +1,78 @@
+name: Prepare Sisyfus v0.8.0 release
+
+on:
+  push:
+    branches:
+      - feat/autonomous-agent-v08
+    paths:
+      - .github/release-v080/**
+      - .github/workflows/prepare-release-v080.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: prepare-release-v080-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  prepare-test-publish:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/autonomous-agent-v08
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Apply release metadata and notes
+        run: |
+          python .github/release-v080/apply.py
+          python scripts/sync_skill_assets.py
+
+      - name: Install release candidate
+        run: |
+          python -m pip install --upgrade pip pytest
+          python -m pip install -e .
+
+      - name: Compile
+        run: python -m compileall -q src tests
+
+      - name: Test release metadata and Mission Control
+        env:
+          SISYFUS_AUTO_SERVE: '0'
+          SISYFUS_AUTO_OPEN: '0'
+        run: |
+          python -m pytest -q \
+            tests/test_release_version.py \
+            tests/test_visual_consistency.py \
+            tests/test_activity_monitor.py \
+            tests/test_skill_clarification_gate.py \
+            tests/test_skill_assets_sync.py
+
+      - name: Test complete repository
+        env:
+          SISYFUS_AUTO_SERVE: '0'
+          SISYFUS_AUTO_OPEN: '0'
+        run: python -m pytest -q
+
+      - name: Publish validated release candidate
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+          rm -rf .github/release-v080
+          rm -f .github/workflows/prepare-release-v080.yml
+
+          git add -A
+          git diff --cached --check
+          git commit -m 'release: prepare Sisyfus v0.8.0'
+          git pull --rebase origin feat/autonomous-agent-v08
+          git push origin HEAD:feat/autonomous-agent-v08
