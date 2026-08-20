@@ -7,12 +7,18 @@ on:
     paths:
       - .github/release-v080/**
       - .github/workflows/prepare-release-v080.yml
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/release-v080/**
+      - .github/workflows/prepare-release-v080.yml
 
 permissions:
   contents: write
 
 concurrency:
-  group: prepare-release-v080-${{ github.ref }}
+  group: prepare-release-v080-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
