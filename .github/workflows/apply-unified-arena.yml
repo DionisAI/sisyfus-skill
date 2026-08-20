@@ -58,6 +58,20 @@ jobs:
           path.write_text(text, encoding='utf-8')
           PY
           python .github/unified-arena/apply.py
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/sisyfus/activity.py')
+          text = path.read_text(encoding='utf-8')
+          before = '<span class="caps" style="color:var(--gold)">Sisyfus Research Observatory · Arena</span>'
+          after = (
+              '<span class="caps" style="color:var(--gold)">SISYFUS · MISSION CONTROL</span>'
+              '<span class="caps">Sisyfus Research Observatory · Arena</span>'
+          )
+          if text.count(before) != 1:
+              raise SystemExit(f'unexpected bootstrap brand marker count: {text.count(before)}')
+          path.write_text(text.replace(before, after, 1), encoding='utf-8')
+          PY
           python scripts/sync_skill_assets.py
 
       - name: Install
