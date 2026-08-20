@@ -131,13 +131,22 @@ lesson falsely.
 
 ```bash
 # Start the one stable Mission Control surface
-sisyfus research monitor-start --task "..." --objective "..." --root .
+sisyfus research monitor-start \
+  --task "..." \
+  --objective "..." \
+  --root .
 
 # Record that material user input is required
-sisyfus research monitor-clarify   --missing scope --missing verification   --question "..." --root .
+sisyfus research monitor-clarify \
+  --missing scope \
+  --missing verification \
+  --question "..." \
+  --root .
 
 # Resume after locking the intake contract
-sisyfus research monitor-resume --summary "..." --root .
+sisyfus research monitor-resume \
+  --summary "..." \
+  --root .
 
 # Operate the durable autonomy runtime
 sisyfus-autonomy init
@@ -164,7 +173,7 @@ sisyfus-autonomy run --once ...
 
 The release candidate passes:
 
-- full repository regression suite: **148 tests**;
+- full repository regression suite: **151 tests**;
 - Python **3.11**, **3.12**, and **3.13** CI matrix;
 - dedicated visual-continuity tests for bootstrap and full Arena;
 - Mission Control lifecycle and clarification-gate tests;
@@ -173,6 +182,7 @@ The release candidate passes:
 ## Upgrade
 
 ```bash
-python3 -m pip install --upgrade   "sisyfus @ git+https://github.com/DionisAI/sisyfus-skill@v0.8.0"
+python3 -m pip install --upgrade \
+  "sisyfus @ git+https://github.com/DionisAI/sisyfus-skill@v0.8.0"
 sisyfus --version
 ```
