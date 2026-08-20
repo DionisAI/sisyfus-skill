@@ -15,6 +15,7 @@ concurrency:
   group: apply-unified-arena-${{ github.ref }}
   cancel-in-progress: true
 
+# Materialize, test, and publish one visual system for preflight and research maps.
 jobs:
   apply-test-publish:
     if: github.actor != 'github-actions[bot]'
