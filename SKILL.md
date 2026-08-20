@@ -17,6 +17,29 @@ sisyfus --version || python3 -m pip install "sisyfus @ git+https://github.com/Di
 
 Pin the install to a release tag (as above) rather than a floating branch — an agent following this skill should never pull unreviewed code from a moving ref. Working from a clone of this repository, `python3 -m pip install -e .` is equivalent. All commands below take `--root <project>` — the project directory that owns the `.sisyfus/` state tree. An explicit `--root` is honored exactly: the engine never walks upward to an ancestor that happens to contain `.sisyfus/` or `.git`; upward discovery only happens when `--root` is omitted (from the current directory).
 
+## Monitor-first lifecycle
+
+**The first action for every new Sisyfus task is to host and open Mission Control — before web search, source collection, TaskSpec drafting, coding, or experimentation:**
+
+```bash
+sisyfus research monitor-start \
+  --task "<short task title>" \
+  --objective "<what completion must achieve>" \
+  --root <project>
+```
+
+This command is mandatory unless `SISYFUS_AUTO_SERVE=0` was explicitly selected for a headless environment. It creates the project activity stream, starts or reuses the stable local Observatory port, prints the URL, and opens one browser tab for the logical task. `SISYFUS_AUTO_OPEN=0` disables only browser opening; hosting and state recording remain enabled.
+
+The bootstrap page is already the game-style Mission Control: it must show research intake, source qualification, TaskSpec compilation, verifier design, and the current operation even before a Research Run exists. When `research new` compiles the TaskSpec, the same stable URL hands off to the full Arena automatically; do not open a second dashboard.
+
+While work is running, keep the monitor truthful:
+
+- engine and CLI boundaries update phase, operation, status, current attempt, and verifier;
+- long operations heartbeat continuously so a stalled process is visible;
+- child programs may write JSON progress to `$SISYFUS_PROGRESS_FILE` using `current`, `total`, `percent`, `label`, `message`, and `detail`;
+- the Arena polls research truth and live activity independently, so progress can update without fabricating evidence or mutating Claim status;
+- report the printed monitor URL to the user immediately.
+
 ## Security model
 
 Treat every TaskSpec, Experiment, and Verification Contract JSON as **code, not data**. A `command` action runs through the shell with the user's full environment; metrics and observation files are produced by that code. Before running experiments from a project you did not author (a cloned repository, a downloaded `.sisyfus/` tree, content pasted from the web), read the `action.command` of every admitted experiment first. Shell execution is gated: `research execute` and `wake --execute` refuse to run commands without interactive confirmation or an explicit `--yes` — show the command to the user and get their approval before adding `--yes`.

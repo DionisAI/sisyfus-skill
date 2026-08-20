@@ -9,6 +9,12 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
 
+from ..activity import (
+    activity_events_projection_path,
+    activity_overlay_html,
+    activity_state_path,
+    ensure_activity,
+)
 from .workspace import ResearchWorkspace, atomic_write_json
 
 
@@ -1430,6 +1436,14 @@ def render_observatory(
     topic = html.escape(str(snapshot.get("topic") or "Sisyfus Research"))
     payload = _json_for_script(public_snapshot)
     document = _TEMPLATE.replace("__TOPIC__", topic).replace("__PAYLOAD__", payload)
+    activity = ensure_activity(
+        workspace.root,
+        title=str(snapshot.get("topic") or "Sisyfus Research"),
+    )
+    document = document.replace(
+        "</body>",
+        activity_overlay_html(activity) + "\n</body>",
+    )
     workspace.report_path.write_text(document, encoding="utf-8")
     _render_stable_entry(workspace, document)
     return workspace.report_path
@@ -1470,16 +1484,42 @@ def _render_stable_entry(workspace: ResearchWorkspace, document: str) -> None:
 class _ObservatoryHandler(SimpleHTTPRequestHandler):
     refresh_callback: Callable[[], None] | None = None
     artifact_root: str | None = None
+    activity_root: str | None = None
     verbose: bool = False
 
     def do_GET(self) -> None:  # noqa: N802 - stdlib handler contract
         path = self.path.split("?", 1)[0]
+        if path in {"/activity.json", "/activity-events.json"}:
+            self._serve_activity_projection(path)
+            return
         if path.startswith("/artifact/"):
             self._serve_artifact(path[len("/artifact/"):])
             return
         if self.refresh_callback is not None and path in {"/", "/index.html", "/snapshot.json"}:
             self.refresh_callback()
         super().do_GET()
+
+    def _serve_activity_projection(self, request_path: str) -> None:
+        root = type(self).activity_root
+        if not root:
+            self.send_error(404)
+            return
+        source = (
+            activity_state_path(root)
+            if request_path == "/activity.json"
+            else activity_events_projection_path(root)
+        )
+        try:
+            data = source.read_bytes()
+        except OSError:
+            self.send_error(404)
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
 
     def _serve_artifact(self, rel: str) -> None:
         """Serve a run artifact referenced by evidence, confined to the run dir."""
@@ -1533,6 +1573,7 @@ def serve_observatory(
         {
             "refresh_callback": staticmethod(refresh_callback),
             "artifact_root": str(workspace.path),
+            "activity_root": str(workspace.root),
             "verbose": verbose,
         },
     )

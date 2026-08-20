@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
+from ..activity import ActivityTracker, update_activity
 from .models import (
     AssuranceLevel,
     CapabilityResult,
@@ -396,6 +397,20 @@ class AutonomousRuntime:
                 now=now,
             )
         heartbeat.refresh()
+        activity_tracker = ActivityTracker(
+            self.workspace,
+            phase="AUTONOMY_EXECUTING",
+            operation=f"capability.{binding.capability.name}",
+            message=f"Executing capability {binding.capability.name}.",
+            actor=worker_id,
+            metadata={
+                "continuation_id": str(current["id"]),
+                "decision_id": str(record["id"]),
+                "capability": binding.capability.name,
+            },
+            heartbeat_interval=0.75,
+            clear_progress_signal=False,
+        ).start()
         try:
             result = binding.capability.execute(
                 dict(decision.arguments),
@@ -412,6 +427,12 @@ class AutonomousRuntime:
                 status="ERROR",
                 observation={"exception_type": type(exc).__name__},
                 error=str(exc),
+            )
+            activity_tracker.fail(exc)
+        else:
+            activity_tracker.finish(
+                exit_code=0 if result.status != "ERROR" else 1,
+                message=f"Capability {binding.capability.name} returned {result.status}.",
             )
         heartbeat.refresh()
         current = self._current_owned(str(current["id"]), worker_id)
@@ -447,6 +468,20 @@ class AutonomousRuntime:
         now: str | None,
     ) -> TickResult:
         heartbeat.refresh()
+        verifier_tracker = ActivityTracker(
+            self.workspace,
+            phase="AUTONOMY_VERIFYING",
+            operation=f"verifier.{binding.verifier.verifier_id}",
+            message=f"Verifying decision {record['id']}.",
+            actor=str(binding.verifier.verifier_id),
+            metadata={
+                "continuation_id": str(continuation["id"]),
+                "decision_id": str(record["id"]),
+                "verifier_id": str(binding.verifier.verifier_id),
+            },
+            heartbeat_interval=0.75,
+            clear_progress_signal=False,
+        ).start()
         try:
             verification = binding.verifier.verify(
                 self.planner_context(continuation),
@@ -466,6 +501,12 @@ class AutonomousRuntime:
                 metrics={"exception_type": type(exc).__name__},
                 assurance=AssuranceLevel.U,
                 verification_mode=VerificationMode.ENGINE,
+            )
+            verifier_tracker.fail(exc)
+        else:
+            verifier_tracker.finish(
+                exit_code=0 if verification.verdict != Verdict.ERROR else 1,
+                message=f"Verifier returned {verification.verdict.value}.",
             )
         heartbeat.refresh()
         current = self._current_owned(str(continuation["id"]), worker_id)
@@ -533,6 +574,18 @@ class AutonomousRuntime:
                     outcome="support",
                 )
             )
+        update_activity(
+            self.workspace,
+            phase=("COMPLETED" if state == ContinuationState.SUCCEEDED else "AUTONOMY_READY"),
+            status=("COMPLETED" if state == ContinuationState.SUCCEEDED else state.value),
+            operation="autonomy.settle",
+            message=f"Verifier verdict {verification.verdict.value}; continuation → {state.value}.",
+            detail=verification.summary,
+            progress={"percent": 100.0, "label": "Decision settled"},
+            actor=worker_id,
+            metadata={"continuation_id": str(continuation["id"]), "decision_id": decision_id},
+            heartbeat=True,
+        )
         evidence, updated = self.store.record_verdict(
             decision_id,
             worker_id=worker_id,

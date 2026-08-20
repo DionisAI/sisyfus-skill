@@ -10,6 +10,8 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Sequence
 
+from ..activity import ActivityTracker, read_activity, start_activity
+from ..research_v2.live import ensure_activity_observatory
 from .adapters import CommandPlanner, JsonInboxSensor
 from .discovery import DiscoveryPolicy, OpportunityDiscovery
 from .models import OpportunitySignal
@@ -160,6 +162,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
 
         if args.command == "submit":
+            activity = start_activity(
+                root,
+                title=args.title,
+                objective=args.objective,
+                actor="autonomy",
+            )
+            monitor_url = ensure_activity_observatory(
+                root,
+                str(activity["task_id"]),
+                open_browser=True,
+            )
             signal_item = OpportunitySignal(
                 source=args.source,
                 kind=args.kind,
@@ -188,6 +201,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         "opportunity": opportunity,
                         "continuation": continuation,
                         "admitted": admitted,
+                        "monitor_url": monitor_url,
                     }
                 )
             )
@@ -234,6 +248,19 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
 
         if args.command == "run":
+            activity = read_activity(root)
+            if not activity.get("task_id"):
+                activity = start_activity(
+                    root,
+                    title="Autonomous Sisyfus mission",
+                    objective="Discover, execute, verify, and continue durable work.",
+                    actor="autonomy",
+                )
+            ensure_activity_observatory(
+                root,
+                str(activity["task_id"]),
+                open_browser=True,
+            )
             if not args.once and not args.allow_unsandboxed_planner:
                 raise ValueError(
                     "CommandPlanner is not OS-sandboxed; pass --allow-unsandboxed-planner "
@@ -291,12 +318,33 @@ def main(argv: Sequence[str] | None = None) -> int:
                 discovery=discovery,
                 sensors=sensors,
             )
+            tracker = ActivityTracker(
+                root,
+                phase="AUTONOMOUS",
+                operation="autonomy.supervisor",
+                message="Autonomous supervisor is running.",
+                actor=args.worker_id,
+                metadata={"worker_id": args.worker_id},
+                heartbeat_interval=1.0,
+                clear_progress_signal=False,
+            ).start()
             if args.once:
-                print(_json(supervisor.cycle()))
+                try:
+                    cycle = supervisor.cycle()
+                except BaseException as exc:
+                    tracker.fail(exc)
+                    raise
+                tracker.finish(message="Autonomous supervisor cycle completed.")
+                print(_json(cycle))
                 return 0
             stop = threading.Event()
             _install_signal_handlers(stop)
-            stats = supervisor.run_forever(stop_event=stop, max_cycles=args.max_cycles)
+            try:
+                stats = supervisor.run_forever(stop_event=stop, max_cycles=args.max_cycles)
+            except BaseException as exc:
+                tracker.fail(exc)
+                raise
+            tracker.finish(message="Autonomous supervisor stopped.")
             print(_json({"status": "STOPPED", "stats": asdict(stats)}))
             return 0
 
