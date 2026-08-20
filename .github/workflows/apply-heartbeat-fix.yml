@@ -1,0 +1,306 @@
+name: Apply heartbeat fencing repair
+
+on:
+  push:
+    branches:
+      - feat/autonomous-agent-v08
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-heartbeat-fix-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  patch-test-publish:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/autonomous-agent-v08
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Patch heartbeat fencing and deterministic test
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          runtime = Path('src/sisyfus/autonomy/runtime.py')
+          text = runtime.read_text(encoding='utf-8')
+          old = '''    def __post_init__(self) -> None:
+              interval = self.interval_seconds
+              if interval is None:
+                  interval = max(0.1, min(10.0, float(self.lease_seconds) / 3.0))
+              self.interval_seconds = float(interval)
+              self._stop = threading.Event()
+              self._lost = threading.Event()
+              self._error: BaseException | None = None
+              self._thread: threading.Thread | None = None
+
+              def __enter__(self) -> "LeaseHeartbeat":
+                  self._thread = threading.Thread(
+                      target=self._run,
+                      name=f"sisyfus-heartbeat-{self.continuation_id[:12]}",
+                      daemon=True,
+                  )
+                  self._thread.start()
+                  return self
+
+              def _run(self) -> None:
+                  assert self.interval_seconds is not None
+                  while not self._stop.wait(self.interval_seconds):
+                      try:
+                          self.store.renew_lease(
+                              self.continuation_id,
+                              worker_id=self.worker_id,
+                              lease_token=self.lease_token,
+                              lease_seconds=self.lease_seconds,
+                          )
+                      except BaseException as exc:
+                          self._error = exc
+                          self._lost.set()
+                          return
+          '''
+          # Remove the indentation introduced by this workflow's Python heredoc.
+          old = old.replace('\n              ', '\n        ').replace('\n          ', '\n')
+          new = '''    def __post_init__(self) -> None:
+              interval = self.interval_seconds
+              if interval is None:
+                  # Keep a wide scheduling margin. Short leases and loaded hosts
+                  # must not lose ownership because one renewal was delayed by
+                  # SQLite contention or OS scheduling jitter.
+                  interval = max(0.02, min(5.0, float(self.lease_seconds) / 6.0))
+              self.interval_seconds = float(interval)
+              self._stop = threading.Event()
+              self._lost = threading.Event()
+              self._error: BaseException | None = None
+              self._thread: threading.Thread | None = None
+              self._renew_lock = threading.Lock()
+
+              def __enter__(self) -> "LeaseHeartbeat":
+                  # Start long work with a full lease window rather than waiting
+                  # for the first background tick.
+                  self.refresh()
+                  self._thread = threading.Thread(
+                      target=self._run,
+                      name=f"sisyfus-heartbeat-{self.continuation_id[:12]}",
+                      daemon=True,
+                  )
+                  self._thread.start()
+                  return self
+
+              def refresh(self) -> None:
+                  self.check()
+                  try:
+                      with self._renew_lock:
+                          self.store.renew_lease(
+                              self.continuation_id,
+                              worker_id=self.worker_id,
+                              lease_token=self.lease_token,
+                              lease_seconds=self.lease_seconds,
+                              record_event=False,
+                          )
+                  except BaseException as exc:
+                      self._error = exc
+                      self._lost.set()
+                      raise LeaseLost(
+                          f"lease renewal failed for {self.continuation_id}: {exc}"
+                      ) from exc
+
+              def _run(self) -> None:
+                  assert self.interval_seconds is not None
+                  while not self._stop.wait(self.interval_seconds):
+                      try:
+                          self.refresh()
+                      except LeaseLost:
+                          return
+          '''
+          new = new.replace('\n              ', '\n        ').replace('\n          ', '\n')
+          if old not in text:
+              raise SystemExit('LeaseHeartbeat source block changed unexpectedly')
+          text = text.replace(old, new)
+          replacements = [
+              (
+                  '        heartbeat.check()\n        try:\n            result = binding.capability.execute(',
+                  '        heartbeat.refresh()\n        try:\n            result = binding.capability.execute(',
+              ),
+              (
+                  '        heartbeat.check()\n        current = self._current_owned(str(current["id"]), worker_id)\n        _, verifying = self.store.record_execution(',
+                  '        heartbeat.refresh()\n        current = self._current_owned(str(current["id"]), worker_id)\n        _, verifying = self.store.record_execution(',
+              ),
+              (
+                  '    ) -> TickResult:\n        heartbeat.check()\n        try:\n            verification = binding.verifier.verify(',
+                  '    ) -> TickResult:\n        heartbeat.refresh()\n        try:\n            verification = binding.verifier.verify(',
+              ),
+              (
+                  '        heartbeat.check()\n        current = self._current_owned(str(continuation["id"]), worker_id)\n        return self._settle(',
+                  '        heartbeat.refresh()\n        current = self._current_owned(str(continuation["id"]), worker_id)\n        return self._settle(',
+              ),
+          ]
+          for before, after in replacements:
+              if before not in text:
+                  raise SystemExit(f'runtime boundary changed unexpectedly: {before!r}')
+              text = text.replace(before, after, 1)
+          runtime.write_text(text, encoding='utf-8')
+
+          store = Path('src/sisyfus/autonomy/store.py')
+          text = store.read_text(encoding='utf-8')
+          signature = '''        lease_seconds: float = 60.0,
+              now: str | None = None,
+          ) -> dict[str, Any]:'''.replace('\n              ', '\n        ').replace('\n          ', '\n')
+          replacement = '''        lease_seconds: float = 60.0,
+              now: str | None = None,
+              record_event: bool = True,
+          ) -> dict[str, Any]:'''.replace('\n              ', '\n        ').replace('\n          ', '\n')
+          renew_start = text.index('    def renew_lease(')
+          prefix, suffix = text[:renew_start], text[renew_start:]
+          if signature not in suffix:
+              raise SystemExit('renew_lease signature changed unexpectedly')
+          suffix = suffix.replace(signature, replacement, 1)
+          event_block = '''            self._append_event(
+                  connection,
+                  continuation_id=continuation_id,
+                  entity_type="continuation",
+                  entity_id=continuation_id,
+                  event_type="LEASE_RENEWED",
+                  actor=worker_id,
+                  data={"lease_expires_at": expires},
+                  now=current,
+              )
+          '''.replace('\n                  ', '\n                ').replace('\n              ', '\n            ').replace('\n          ', '\n')
+          guarded_block = '''            if record_event:
+                  self._append_event(
+                      connection,
+                      continuation_id=continuation_id,
+                      entity_type="continuation",
+                      entity_id=continuation_id,
+                      event_type="LEASE_RENEWED",
+                      actor=worker_id,
+                      data={"lease_expires_at": expires},
+                      now=current,
+                  )
+          '''.replace('\n                  ', '\n                ').replace('\n              ', '\n            ').replace('\n          ', '\n')
+          if event_block not in suffix:
+              raise SystemExit('renew_lease event block changed unexpectedly')
+          suffix = suffix.replace(event_block, guarded_block, 1)
+          store.write_text(prefix + suffix, encoding='utf-8')
+
+          test = Path('tests/test_autonomy_recovery.py')
+          text = test.read_text(encoding='utf-8')
+          text = text.replace(
+              'from dataclasses import dataclass',
+              'from dataclasses import dataclass, field',
+              1,
+          )
+          capability_block = '''    calls: int = 0
+              sleep_seconds: float = 0.0
+
+              def execute(self, arguments: Mapping[str, Any], *, idempotency_key: str) -> CapabilityResult:
+                  self.calls += 1
+                  if self.sleep_seconds:
+                      time.sleep(self.sleep_seconds)
+          '''.replace('\n              ', '\n    ').replace('\n          ', '\n')
+          capability_replacement = '''    calls: int = 0
+              sleep_seconds: float = 0.0
+              started: threading.Event | None = field(default=None, repr=False)
+
+              def execute(self, arguments: Mapping[str, Any], *, idempotency_key: str) -> CapabilityResult:
+                  self.calls += 1
+                  if self.started is not None:
+                      self.started.set()
+                  if self.sleep_seconds:
+                      time.sleep(self.sleep_seconds)
+          '''.replace('\n              ', '\n    ').replace('\n          ', '\n')
+          if capability_block not in text:
+              raise SystemExit('CountingCapability block changed unexpectedly')
+          text = text.replace(capability_block, capability_replacement, 1)
+          old_test = '''    capability = CountingCapability(replay_safe=True, sleep_seconds=1.4)
+              verifier = CountingVerifier()
+              runtime = make_runtime(tmp_path, store, capability, verifier)
+              result_box: list[Any] = []
+
+              def run_first() -> None:
+                  result_box.append(
+                      runtime.run_once(
+                          worker_id="worker-a",
+                          planner=lambda _c, _x: decision(),
+                          lease_seconds=0.6,
+                      )
+                  )
+
+              thread = threading.Thread(target=run_first)
+              thread.start()
+              time.sleep(0.9)
+          '''.replace('\n              ', '\n    ').replace('\n          ', '\n')
+          new_test = '''    started = threading.Event()
+              capability = CountingCapability(
+                  replay_safe=True, sleep_seconds=3.4, started=started
+              )
+              verifier = CountingVerifier()
+              runtime = make_runtime(tmp_path, store, capability, verifier)
+              result_box: list[Any] = []
+
+              def run_first() -> None:
+                  result_box.append(
+                      runtime.run_once(
+                          worker_id="worker-a",
+                          planner=lambda _c, _x: decision(),
+                          lease_seconds=2.0,
+                      )
+                  )
+
+              thread = threading.Thread(target=run_first)
+              thread.start()
+              assert started.wait(timeout=2)
+              # The initial lease has expired by wall time. Only heartbeat
+              # renewal can prevent recovery and a second worker claim.
+              time.sleep(2.6)
+          '''.replace('\n              ', '\n    ').replace('\n          ', '\n')
+          if old_test not in text:
+              raise SystemExit('heartbeat test block changed unexpectedly')
+          text = text.replace(old_test, new_test, 1)
+          test.write_text(text, encoding='utf-8')
+          PY
+
+      - name: Install
+        run: python -m pip install --upgrade pip pytest && python -m pip install -e .
+
+      - name: Compile
+        run: python -m compileall -q src
+
+      - name: Repeat heartbeat regression
+        env:
+          SISYFUS_AUTO_SERVE: "0"
+        run: |
+          for i in 1 2 3; do
+            python -m pytest -q tests/test_autonomy_recovery.py::test_heartbeat_prevents_second_worker_during_slow_capability
+          done
+
+      - name: Test complete repository
+        env:
+          SISYFUS_AUTO_SERVE: "0"
+        run: python -m pytest -q
+
+      - name: Publish validated repair
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm -f .github/workflows/apply-heartbeat-fix.yml
+          git add -- \
+            src/sisyfus/autonomy/runtime.py \
+            src/sisyfus/autonomy/store.py \
+            tests/test_autonomy_recovery.py
+          git add -u -- .github/workflows/apply-heartbeat-fix.yml
+          git diff --cached --check
+          git commit -m "fix: harden lease heartbeat fencing"
+          git push origin HEAD:feat/autonomous-agent-v08
