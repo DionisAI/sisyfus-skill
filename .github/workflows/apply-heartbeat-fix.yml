@@ -1,9 +1,9 @@
 name: Apply heartbeat fencing repair
 
 on:
-  push:
+  pull_request:
     branches:
-      - feat/autonomous-agent-v08
+      - main
 
 permissions:
   contents: write
@@ -27,51 +27,18 @@ jobs:
           python-version: "3.12"
           cache: pip
 
-      - name: Patch heartbeat fencing and deterministic test
+      - name: Patch heartbeat fencing and deterministic regression
         shell: bash
         run: |
           python - <<'PY'
           from pathlib import Path
 
-          runtime = Path('src/sisyfus/autonomy/runtime.py')
-          text = runtime.read_text(encoding='utf-8')
-          old = '''    def __post_init__(self) -> None:
-              interval = self.interval_seconds
-              if interval is None:
-                  interval = max(0.1, min(10.0, float(self.lease_seconds) / 3.0))
-              self.interval_seconds = float(interval)
-              self._stop = threading.Event()
-              self._lost = threading.Event()
-              self._error: BaseException | None = None
-              self._thread: threading.Thread | None = None
-
-              def __enter__(self) -> "LeaseHeartbeat":
-                  self._thread = threading.Thread(
-                      target=self._run,
-                      name=f"sisyfus-heartbeat-{self.continuation_id[:12]}",
-                      daemon=True,
-                  )
-                  self._thread.start()
-                  return self
-
-              def _run(self) -> None:
-                  assert self.interval_seconds is not None
-                  while not self._stop.wait(self.interval_seconds):
-                      try:
-                          self.store.renew_lease(
-                              self.continuation_id,
-                              worker_id=self.worker_id,
-                              lease_token=self.lease_token,
-                              lease_seconds=self.lease_seconds,
-                          )
-                      except BaseException as exc:
-                          self._error = exc
-                          self._lost.set()
-                          return
-          '''
-          # Remove the indentation introduced by this workflow's Python heredoc.
-          old = old.replace('\n              ', '\n        ').replace('\n          ', '\n')
-          new = '''    def __post_init__(self) -> None:
+          runtime = Path("src/sisyfus/autonomy/runtime.py")
+          text = runtime.read_text(encoding="utf-8")
+          class_start = text.index("class LeaseHeartbeat:")
+          start = text.index("    def __post_init__(self) -> None:", class_start)
+          end = text.index("    def check(self) -> None:", start)
+          heartbeat_block = '''    def __post_init__(self) -> None:
               interval = self.interval_seconds
               if interval is None:
                   # Keep a wide scheduling margin. Short leases and loaded hosts
@@ -86,8 +53,8 @@ jobs:
               self._renew_lock = threading.Lock()
 
               def __enter__(self) -> "LeaseHeartbeat":
-                  # Start long work with a full lease window rather than waiting
-                  # for the first background tick.
+                  # Begin long work with a complete lease window instead of
+                  # waiting for the first background renewal.
                   self.refresh()
                   self._thread = threading.Thread(
                       target=self._run,
@@ -122,12 +89,12 @@ jobs:
                           self.refresh()
                       except LeaseLost:
                           return
+
           '''
-          new = new.replace('\n              ', '\n        ').replace('\n          ', '\n')
-          if old not in text:
-              raise SystemExit('LeaseHeartbeat source block changed unexpectedly')
-          text = text.replace(old, new)
-          replacements = [
+          heartbeat_block = heartbeat_block.replace("\n              ", "\n        ").replace("\n          ", "\n")
+          text = text[:start] + heartbeat_block + text[end:]
+
+          replacements = (
               (
                   '        heartbeat.check()\n        try:\n            result = binding.capability.execute(',
                   '        heartbeat.refresh()\n        try:\n            result = binding.capability.execute(',
@@ -144,105 +111,129 @@ jobs:
                   '        heartbeat.check()\n        current = self._current_owned(str(continuation["id"]), worker_id)\n        return self._settle(',
                   '        heartbeat.refresh()\n        current = self._current_owned(str(continuation["id"]), worker_id)\n        return self._settle(',
               ),
-          ]
+          )
           for before, after in replacements:
-              if before not in text:
-                  raise SystemExit(f'runtime boundary changed unexpectedly: {before!r}')
+              if text.count(before) != 1:
+                  raise SystemExit(f"unexpected runtime boundary count for {before!r}")
               text = text.replace(before, after, 1)
-          runtime.write_text(text, encoding='utf-8')
+          runtime.write_text(text, encoding="utf-8")
 
-          store = Path('src/sisyfus/autonomy/store.py')
-          text = store.read_text(encoding='utf-8')
-          signature = '''        lease_seconds: float = 60.0,
-              now: str | None = None,
-          ) -> dict[str, Any]:'''.replace('\n              ', '\n        ').replace('\n          ', '\n')
-          replacement = '''        lease_seconds: float = 60.0,
+          store = Path("src/sisyfus/autonomy/store.py")
+          text = store.read_text(encoding="utf-8")
+          start = text.index("    def renew_lease(")
+          end = text.index("    def _owned_row(", start)
+          renew_block = '''    def renew_lease(
+              self,
+              continuation_id: str,
+              *,
+              worker_id: str,
+              lease_token: str,
+              lease_seconds: float = 60.0,
               now: str | None = None,
               record_event: bool = True,
-          ) -> dict[str, Any]:'''.replace('\n              ', '\n        ').replace('\n          ', '\n')
-          renew_start = text.index('    def renew_lease(')
-          prefix, suffix = text[:renew_start], text[renew_start:]
-          if signature not in suffix:
-              raise SystemExit('renew_lease signature changed unexpectedly')
-          suffix = suffix.replace(signature, replacement, 1)
-          event_block = '''            self._append_event(
-                  connection,
-                  continuation_id=continuation_id,
-                  entity_type="continuation",
-                  entity_id=continuation_id,
-                  event_type="LEASE_RENEWED",
-                  actor=worker_id,
-                  data={"lease_expires_at": expires},
-                  now=current,
-              )
-          '''.replace('\n                  ', '\n                ').replace('\n              ', '\n            ').replace('\n          ', '\n')
-          guarded_block = '''            if record_event:
-                  self._append_event(
-                      connection,
-                      continuation_id=continuation_id,
-                      entity_type="continuation",
-                      entity_id=continuation_id,
-                      event_type="LEASE_RENEWED",
-                      actor=worker_id,
-                      data={"lease_expires_at": expires},
-                      now=current,
+          ) -> dict[str, Any]:
+              current = _canonical_ts(now or utc_now())
+              expires = _add_seconds(current, lease_seconds)
+              with self._transaction() as connection:
+                  cursor = connection.execute(
+                      """
+                      UPDATE continuations
+                      SET lease_expires_at = ?, heartbeat_at = ?, updated_at = ?
+                      WHERE id = ? AND lease_owner = ? AND lease_token = ?
+                        AND lease_expires_at IS NOT NULL AND lease_expires_at > ?
+                        AND state IN (?, ?)
+                      """,
+                      (
+                          expires,
+                          current,
+                          current,
+                          continuation_id,
+                          worker_id,
+                          lease_token,
+                          current,
+                          ContinuationState.RUNNING.value,
+                          ContinuationState.VERIFYING.value,
+                      ),
                   )
-          '''.replace('\n                  ', '\n                ').replace('\n              ', '\n            ').replace('\n          ', '\n')
-          if event_block not in suffix:
-              raise SystemExit('renew_lease event block changed unexpectedly')
-          suffix = suffix.replace(event_block, guarded_block, 1)
-          store.write_text(prefix + suffix, encoding='utf-8')
+                  if cursor.rowcount != 1:
+                      raise LeaseLost(f"lease expired or is not owned by {worker_id!r}")
+                  # High-frequency heartbeat writes update the authoritative lease
+                  # columns but do not flood the immutable event stream. Manual
+                  # renewals retain their audit event by default.
+                  if record_event:
+                      self._append_event(
+                          connection,
+                          continuation_id=continuation_id,
+                          entity_type="continuation",
+                          entity_id=continuation_id,
+                          event_type="LEASE_RENEWED",
+                          actor=worker_id,
+                          data={"lease_expires_at": expires},
+                          now=current,
+                      )
+                  row = connection.execute(
+                      "SELECT * FROM continuations WHERE id = ?", (continuation_id,)
+                  ).fetchone()
+                  assert row is not None
+                  return self._row(row) or {}
 
-          test = Path('tests/test_autonomy_recovery.py')
-          text = test.read_text(encoding='utf-8')
+          '''
+          renew_block = renew_block.replace("\n              ", "\n        ").replace("\n          ", "\n")
+          text = text[:start] + renew_block + text[end:]
+          store.write_text(text, encoding="utf-8")
+
+          test = Path("tests/test_autonomy_recovery.py")
+          text = test.read_text(encoding="utf-8")
+          if "from dataclasses import dataclass\n" not in text:
+              raise SystemExit("unexpected dataclass import")
           text = text.replace(
-              'from dataclasses import dataclass',
-              'from dataclasses import dataclass, field',
+              "from dataclasses import dataclass\n",
+              "from dataclasses import dataclass, field\n",
               1,
           )
-          capability_block = '''    calls: int = 0
-              sleep_seconds: float = 0.0
-
-              def execute(self, arguments: Mapping[str, Any], *, idempotency_key: str) -> CapabilityResult:
-                  self.calls += 1
-                  if self.sleep_seconds:
-                      time.sleep(self.sleep_seconds)
-          '''.replace('\n              ', '\n    ').replace('\n          ', '\n')
-          capability_replacement = '''    calls: int = 0
+          start = text.index("@dataclass\nclass CountingCapability:")
+          end = text.index("\n\n@dataclass\nclass CountingVerifier:", start)
+          capability_block = '''@dataclass
+          class CountingCapability:
+              name: str = "test.action"
+              risk_tier: int = 0
+              replay_safe: bool = True
+              description: str = "test"
+              calls: int = 0
               sleep_seconds: float = 0.0
               started: threading.Event | None = field(default=None, repr=False)
 
-              def execute(self, arguments: Mapping[str, Any], *, idempotency_key: str) -> CapabilityResult:
+              def execute(
+                  self,
+                  arguments: Mapping[str, Any],
+                  *,
+                  idempotency_key: str,
+              ) -> CapabilityResult:
                   self.calls += 1
                   if self.started is not None:
                       self.started.set()
                   if self.sleep_seconds:
                       time.sleep(self.sleep_seconds)
-          '''.replace('\n              ', '\n    ').replace('\n          ', '\n')
-          if capability_block not in text:
-              raise SystemExit('CountingCapability block changed unexpectedly')
-          text = text.replace(capability_block, capability_replacement, 1)
-          old_test = '''    capability = CountingCapability(replay_safe=True, sleep_seconds=1.4)
-              verifier = CountingVerifier()
-              runtime = make_runtime(tmp_path, store, capability, verifier)
-              result_box: list[Any] = []
-
-              def run_first() -> None:
-                  result_box.append(
-                      runtime.run_once(
-                          worker_id="worker-a",
-                          planner=lambda _c, _x: decision(),
-                          lease_seconds=0.6,
-                      )
+                  return CapabilityResult(
+                      status="OK",
+                      observation={"idempotency_key": idempotency_key},
+                      metrics={"value": arguments.get("value")},
                   )
+          '''
+          capability_block = capability_block.replace("\n          ", "\n")
+          text = text[:start] + capability_block.rstrip() + text[end:]
 
-              thread = threading.Thread(target=run_first)
-              thread.start()
-              time.sleep(0.9)
-          '''.replace('\n              ', '\n    ').replace('\n          ', '\n')
-          new_test = '''    started = threading.Event()
+          start = text.index(
+              "def test_heartbeat_prevents_second_worker_during_slow_capability"
+          )
+          heartbeat_test = '''def test_heartbeat_prevents_second_worker_during_slow_capability(tmp_path: Path) -> None:
+              store = make_store(tmp_path)
+              seed(store, key="slow")
+              started = threading.Event()
               capability = CountingCapability(
-                  replay_safe=True, sleep_seconds=3.4, started=started
+                  replay_safe=True,
+                  sleep_seconds=3.4,
+                  started=started,
               )
               verifier = CountingVerifier()
               runtime = make_runtime(tmp_path, store, capability, verifier)
@@ -260,14 +251,19 @@ jobs:
               thread = threading.Thread(target=run_first)
               thread.start()
               assert started.wait(timeout=2)
-              # The initial lease has expired by wall time. Only heartbeat
+              # The initial lease has expired by wall time. Only successful
               # renewal can prevent recovery and a second worker claim.
               time.sleep(2.6)
-          '''.replace('\n              ', '\n    ').replace('\n          ', '\n')
-          if old_test not in text:
-              raise SystemExit('heartbeat test block changed unexpectedly')
-          text = text.replace(old_test, new_test, 1)
-          test.write_text(text, encoding='utf-8')
+              store.recover_expired_leases()
+              assert store.claim_due_continuation("worker-b", lease_seconds=1.0) is None
+              thread.join(timeout=6)
+              assert not thread.is_alive()
+              assert result_box[0].state == ContinuationState.SUCCEEDED.value
+              assert capability.calls == 1
+          '''
+          heartbeat_test = heartbeat_test.replace("\n              ", "\n    ").replace("\n          ", "\n")
+          text = text[:start] + heartbeat_test
+          test.write_text(text, encoding="utf-8")
           PY
 
       - name: Install
