@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - feat/autonomous-agent-v08
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: write
