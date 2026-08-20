@@ -25,18 +25,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Export checked-out source for debugging
-        if: matrix.python-version == '3.12'
-        uses: actions/upload-artifact@v4
-        with:
-          name: sisyfus-pr-source-${{ github.sha }}
-          path: |
-            .
-            !.git/**
-          include-hidden-files: true
-          if-no-files-found: error
-          retention-days: 1
-
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
