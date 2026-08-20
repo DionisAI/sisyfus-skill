@@ -40,6 +40,23 @@ jobs:
         run: |
           python .github/release-v080/apply.py
           python scripts/sync_skill_assets.py
+          python - <<'PY'
+          from pathlib import Path
+
+          paths = (
+              Path('README.md'),
+              Path('README.zh-CN.md'),
+              Path('CHANGELOG.md'),
+              Path('RELEASE_NOTES_v0.8.0.md'),
+              Path('SKILL.md'),
+              Path('src/sisyfus/skill_assets/sisyfus-research/SKILL.md'),
+              Path('tests/test_release_version.py'),
+          )
+          for path in paths:
+              text = path.read_text(encoding='utf-8')
+              normalized = '\n'.join(line.rstrip() for line in text.splitlines()) + '\n'
+              path.write_text(normalized, encoding='utf-8')
+          PY
 
       - name: Install release candidate
         run: |
