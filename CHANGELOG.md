@@ -1,6 +1,40 @@
 # Changelog
 
-## Unreleased
+## 0.8.0 — 2026-08-20
+
+v0.8.0 is the first release of the monitor-first, verifier-gated autonomous
+research runtime.
+
+### Highlights
+
+- Mission Control is hosted and opened at the first Skill action, before research
+  begins, with live phase, operation, progress, heartbeat, wait, error, and
+  verifier telemetry.
+- A proactive clarification gate blocks ambiguous scope, objective, or
+  verification contracts and records `CLARIFYING / NEEDS_USER` in Mission
+  Control until the user locks the intake contract.
+- Bootstrap Mission Control and the full Claim-map Observatory now use one
+  `sisyfus-arena-broadcast-v1` visual system and one continuous Arena shell.
+- A canonical SQLite-WAL autonomy runtime adds opportunities, continuations,
+  persisted decisions, evidence, experiences, renewable leases, heartbeat
+  fencing, idempotency, recovery, risk tiers, bounded retries, and terminal
+  state invariants.
+- Independent verifiers own `PASS / FAIL / INCONCLUSIVE / INVALID / ERROR`;
+  planners cannot self-certify completion and `FINISH` requires persisted PASS
+  evidence.
+- Experience accounting is evidence-unique, preventing replayed observations
+  from fabricating validated lessons.
+- Planner subprocesses and sensors gained bounded output, process-group
+  termination, environment allowlisting, per-file quarantine, and bounded
+  iteration.
+- Full regression coverage passes on Python 3.11, 3.12, and 3.13.
+
+### Upgrade
+
+```bash
+python3 -m pip install --upgrade   "sisyfus @ git+https://github.com/DionisAI/sisyfus-skill@v0.8.0"
+sisyfus --version
+```
 
 - Fix: `required_artifacts` now matches on repeat attempts. The artifact store dedupes name collisions by hash-suffixing the copy (`summary-1a2b3c4d.json`), which made every attempt after the first fail its contract with a false `required_artifact_missing` INVALID. Artifact records now carry `source_name` (the declared pre-dedupe name) and the verifier matches it. Found live by the predictfun-calibration-exante run's second collection attempt.
 

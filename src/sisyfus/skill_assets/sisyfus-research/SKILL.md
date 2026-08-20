@@ -12,7 +12,7 @@ Sisyfus is a control surface for an event-sourced research engine. The skill may
 This skill drives the `sisyfus` CLI (pure-stdlib Python >= 3.11). Check availability first:
 
 ```bash
-sisyfus --version || python3 -m pip install "sisyfus @ git+https://github.com/DionisAI/sisyfus-skill@v0.7.4"
+sisyfus --version || python3 -m pip install "sisyfus @ git+https://github.com/DionisAI/sisyfus-skill@v0.8.0"
 ```
 
 Pin the install to a release tag (as above) rather than a floating branch — an agent following this skill should never pull unreviewed code from a moving ref. Working from a clone of this repository, `python3 -m pip install -e .` is equivalent. All commands below take `--root <project>` — the project directory that owns the `.sisyfus/` state tree. An explicit `--root` is honored exactly: the engine never walks upward to an ancestor that happens to contain `.sisyfus/` or `.git`; upward discovery only happens when `--root` is omitted (from the current directory).

@@ -34,6 +34,39 @@ Every projection is rebuildable from an append-only, hash-chained event log.
 re-runs any command evidence's hashed measurement code and re-classifies it under
 the same locked contract — no model in the loop.
 
+## What's new in v0.8.0
+
+v0.8.0 turns Sisyfus from a verifier-gated research engine into a
+**monitor-first autonomous research runtime**:
+
+- **Mission Control opens first.** Every new Skill invocation hosts and opens a
+  stable, game-style live monitor before research, coding, or experimentation.
+  Progress, heartbeat, current operation, waits, errors, and verifier activity
+  update continuously without being confused with research evidence.
+- **Ambiguous work pauses for clarification.** Scope, terminal objective, and
+  verification method are blocking intake gates. Missing high-impact details
+  produce `CLARIFYING / NEEDS_USER`; the coding agent asks one compact batch of
+  questions, then locks a concise intake contract before compiling the TaskSpec.
+- **One continuous Arena.** The pre-TaskSpec map and the evidence-backed Claim
+  map now share the same broadcast shell, visual tokens, node grammar, replay
+  controls, right-side feed, quest panel, and live HUD.
+- **Durable 24×7 autonomy.** A canonical SQLite-WAL control plane provides
+  versioned state, renewable worker leases, heartbeat fencing, crash recovery,
+  persisted decisions, idempotency receipts, bounded retries, and mechanically
+  terminal outcomes.
+- **Verifier-owned truth.** Planners may propose actions but cannot self-certify
+  completion. `PASS / FAIL / INCONCLUSIVE / INVALID / ERROR` remain independent
+  verifier outcomes; `FINISH` requires persisted PASS evidence.
+- **Safer unattended execution.** Typed capabilities, an R0/R1 default risk
+  ceiling, exact project roots, bounded planner output, process-group
+  termination, sensor quarantine, and unknown-commit blocking reduce silent
+  side effects and duplicate actions.
+- **Evidence-safe memory.** Experience promotion counts unique evidence
+  observations, so replaying one result cannot manufacture a validated lesson.
+
+See [`RELEASE_NOTES_v0.8.0.md`](RELEASE_NOTES_v0.8.0.md) and
+[`CHANGELOG.md`](CHANGELOG.md) for the complete release notes.
+
 ## Install
 
 **One command** — installs the skill *and* the engine, idempotent, no sudo,
@@ -67,7 +100,7 @@ or use a skills CLI: `npx skills add github:DionisAI/sisyfus-skill`.
 Engine (pure standard library, Python >= 3.11):
 
 ```bash
-python3 -m pip install "sisyfus @ git+https://github.com/DionisAI/sisyfus-skill@v0.7.4"
+python3 -m pip install "sisyfus @ git+https://github.com/DionisAI/sisyfus-skill@v0.8.0"
 ```
 
 `SKILL.md` performs this check itself, so an agent landing on a clean machine
