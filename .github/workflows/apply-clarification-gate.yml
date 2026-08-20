@@ -4,9 +4,9 @@ on:
   push:
     branches:
       - feat/autonomous-agent-v08
-    paths:
-      - .github/clarification-gate/**
-      - .github/workflows/apply-clarification-gate.yml
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: write
