@@ -20,7 +20,9 @@ The default database remains `.sisyfus/autonomy.sqlite3`. The store uses an expl
 ## Repaired invariants
 
 - Every mutation is fenced by continuation version, opaque lease token, and unexpired lease time.
-- Long planner/capability/verifier calls renew the lease; lease loss prevents stale settlement.
+- Long planner, capability, and verifier calls renew the lease; lease loss prevents stale settlement.
+- Heartbeats renew at one-sixth of the lease interval, renew synchronously at execution and verification boundaries, and use monotonic elapsed time when tests inject a deterministic starting timestamp.
+- High-frequency heartbeat renewals update authoritative lease columns without flooding the immutable event stream; explicit renewals remain auditable.
 - A PASS on the final execution attempt can still complete through a non-attempt-consuming FINISH decision.
 - A final INCONCLUSIVE result becomes mechanically terminal rather than remaining unclaimable in WAITING.
 - Experience counts change only for a newly inserted `(experience, evidence, outcome)` observation; replaying one evidence item cannot promote a lesson.
@@ -32,17 +34,30 @@ The default database remains `.sisyfus/autonomy.sqlite3`. The store uses an expl
 - Discovery applies admission policy before persistence and consumes sensor iterables with a hard bound.
 - Continuous operation requires explicit acknowledgement when the planner is not OS-sandboxed.
 
-## Tests
+## Validation
 
-The repair workflow reconstructed the canonical source in a clean GitHub Actions checkout, installed the editable package, compiled all source files, and ran the complete repository suite:
+The canonical-runtime repair was tested in clean GitHub Actions checkouts. The final heartbeat repair commit is:
 
 ```text
-132 passed in 18.35s
+4a6075180aa22a67396fc5072efe9b9f66a742ee
 ```
 
-Dedicated autonomy tests cover public imports and CLI startup, schema detection/migration, concurrency, final-attempt behavior, duplicate-evidence resistance, lease expiry and heartbeats, crash recovery boundaries, idempotency/unknown-commit handling, planner output limits, and inbox quarantine.
+Its validation job completed all of the following successfully on Python 3.12:
 
-The normal CI workflow subsequently validates the branch on Python 3.11, 3.12, and 3.13.
+```text
+editable installation             PASS
+compileall                         PASS
+heartbeat race repetition 1/5      PASS
+heartbeat race repetition 2/5      PASS
+heartbeat race repetition 3/5      PASS
+heartbeat race repetition 4/5      PASS
+heartbeat race repetition 5/5      PASS
+complete repository suite          132 passed in 13.07s
+```
+
+Dedicated autonomy tests cover public imports and CLI startup, schema detection and migration, concurrent claims, final-attempt behavior, duplicate-evidence resistance, lease expiry and heartbeat fencing, crash recovery boundaries, idempotency and unknown-commit handling, planner output limits, and inbox quarantine.
+
+This documentation commit triggers the normal CI workflow against the actual repaired tree on Python 3.11, 3.12, and 3.13. The pull request must remain draft until that matrix is green.
 
 ## Remaining boundary
 
