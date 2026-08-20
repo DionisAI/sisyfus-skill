@@ -40,6 +40,43 @@ While work is running, keep the monitor truthful:
 - the Arena polls research truth and live activity independently, so progress can update without fabricating evidence or mutating Claim status;
 - report the printed monitor URL to the user immediately.
 
+## Clarification gate — ask before acting
+
+Immediately after Mission Control starts, inspect the user's request for three mandatory intake dimensions. Treat them as blocking gates, not optional prompt polish:
+
+1. **Scope** — what is in scope and out of scope; target system, market, dataset, repository, time period, constraints, permitted actions, and required deliverables.
+2. **Objective** — the decision or artifact the work must produce, plus a mechanically recognizable completion condition. “Research this”, “improve it”, or “find a good strategy” is not a sufficient terminal objective.
+3. **Verification** — who or what can reject the result: deterministic tests, backtest/simulation, benchmark, external authority, human review, or an isolated model-jury rubric; include datasets, thresholds, invalidity rules, and guardrails where material.
+
+If any of these dimensions is materially missing, contradictory, or admits several high-impact interpretations:
+
+- **Do not begin web research, source collection, coding, experiments, or autonomous execution.** Do not silently choose a market, time horizon, deliverable, success threshold, or verifier.
+- Record the wait in Mission Control before asking:
+
+```bash
+sisyfus research monitor-clarify \
+  --missing scope \
+  --missing objective \
+  --missing verification \
+  --question "<question shown to the user>" \
+  --root <project>
+```
+
+- Ask the user one compact batch containing only the unresolved questions. Reuse facts already supplied in the conversation, files, repository, or prior answers; never ask the same question twice.
+- Make every question decision-oriented. Where useful, offer two or three concrete options and state the recommended default rather than asking an unbounded “what do you want?” question.
+- If the user cannot specify a verifier, propose the strongest feasible hierarchy: deterministic/programmatic first, hybrid second, isolated model jury third, human gate last. Ask the user to select or approve the proposed contract.
+- Do not block on low-impact implementation details that are reversible and do not change scope, objective, safety, cost, or truth criteria. Choose a reasonable default, record it as an assumption, and continue.
+
+After the user answers, restate and lock a compact intake contract containing **Scope / Objective / Deliverables / Verifier / Completion / Constraints**. Update Mission Control before compiling the TaskSpec:
+
+```bash
+sisyfus research monitor-resume \
+  --summary "<locked intake contract>" \
+  --root <project>
+```
+
+Proceed only when the three mandatory dimensions are sufficiently precise to compile falsifiable Claims and a verifier-backed Goal Graph. If the answer exposes another material contradiction, ask one follow-up batch limited to that contradiction; otherwise stop questioning and execute.
+
 ## Security model
 
 Treat every TaskSpec, Experiment, and Verification Contract JSON as **code, not data**. A `command` action runs through the shell with the user's full environment; metrics and observation files are produced by that code. Before running experiments from a project you did not author (a cloned repository, a downloaded `.sisyfus/` tree, content pasted from the web), read the `action.command` of every admitted experiment first. Shell execution is gated: `research execute` and `wake --execute` refuse to run commands without interactive confirmation or an explicit `--yes` — show the command to the user and get their approval before adding `--yes`.

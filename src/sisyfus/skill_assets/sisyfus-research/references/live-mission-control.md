@@ -29,6 +29,44 @@ When `research new` creates the real research run, the bootstrap daemon is
 replaced on the same stable port. The already-open bootstrap page detects
 `snapshot.json` and reloads into the full Arena automatically.
 
+## Clarification and user-wait state
+
+After the bootstrap monitor starts, the coding agent evaluates three blocking
+intake dimensions: task scope, terminal objective, and verification method. If
+one is materially ambiguous, the agent must not silently select a high-impact
+interpretation or begin research/coding. It records the state with:
+
+```bash
+sisyfus research monitor-clarify \
+  --missing scope \
+  --missing objective \
+  --missing verification \
+  --question "Which market, deliverables, and acceptance test should be locked?" \
+  --root <project>
+```
+
+Mission Control then reports:
+
+```text
+phase      CLARIFYING
+status     NEEDS_USER
+operation  research.intake.clarify
+```
+
+The questions and missing dimensions are stored as operational metadata, not
+research evidence. After the user answers, the agent locks a concise intake
+contract and resumes with:
+
+```bash
+sisyfus research monitor-resume \
+  --summary "Scope=...; Objective=...; Verifier=...; Completion=..." \
+  --root <project>
+```
+
+The agent asks only for unresolved high-impact choices, reuses information
+already supplied, offers concrete options when useful, and does not repeatedly
+question the user about reversible implementation details.
+
 ## Live activity state
 
 The authoritative live status projection is:

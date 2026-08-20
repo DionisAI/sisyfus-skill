@@ -170,3 +170,58 @@ def test_monitor_start_cli_renders_before_taskspec(
     assert payload["monitor_url"] is None
     assert Path(payload["monitor_entry"]).exists()
     assert read_activity(tmp_path)["phase"] == "INTAKE"
+
+
+def test_monitor_clarification_gate_records_user_wait_and_resume(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.setenv("SISYFUS_AUTO_SERVE", "0")
+    monkeypatch.setenv("SISYFUS_AUTO_OPEN", "0")
+
+    assert main([
+        "research", "monitor-start",
+        "--task", "Ambiguous HFT study",
+        "--root", str(tmp_path),
+    ]) == 0
+    capsys.readouterr()
+
+    assert main([
+        "research", "monitor-clarify",
+        "--missing", "scope",
+        "--missing", "verification",
+        "--question", "Which venue and time horizon are in scope?",
+        "--question", "Should the locked verifier be an OOS backtest?",
+        "--root", str(tmp_path),
+    ]) == 0
+    clarification = json.loads(capsys.readouterr().out)
+    waiting = read_activity(tmp_path)
+
+    assert clarification["status"] == "NEEDS_USER"
+    assert clarification["missing"] == ["scope", "verification"]
+    assert waiting["phase"] == "CLARIFYING"
+    assert waiting["status"] == "NEEDS_USER"
+    assert waiting["operation"] == "research.intake.clarify"
+    assert waiting["metadata"]["missing_intake_fields"] == ["scope", "verification"]
+    assert len(waiting["metadata"]["clarification_questions"]) == 2
+
+    summary = (
+        "Scope=BTCUSDT on Binance, 2026 Q2; Objective=paper-trading candidate; "
+        "Verifier=event-driven OOS backtest; Completion=all locked gates PASS"
+    )
+    assert main([
+        "research", "monitor-resume",
+        "--summary", summary,
+        "--root", str(tmp_path),
+    ]) == 0
+    resumed_payload = json.loads(capsys.readouterr().out)
+    resumed = read_activity(tmp_path)
+
+    assert resumed_payload["status"] == "INTAKE_LOCKED"
+    assert resumed["phase"] == "INTAKE"
+    assert resumed["status"] == "RUNNING"
+    assert resumed["operation"] == "research.intake.lock"
+    assert resumed["metadata"]["missing_intake_fields"] == []
+    assert resumed["metadata"]["clarification_questions"] == []
+    assert resumed["metadata"]["clarification_summary"] == summary

@@ -630,6 +630,103 @@ def cmd_research_monitor_start(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_research_monitor_clarify(args: argparse.Namespace) -> int:
+    root = Path(args.root or Path.cwd()).expanduser().resolve()
+    ensure_layout(root)
+    current = read_activity(root)
+    if not current.get("task_id"):
+        current = start_activity(
+            root,
+            title=args.task or "Clarify Sisyfus research task",
+            objective="",
+            actor=args.actor,
+        )
+    missing = sorted({str(item) for item in (args.missing or [])})
+    questions = [str(item).strip() for item in (args.question or []) if str(item).strip()]
+    if not missing and not questions:
+        raise ValueError("monitor-clarify requires at least one --missing or --question")
+    detail_parts = []
+    if missing:
+        detail_parts.append("missing=" + ", ".join(missing))
+    if questions:
+        detail_parts.append("questions=" + " | ".join(questions))
+    activity = update_activity(
+        root,
+        phase="CLARIFYING",
+        status="NEEDS_USER",
+        operation="research.intake.clarify",
+        message="Waiting for user clarification before research begins.",
+        detail="; ".join(detail_parts),
+        progress={"percent": 0.0, "label": "Clarification required"},
+        actor=args.actor,
+        metadata={
+            "missing_intake_fields": missing,
+            "clarification_questions": questions,
+        },
+        heartbeat=True,
+    )
+    entry = render_activity_monitor(root)
+    url = ensure_activity_observatory(
+        root,
+        str(activity["task_id"]),
+        open_browser=not args.no_open,
+    )
+    _print_json(
+        {
+            "status": "NEEDS_USER",
+            "task_id": activity["task_id"],
+            "missing": missing,
+            "questions": questions,
+            "monitor_url": url,
+            "monitor_entry": str(entry),
+        }
+    )
+    return 0
+
+
+def cmd_research_monitor_resume(args: argparse.Namespace) -> int:
+    root = Path(args.root or Path.cwd()).expanduser().resolve()
+    ensure_layout(root)
+    current = read_activity(root)
+    if not current.get("task_id"):
+        raise RuntimeError("monitor-resume requires an existing task; run monitor-start first")
+    summary = str(args.summary or "").strip()
+    if not summary:
+        raise ValueError("monitor-resume requires a non-empty --summary")
+    activity = update_activity(
+        root,
+        phase="INTAKE",
+        status="RUNNING",
+        operation="research.intake.lock",
+        message="Clarification received. Locking the research program.",
+        detail=summary,
+        progress={"percent": 5.0, "label": "Intake contract"},
+        actor=args.actor,
+        metadata={
+            "missing_intake_fields": [],
+            "clarification_questions": [],
+            "clarification_summary": summary,
+        },
+        heartbeat=True,
+    )
+    entry = render_activity_monitor(root)
+    url = ensure_activity_observatory(
+        root,
+        str(activity["task_id"]),
+        open_browser=not args.no_open,
+    )
+    _print_json(
+        {
+            "status": "INTAKE_LOCKED",
+            "task_id": activity["task_id"],
+            "summary": summary,
+            "monitor_url": url,
+            "monitor_entry": str(entry),
+        }
+    )
+    return 0
+
+
 def cmd_research_monitor_serve(args: argparse.Namespace) -> int:
     root = Path(args.root or Path.cwd()).expanduser().resolve()
     ensure_layout(root)
@@ -1414,6 +1511,38 @@ def build_parser() -> argparse.ArgumentParser:
     p_rmonitor.add_argument("--actor", default="skill")
     p_rmonitor.add_argument("--no-open", action="store_true", help="host without opening a browser tab")
     p_rmonitor.set_defaults(func=cmd_research_monitor_start)
+
+
+    p_rclarify = research_sub.add_parser(
+        "monitor-clarify",
+        help="mark Mission Control as waiting for material user clarification",
+    )
+    p_rclarify.add_argument(
+        "--missing",
+        action="append",
+        choices=["scope", "objective", "verification"],
+        help="material intake dimension that is unresolved; may be repeated",
+    )
+    p_rclarify.add_argument(
+        "--question",
+        action="append",
+        help="question being asked of the user; may be repeated",
+    )
+    p_rclarify.add_argument("--task", help="fallback title when monitor-start was not called")
+    p_rclarify.add_argument("--root")
+    p_rclarify.add_argument("--actor", default="skill")
+    p_rclarify.add_argument("--no-open", action="store_true")
+    p_rclarify.set_defaults(func=cmd_research_monitor_clarify)
+
+    p_rresume = research_sub.add_parser(
+        "monitor-resume",
+        help="resume intake after the user clarifies scope, objective, and verifier",
+    )
+    p_rresume.add_argument("--summary", required=True, help="locked intake contract")
+    p_rresume.add_argument("--root")
+    p_rresume.add_argument("--actor", default="skill")
+    p_rresume.add_argument("--no-open", action="store_true")
+    p_rresume.set_defaults(func=cmd_research_monitor_resume)
 
     p_rmonitor_serve = research_sub.add_parser(
         "monitor-serve",
