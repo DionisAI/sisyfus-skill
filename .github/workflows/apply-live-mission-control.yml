@@ -12,6 +12,7 @@ concurrency:
   group: apply-live-mission-control-${{ github.ref }}
   cancel-in-progress: true
 
+# Materialize, validate, and publish the monitor-first implementation.
 jobs:
   apply-test-publish:
     if: github.actor != 'github-actions[bot]'
