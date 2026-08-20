@@ -9,6 +9,8 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
 
+from ..ui_theme import ARENA_THEME_CSS, ARENA_THEME_ID
+
 from ..activity import (
     activity_events_projection_path,
     activity_overlay_html,
@@ -27,33 +29,13 @@ def _json_for_script(value: Any) -> str:
 # Every visual is a projection of persisted facts; replay frames are deterministic
 # re-reductions of the event prefix — spectacle, never invention.
 _TEMPLATE = """<!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-sisyfus-theme="__SISYFUS_THEME_ID__">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Sisyfus Arena · __TOPIC__</title>
 <style>
-:root {
-  color-scheme: dark;
-  --arena:oklch(0.17 0.018 75);           /* warm charcoal stadium */
-  --arena-deep:oklch(0.13 0.015 75);
-  --panel:oklch(0.21 0.02 80);
-  --line:oklch(0.32 0.03 85);
-  --ink:oklch(0.93 0.02 90);
-  --muted:oklch(0.66 0.03 85);
-  --radiant:oklch(0.78 0.17 150);         /* verified */
-  --dire:oklch(0.62 0.21 25);             /* refuted */
-  --gold:oklch(0.82 0.13 88);             /* loot / lessons */
-  --amber:oklch(0.78 0.14 75);            /* open / inconclusive */
-  --ghost:oklch(0.62 0.12 310);           /* invalid / error */
-  --hp:oklch(0.66 0.19 30);
-  --mana:oklch(0.7 0.1 230);
-}
-* { box-sizing:border-box; }
-body { margin:0; background:var(--arena-deep); color:var(--ink);
-  font-family:-apple-system,"Helvetica Neue","PingFang SC","Microsoft YaHei",sans-serif; }
-.caps { text-transform:uppercase; letter-spacing:.14em; font-weight:800; }
-.mono { font-family:ui-monospace,Menlo,Consolas,monospace; }
+__SISYFUS_THEME__
 
 /* ---------- broadcast top bar ---------- */
 .topbar { display:flex; align-items:stretch; gap:0; border-bottom:2px solid var(--line);
@@ -86,10 +68,10 @@ body { margin:0; background:var(--arena-deep); color:var(--ink);
 .lang-btn:hover { color:var(--gold); }
 
 /* ---------- stage: arena + right column ---------- */
-.stage { display:grid; grid-template-columns:1fr 336px; }
+.stage { display:grid; grid-template-columns:1fr var(--right-column); }
 .arena-wrap { position:relative; overflow:hidden; border-right:2px solid var(--line); }
 .arena-wrap { display:flex; }
-#arena { display:block; width:100%; height:100%; min-height:520px; max-height:min(72vh, 700px); flex:1;
+#arena { display:block; width:100%; height:100%; min-height:520px; max-height:var(--stage-height); flex:1;
   background:
     radial-gradient(120% 90% at 50% -10%, oklch(0.24 0.03 90 / .55), transparent 55%),
     radial-gradient(90% 120% at 50% 115%, oklch(0.1 0.02 60), transparent 60%),
@@ -164,7 +146,7 @@ body { margin:0; background:var(--arena-deep); color:var(--ink);
 @keyframes barfx { 12% { opacity:1; transform:translateY(0) } 100% { opacity:0; transform:translateY(-13px) } }
 
 /* right column: kill feed + quest log */
-.rightcol { display:flex; flex-direction:column; background:var(--panel); min-height:0; height:min(72vh, 700px); }
+.rightcol { display:flex; flex-direction:column; background:var(--panel); min-height:0; height:var(--stage-height); }
 .col-h { padding:8px 14px 6px; font-size:10px; color:var(--muted); border-bottom:1px solid var(--line);
   display:flex; justify-content:space-between; align-items:baseline; }
 #feed { flex:1.2; overflow-y:auto; min-height:170px; padding:6px 0; }
@@ -395,7 +377,7 @@ th { color:var(--muted); font-weight:700; position:sticky; top:0; background:var
 }
 </style>
 </head>
-<body>
+<body data-sisyfus-shell="broadcast">
 <header class="topbar">
   <div class="scorebox">
     <div><div class="score radiant" id="scoreV">0</div><div class="score-label caps" data-i18n="verified">已验证</div></div>
@@ -1435,7 +1417,13 @@ def render_observatory(
     atomic_write_json(workspace.report_snapshot_path, public_snapshot)
     topic = html.escape(str(snapshot.get("topic") or "Sisyfus Research"))
     payload = _json_for_script(public_snapshot)
-    document = _TEMPLATE.replace("__TOPIC__", topic).replace("__PAYLOAD__", payload)
+    document = (
+        _TEMPLATE
+        .replace("__SISYFUS_THEME_ID__", ARENA_THEME_ID)
+        .replace("__SISYFUS_THEME__", ARENA_THEME_CSS)
+        .replace("__TOPIC__", topic)
+        .replace("__PAYLOAD__", payload)
+    )
     activity = ensure_activity(
         workspace.root,
         title=str(snapshot.get("topic") or "Sisyfus Research"),

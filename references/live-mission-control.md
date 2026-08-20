@@ -67,6 +67,32 @@ The agent asks only for unresolved high-impact choices, reuses information
 already supplied, offers concrete options when useful, and does not repeatedly
 question the user about reversible implementation details.
 
+## Unified broadcast shell
+
+The bootstrap Mission Control is not a separate splash application. It uses the
+same `sisyfus-arena-broadcast-v1` visual system and the same structural shell as
+the post-TaskSpec Observatory:
+
+```text
+broadcast top bar
+arena map
+right-side match feed and quest panel
+replay deck
+caster bar
+detail tabs
+```
+
+Before Claims exist, the map renders the intake gates — Scope, Objective,
+Inputs, Claims, Verifier, and Autonomous Run — using the same nodes, dependency
+edges, hero, status colors, and unit card used by the real Claim map. Handoff
+changes the projection and enables the full tabs; it does not replace the page
+with a visually unrelated application.
+
+Palette and typography tokens live in `sisyfus.ui_theme` and are injected into
+both documents. Structural tests require both rendered pages to declare the
+same theme ID and broadcast-shell markers, preventing the two surfaces from
+drifting apart again.
+
 ## Live activity state
 
 The authoritative live status projection is:
