@@ -59,7 +59,18 @@ jobs:
           if text.count(before) != 1:
               raise SystemExit("unexpected read_activity_events implementation")
           path.write_text(text.replace(before, after, 1), encoding="utf-8")
+
+          sync = Path("scripts/sync_skill_assets.py")
+          text = sync.read_text(encoding="utf-8")
+          marker = '    "references/verifier-contract.md",\n'
+          addition = marker + '    "references/live-mission-control.md",\n'
+          if '"references/live-mission-control.md"' not in text:
+              if text.count(marker) != 1:
+                  raise SystemExit("unexpected skill asset manifest")
+              text = text.replace(marker, addition, 1)
+              sync.write_text(text, encoding="utf-8")
           PY
+          python scripts/sync_skill_assets.py
 
       - name: Install
         run: python -m pip install --upgrade pip pytest && python -m pip install -e .
@@ -97,6 +108,9 @@ jobs:
           git add -- \
             SKILL.md \
             references/live-mission-control.md \
+            scripts/sync_skill_assets.py \
+            src/sisyfus/skill_assets/sisyfus-research/SKILL.md \
+            src/sisyfus/skill_assets/sisyfus-research/references/live-mission-control.md \
             src/sisyfus/activity.py \
             src/sisyfus/research_v2/live.py \
             src/sisyfus/research_v2/observatory.py \
