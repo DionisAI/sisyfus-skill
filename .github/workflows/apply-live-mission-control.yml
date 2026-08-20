@@ -39,6 +39,27 @@ jobs:
           echo "efc16dbaffe84e1d3a4ab46e5efed04437ff0745196f9aead30ce4ea9a55e269  /tmp/live-mission-control.tgz" | sha256sum -c -
           tar -xzf /tmp/live-mission-control.tgz -C .
           python .github/live-mission-control/apply.py
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("src/sisyfus/activity.py")
+          text = path.read_text(encoding="utf-8")
+          before = '''def read_activity_events(root: str | Path) -> list[dict[str, Any]]:
+              loaded = _read_json(activity_events_projection_path(root), {})
+              events = loaded.get("events") if isinstance(loaded, dict) else []
+              return [dict(item) for item in events if isinstance(item, dict)]
+          '''.replace("\n          ", "\n")
+          after = '''def read_activity_events(root: str | Path) -> list[dict[str, Any]]:
+              loaded = _read_json(activity_events_projection_path(root), {})
+              events = loaded.get("events") if isinstance(loaded, dict) else []
+              if not isinstance(events, list):
+                  return []
+              return [dict(item) for item in events if isinstance(item, dict)]
+          '''.replace("\n          ", "\n")
+          if text.count(before) != 1:
+              raise SystemExit("unexpected read_activity_events implementation")
+          path.write_text(text.replace(before, after, 1), encoding="utf-8")
+          PY
 
       - name: Install
         run: python -m pip install --upgrade pip pytest && python -m pip install -e .
