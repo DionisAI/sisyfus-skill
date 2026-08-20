@@ -39,6 +39,24 @@ jobs:
 
       - name: Apply shared theme and broadcast shell
         run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('.github/unified-arena/apply.py')
+          text = path.read_text(encoding='utf-8')
+          replacements = [
+              ('font-weight:900; }"', 'font-weight:900; }}"', 2),
+              ('"#sf-live-hud .sf-phase {', '"#sf-live-hud .sf-phase {{', 2),
+              ('"#sf-live-hud .sf-progress {', '"#sf-live-hud .sf-progress {{', 2),
+              ('"#sf-live-hud .sf-progress i {', '"#sf-live-hud .sf-progress i {{', 2),
+          ]
+          for before, after, expected in replacements:
+              count = text.count(before)
+              if count != expected:
+                  raise SystemExit(f'unexpected patcher marker count {count} != {expected}: {before!r}')
+              text = text.replace(before, after)
+          path.write_text(text, encoding='utf-8')
+          PY
           python .github/unified-arena/apply.py
           python scripts/sync_skill_assets.py
 
