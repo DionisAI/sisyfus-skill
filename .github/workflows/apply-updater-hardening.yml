@@ -82,6 +82,26 @@ jobs:
           if text.count(old_block) != 1:
               raise SystemExit("unexpected CLI updater patch block")
           text = text.replace(old_block, new_block, 1)
+
+          escape_replacements = [
+              ('digest.update(b"\\0")', 'digest.update(b"\\\\0")', 2),
+              ('digest.update(b"link\\0")', 'digest.update(b"link\\\\0")', 1),
+              ('digest.update(b"file\\0")', 'digest.update(b"file\\\\0")', 1),
+              (
+                  '"__version__ = \'tampered\'\\n"',
+                  '"__version__ = \'tampered\'\\\\n"',
+                  1,
+              ),
+          ]
+          for before, after, expected in escape_replacements:
+              count = text.count(before)
+              if count != expected:
+                  raise SystemExit(
+                      f"unexpected generated-code escape count: "
+                      f"{count} != {expected} for {before!r}"
+                  )
+              text = text.replace(before, after)
+
           path.write_text(text, encoding="utf-8")
           PY
           python .github/updater-hardening/apply.py
