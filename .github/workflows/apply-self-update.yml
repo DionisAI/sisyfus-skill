@@ -156,6 +156,21 @@ jobs:
           text = text.replace('VERSION = "0.8.0"', 'VERSION = "0.8.1"')
           text = text.replace('TAG = "v0.8.0"', 'TAG = "v0.8.1"')
           release_test.write_text(text, encoding="utf-8")
+
+          updater = Path("src/sisyfus/updater.py")
+          text = updater.read_text(encoding="utf-8")
+          before = "        bundle.extractall(destination)\n"
+          after = (
+              "        try:\n"
+              "            bundle.extractall(destination, filter=\"data\")\n"
+              "        except TypeError:  # Python versions before extraction filters\n"
+              "            bundle.extractall(destination)\n"
+          )
+          if after not in text:
+              if text.count(before) != 1:
+                  raise SystemExit("unexpected tar extraction marker")
+              text = text.replace(before, after, 1)
+          updater.write_text(text, encoding="utf-8")
           PY
           python scripts/sync_skill_assets.py
           bash -n install.sh
@@ -191,6 +206,9 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           rm -rf .github/self-update
           rm -f .github/workflows/apply-self-update.yml
+          # The GitHub Actions token cannot create workflows. The validated
+          # release workflow is added through the repository API after this push.
+          rm -f .github/workflows/release.yml
           git add -A
           git diff --cached --check
           git commit -m 'feat: add atomic self-update and rollback'
