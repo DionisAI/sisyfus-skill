@@ -1183,6 +1183,46 @@ def cmd_research_demo(args: argparse.Namespace) -> int:
     _print_json(_research_summary(snapshot, engine))
     return 0 if snapshot["run_status"] == "SOLVED" else 2
 
+
+def cmd_update(args: argparse.Namespace) -> int:
+    from .updater import ActiveWorkError, UpdateManager, format_result
+    manager = UpdateManager()
+    try:
+        if args.update_status: result = manager.status()
+        elif args.check: result = manager.check(channel=args.channel, version=args.target_version)
+        elif args.rollback:
+            if not args.yes and not args.scheduled:
+                import sys
+                if not sys.stdin.isatty(): raise RuntimeError("rollback requires --yes in a non-interactive session")
+                if input("Roll back Sisyfus? [y/N] ").strip().lower() not in {"y","yes"}: return 4
+            result = manager.rollback(allow_active=args.allow_active)
+        elif args.enable_auto:
+            if not args.yes:
+                import sys
+                if not sys.stdin.isatty(): raise RuntimeError("enabling automatic updates requires --yes non-interactively")
+                if input("Enable automatic Sisyfus updates? [y/N] ").strip().lower() not in {"y","yes"}: return 4
+            result = manager.configure_auto(enabled=True, mode=args.mode, channel=args.channel, interval_hours=args.interval_hours)
+        elif args.disable_auto: result = manager.configure_auto(enabled=False, mode=args.mode, channel=args.channel, interval_hours=args.interval_hours)
+        else:
+            if not args.yes and not args.scheduled:
+                import sys
+                if not sys.stdin.isatty(): raise RuntimeError("installing an update requires --yes in a non-interactive session")
+                preview=manager.check(channel=args.channel,version=args.target_version)
+                if not preview.get("update_available") and not args.force: result=preview
+                elif input(f"Update to {(preview.get('candidate') or {}).get('version')}? [y/N] ").strip().lower() not in {"y","yes"}: return 4
+                else: result=manager.apply(channel=args.channel,version=args.target_version,force=args.force,allow_active=args.allow_active,require_verified=args.scheduled)
+            else: result=manager.apply(channel=args.channel,version=args.target_version,force=args.force,allow_active=args.allow_active,require_verified=args.scheduled)
+    except ActiveWorkError as exc:
+        result={"status":"DEFERRED_ACTIVE_WORK","message":str(exc),"active_work":exc.active}
+        if args.json:_print_json(result)
+        else:
+            print("Sisyfus update deferred because active work is running.")
+            for item in exc.active:print(f"  - {item.get('summary') or item}")
+        return 0 if args.scheduled else 3
+    if args.json:_print_json(result)
+    else:print(format_result(result))
+    return 0
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="sisyfus", description="Local-first agent loop orchestrator")
     parser.add_argument("--version", action="store_true", help="print version and exit")
@@ -1497,6 +1537,25 @@ def build_parser() -> argparse.ArgumentParser:
     p_ps = prov_sub.add_parser("summary", help="summarize requested/actual model usage and cost estimates")
     p_ps.add_argument("--root")
     p_ps.set_defaults(func=cmd_provider_summary)
+
+
+    p_update = sub.add_parser("update", help="check, install, schedule, or roll back Sisyfus releases")
+    action = p_update.add_mutually_exclusive_group()
+    action.add_argument("--check", action="store_true")
+    action.add_argument("--status", dest="update_status", action="store_true")
+    action.add_argument("--rollback", action="store_true")
+    action.add_argument("--enable-auto", action="store_true")
+    action.add_argument("--disable-auto", action="store_true")
+    p_update.add_argument("--channel", choices=["stable","beta","edge"], default="stable")
+    p_update.add_argument("--version", dest="target_version")
+    p_update.add_argument("--mode", choices=["notify","auto"], default="notify")
+    p_update.add_argument("--interval-hours", type=float, default=24.0)
+    p_update.add_argument("--yes", action="store_true")
+    p_update.add_argument("--force", action="store_true")
+    p_update.add_argument("--allow-active", action="store_true")
+    p_update.add_argument("--json", action="store_true")
+    p_update.add_argument("--scheduled", action="store_true", help=argparse.SUPPRESS)
+    p_update.set_defaults(func=cmd_update)
 
     p_research = sub.add_parser("research", help="event-sourced branching research skill")
     research_sub = p_research.add_subparsers(dest="research_command", required=True)

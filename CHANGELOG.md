@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.1 — 2026-08-20
+
+- Added `sisyfus update` with stable/beta/edge channels, exact versions, status,
+  automatic checks, active-work protection, atomic activation, and rollback.
+- Engine and Skill files now activate together from versioned release directories.
+- Tagged releases publish a SHA-256 verified archive and `sisyfus.release.v1` manifest.
+- `install.sh` is an idempotent bootstrap/update command with version and channel selection.
+
 ## 0.8.0 — 2026-08-20
 
 v0.8.0 is the first release of the monitor-first, verifier-gated autonomous
