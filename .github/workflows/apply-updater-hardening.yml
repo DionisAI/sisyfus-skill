@@ -41,7 +41,8 @@ jobs:
 
           path = Path(".github/updater-hardening/apply.py")
           text = path.read_text(encoding="utf-8")
-          replacements = {
+
+          literal_replacements = {
               'pattern.subn(replacement.rstrip() + "\\n\\n", text, count=1)': (
                   'pattern.subn(lambda _match: replacement.rstrip() + "\\n\\n", '
                   'text, count=1)'
@@ -51,10 +52,41 @@ jobs:
                   'text, count=1)'
               ),
           }
-          for before, after in replacements.items():
+          for before, after in literal_replacements.items():
               if text.count(before) != 1:
                   raise SystemExit(
                       f"unexpected hardening patch marker: {before!r}"
+                  )
+              text = text.replace(before, after, 1)
+
+          raw_template_replacements = [
+              (
+                  "build_helpers = '''def _release_content_hash",
+                  "build_helpers = r'''def _release_content_hash",
+                  1,
+              ),
+              (
+                  "    \"_load_manifest\",\n    '''def _load_manifest(",
+                  "    \"_load_manifest\",\n    r'''def _load_manifest(",
+                  1,
+              ),
+              (
+                  "    \"configure_auto\",\n    '''    def configure_auto(",
+                  "    \"configure_auto\",\n    r'''    def configure_auto(",
+                  1,
+              ),
+              (
+                  "TESTS = '''from __future__ import annotations",
+                  "TESTS = r'''from __future__ import annotations",
+                  1,
+              ),
+          ]
+          for before, after, expected in raw_template_replacements:
+              count = text.count(before)
+              if count != expected:
+                  raise SystemExit(
+                      f"unexpected raw-template marker count: "
+                      f"{count} != {expected} for {before!r}"
                   )
               text = text.replace(before, after, 1)
 
@@ -82,25 +114,6 @@ jobs:
           if text.count(old_block) != 1:
               raise SystemExit("unexpected CLI updater patch block")
           text = text.replace(old_block, new_block, 1)
-
-          escape_replacements = [
-              ('digest.update(b"\\0")', 'digest.update(b"\\\\0")', 2),
-              ('digest.update(b"link\\0")', 'digest.update(b"link\\\\0")', 1),
-              ('digest.update(b"file\\0")', 'digest.update(b"file\\\\0")', 1),
-              (
-                  '"__version__ = \'tampered\'\\n"',
-                  '"__version__ = \'tampered\'\\\\n"',
-                  1,
-              ),
-          ]
-          for before, after, expected in escape_replacements:
-              count = text.count(before)
-              if count != expected:
-                  raise SystemExit(
-                      f"unexpected generated-code escape count: "
-                      f"{count} != {expected} for {before!r}"
-                  )
-              text = text.replace(before, after)
 
           path.write_text(text, encoding="utf-8")
           PY
