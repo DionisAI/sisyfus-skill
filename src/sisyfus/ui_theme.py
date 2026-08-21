@@ -44,4 +44,11 @@ body {
 button,input,select { font:inherit; }
 .caps { text-transform:uppercase; letter-spacing:.14em; font-weight:800; }
 .mono { font-family:var(--font-mono); }
+
+/* Live projections may refresh their structural DOM on heartbeat ticks. An
+   entry animation on the base row would therefore restart forever even when
+   no event changed. Feed entry motion must be explicitly opt-in for a newly
+   inserted event; stable rows never animate merely because polling occurred. */
+.feed-row { animation:none !important; }
+.feed-row.feed-new { animation:feedin .35s var(--ease-out) !important; }
 """
