@@ -57,6 +57,31 @@ jobs:
                       f"unexpected hardening patch marker: {before!r}"
                   )
               text = text.replace(before, after, 1)
+
+          old_block = '''cli = read("src/sisyfus/cli.py")
+          old = "allow_active=args.allow_active)"
+          new = "allow_active=args.allow_active, require_verified=args.scheduled)"
+          count = cli.count(old)
+          if count != 2:
+              raise SystemExit(f"unexpected UpdateManager.apply call count: {count}")
+          write("src/sisyfus/cli.py", cli.replace(old, new))'''
+          new_block = '''cli = read("src/sisyfus/cli.py")
+          old = (
+              "manager.apply(channel=args.channel,version=args.target_version,"
+              "force=args.force,allow_active=args.allow_active)"
+          )
+          new = (
+              "manager.apply(channel=args.channel,version=args.target_version,"
+              "force=args.force,allow_active=args.allow_active,"
+              "require_verified=args.scheduled)"
+          )
+          count = cli.count(old)
+          if count != 2:
+              raise SystemExit(f"unexpected UpdateManager.apply call count: {count}")
+          write("src/sisyfus/cli.py", cli.replace(old, new))'''
+          if text.count(old_block) != 1:
+              raise SystemExit("unexpected CLI updater patch block")
+          text = text.replace(old_block, new_block, 1)
           path.write_text(text, encoding="utf-8")
           PY
           python .github/updater-hardening/apply.py
