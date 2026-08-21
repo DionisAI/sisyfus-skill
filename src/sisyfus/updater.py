@@ -1,34 +1,4 @@
-from __future__ import annotations
-
-from pathlib import Path
-
-ROOT = Path(__file__).resolve().parents[2]
-
-
-def read(path: str) -> str:
-    return (ROOT / path).read_text(encoding="utf-8")
-
-
-def write(path: str, content: str, mode: int | None = None) -> None:
-    target = ROOT / path
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(content, encoding="utf-8")
-    if mode is not None:
-        target.chmod(mode)
-
-
-def replace_once(path: str, before: str, after: str) -> None:
-    text = read(path)
-    if after in text and before not in text:
-        return
-    count = text.count(before)
-    if count != 1:
-        raise SystemExit(
-            f"unexpected replacement count in {path}: {count} for {before[:120]!r}"
-        )
-    write(path, text.replace(before, after, 1))
-
-UPDATER = '''"""Versioned, atomic and rollback-safe Sisyfus updater.
+"""Versioned, atomic and rollback-safe Sisyfus updater.
 
 The updater deliberately lives in the main CLI instead of a separate bootstrap
 binary. Existing installs need one installer refresh to acquire it; afterwards
@@ -121,7 +91,7 @@ def _atomic_text(path: Path, text: str, *, mode: int | None = None) -> None:
         Path(temporary).unlink(missing_ok=True)
 
 def _atomic_json(path: Path, value: Any) -> None:
-    _atomic_text(path, json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False, default=str, allow_nan=False) + "\\n")
+    _atomic_text(path, json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False, default=str, allow_nan=False) + "\n")
 
 def _read_json(path: Path, default: Any) -> Any:
     try:
@@ -137,7 +107,7 @@ class SemVer:
     prerelease: tuple[str, ...] = ()
     @classmethod
     def parse(cls, value: str) -> "SemVer":
-        match = re.fullmatch(r"v?(\\d+)\\.(\\d+)\\.(\\d+)(?:-([0-9A-Za-z.-]+))?(?:\\+[0-9A-Za-z.-]+)?", str(value).strip())
+        match = re.fullmatch(r"v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?", str(value).strip())
         if not match:
             raise ValueError(f"invalid semantic version: {value!r}")
         pre = tuple((match.group(4) or "").split(".")) if match.group(4) else ()
@@ -303,13 +273,16 @@ def _safe_extract(archive: Path, destination: Path) -> Path:
         if not members: raise IntegrityError("release archive is empty")
         top_levels=set()
         for member in members:
-            pure=Path(member.name.replace("\\\\","/"))
+            pure=Path(member.name.replace("\\","/"))
             if pure.is_absolute() or ".." in pure.parts: raise IntegrityError(f"unsafe archive path: {member.name}")
             if member.issym() or member.islnk() or member.isdev(): raise IntegrityError(f"unsupported archive entry: {member.name}")
             if pure.parts: top_levels.add(pure.parts[0])
             target=(destination/pure).resolve()
             if destination.resolve() not in {target,*target.parents}: raise IntegrityError(f"archive path escapes destination: {member.name}")
-        bundle.extractall(destination)
+        try:
+            bundle.extractall(destination, filter="data")
+        except TypeError:  # Python versions before extraction filters
+            bundle.extractall(destination)
     if len(top_levels)==1:
         candidate=destination/next(iter(top_levels))
         if candidate.is_dir(): return candidate
@@ -317,10 +290,10 @@ def _safe_extract(archive: Path, destination: Path) -> Path:
 
 def _source_version(source: Path) -> str:
     pyproject=(source/"pyproject.toml").read_text(encoding="utf-8")
-    match=re.search(r'(?m)^version\\s*=\\s*"([^"]+)"\\s*$',pyproject)
+    match=re.search(r'(?m)^version\s*=\s*"([^"]+)"\s*$',pyproject)
     if not match: raise IntegrityError("release pyproject.toml has no project version")
     package_init=(source/"src"/"sisyfus"/"__init__.py").read_text(encoding="utf-8")
-    init_match=re.search(r'__version__\\s*=\\s*"([^"]+)"',package_init)
+    init_match=re.search(r'__version__\s*=\s*"([^"]+)"',package_init)
     if not init_match or init_match.group(1)!=match.group(1): raise IntegrityError("package version and runtime __version__ disagree")
     for required in ("SKILL.md","references","templates","src/sisyfus"):
         if not (source/required).exists(): raise IntegrityError(f"release source is missing {required}")
@@ -421,7 +394,7 @@ def _copy_skill(source: Path, destination: Path) -> None:
     else: os.replace(temporary,destination)
 
 def _write_launcher(path: Path, package_dir: Path, module: str) -> None:
-    _atomic_text(path,"#!/usr/bin/env python3\\nimport sys\\n"+f"sys.path.insert(0, {str(package_dir)!r})\\nfrom {module} import main\\nraise SystemExit(main())\\n",mode=0o755)
+    _atomic_text(path,"#!/usr/bin/env python3\nimport sys\n"+f"sys.path.insert(0, {str(package_dir)!r})\nfrom {module} import main\nraise SystemExit(main())\n",mode=0o755)
 
 def _install_stdlib(source: Path, release_dir: Path) -> None:
     lib=release_dir/"lib"; bin_dir=release_dir/"bin"; shutil.rmtree(lib,ignore_errors=True); shutil.copytree(source/"src"/"sisyfus",lib/"sisyfus"); bin_dir.mkdir(parents=True,exist_ok=True)
@@ -535,8 +508,8 @@ class UpdateManager:
             user_config=Path(os.environ.get("XDG_CONFIG_HOME",str(Path.home()/".config"))).expanduser()/"systemd"/"user";service=user_config/"sisyfus-update.service";timer=user_config/"sisyfus-update.timer"
             if enabled:
                 args=[str(command),"update","--check","--scheduled","--json"] if mode=="notify" else [str(command),"update","--yes","--scheduled","--channel",channel,"--json"]
-                _atomic_text(service,"[Unit]\\nDescription=Check or apply Sisyfus updates\\n\\n[Service]\\nType=oneshot\\n"+f"ExecStart={shlex.join(args)}\\nStandardOutput=append:{log_dir/'update.log'}\\nStandardError=append:{log_dir/'update.log'}\\n")
-                _atomic_text(timer,"[Unit]\\nDescription=Periodic Sisyfus update check\\n\\n[Timer]\\nOnBootSec=5m\\n"+f"OnUnitActiveSec={interval_seconds}s\\nRandomizedDelaySec=30m\\nPersistent=true\\n\\n[Install]\\nWantedBy=timers.target\\n");installed_paths=[str(service),str(timer)]
+                _atomic_text(service,"[Unit]\nDescription=Check or apply Sisyfus updates\n\n[Service]\nType=oneshot\n"+f"ExecStart={shlex.join(args)}\nStandardOutput=append:{log_dir/'update.log'}\nStandardError=append:{log_dir/'update.log'}\n")
+                _atomic_text(timer,"[Unit]\nDescription=Periodic Sisyfus update check\n\n[Timer]\nOnBootSec=5m\n"+f"OnUnitActiveSec={interval_seconds}s\nRandomizedDelaySec=30m\nPersistent=true\n\n[Install]\nWantedBy=timers.target\n");installed_paths=[str(service),str(timer)]
                 if activate and os.environ.get("SISYFUS_UPDATE_SKIP_SCHEDULER_ACTIVATION")!="1":subprocess.run(["systemctl","--user","daemon-reload"],check=True);subprocess.run(["systemctl","--user","enable","--now",timer.name],check=True)
             else:
                 if activate and shutil.which("systemctl"):subprocess.run(["systemctl","--user","disable","--now",timer.name],check=False);subprocess.run(["systemctl","--user","daemon-reload"],check=False)
@@ -566,347 +539,3 @@ def format_result(result: Mapping[str,Any]) -> str:
     if status=="ROLLED_BACK":return f"Sisyfus rolled back to {result.get('current_version')}. Restart the coding-agent session."
     if status=="AUTO_UPDATE_CONFIGURED":return "Sisyfus automatic update schedule "+("enabled" if result.get("enabled") else "disabled")+"."
     return json.dumps(dict(result),sort_keys=True,default=str)
-'''
-INSTALLER = '''#!/usr/bin/env bash
-set -euo pipefail
-REPO_URL="https://github.com/DionisAI/sisyfus-skill"
-REPOSITORY="DionisAI/sisyfus-skill"
-SKILL_NAME="sisyfus-research"
-ENGINE_HOME="${SISYFUS_ENGINE_HOME:-${HOME}/.local/share/sisyfus}"
-BIN_DIR="${SISYFUS_BIN_DIR:-${HOME}/.local/bin}"
-CHANNEL="stable"; TARGET_VERSION=""; ACTION="install"; ALLOW_ACTIVE=0; ENABLE_AUTO=0; AUTO_MODE="notify"; AUTO_INTERVAL=24
-say(){ printf '\033[1;32m[sisyfus]\033[0m %s\n' "$*"; }
-warn(){ printf '\033[1;33m[sisyfus]\033[0m %s\n' "$*" >&2; }
-die(){ printf '\033[1;31m[sisyfus]\033[0m %s\n' "$*" >&2; exit 1; }
-usage(){ cat <<'EOF'
-Usage: install.sh [options]
-  --version X.Y.Z
-  --channel stable|beta|edge
-  --check
-  --allow-active
-  --enable-auto
-  --auto-mode notify|auto
-  --interval-hours N
-  --uninstall
-EOF
-}
-while [ "$#" -gt 0 ]; do case "$1" in --version) TARGET_VERSION="${2:?}";shift 2;;--channel) CHANNEL="${2:?}";shift 2;;--check)ACTION="check";shift;;--allow-active)ALLOW_ACTIVE=1;shift;;--enable-auto)ENABLE_AUTO=1;shift;;--auto-mode)AUTO_MODE="${2:?}";shift 2;;--interval-hours)AUTO_INTERVAL="${2:?}";shift 2;;--uninstall)ACTION="uninstall";shift;;-h|--help)usage;exit 0;;*)die "unknown option: $1";;esac;done
-case "$CHANNEL" in stable|beta|edge);;*)die "invalid channel";;esac
-skill_dirs(){ if [ -n "${SISYFUS_SKILL_DIRS:-}" ];then printf '%s' "$SISYFUS_SKILL_DIRS"|tr ':' '\n';return;fi;local found=0;for dir in "$HOME/.claude/skills" "$HOME/.agents/skills";do if [ -d "$dir" ];then printf '%s\n' "$dir";found=1;fi;done;[ "$found" -eq 0 ]&&printf '%s\n' "$HOME/.claude/skills"; }
-if [ "$ACTION" = uninstall ];then if [ -x "$BIN_DIR/sisyfus" ];then "$BIN_DIR/sisyfus" update --disable-auto --yes >/dev/null 2>&1||true;fi;while IFS= read -r dir;do rm -rf "$dir/$SKILL_NAME";done < <(skill_dirs);rm -rf "$ENGINE_HOME";rm -f "$BIN_DIR/sisyfus" "$BIN_DIR/sisyfus-autonomy";say "uninstalled; project state untouched";exit 0;fi
-if [ "$ACTION" = check ]&&[ -x "$BIN_DIR/sisyfus" ];then args=(update --check --channel "$CHANNEL");[ -n "$TARGET_VERSION" ]&&args+=(--version "$TARGET_VERSION");exec "$BIN_DIR/sisyfus" "${args[@]}";fi
-PY="$(command -v python3||true)";[ -n "$PY" ]||die "python3 >=3.11 required";"$PY" - <<'PY'||die "python3 >=3.11 required"
-import sys;raise SystemExit(0 if sys.version_info>=(3,11) else 1)
-PY
-resolve_ref(){ "$PY" - "$CHANNEL" "$TARGET_VERSION" <<'PY'
-import json,re,sys,urllib.request
-repo="DionisAI/sisyfus-skill";channel,version=sys.argv[1:]
-def get(url):
- r=urllib.request.Request(url,headers={"Accept":"application/vnd.github+json","User-Agent":"sisyfus-installer"});return json.loads(urllib.request.urlopen(r,timeout=20).read())
-if version:print("v"+version.lstrip("v"));raise SystemExit
-if channel=="edge":print("main");raise SystemExit
-try:
- release=get(f"https://api.github.com/repos/{repo}/releases/latest") if channel=="stable" else max([x for x in get(f"https://api.github.com/repos/{repo}/releases?per_page=100") if not x.get("draft")],key=lambda x:x.get("published_at") or "")
- print(release["tag_name"])
-except Exception:
- try:
-  tags=get(f"https://api.github.com/repos/{repo}/tags?per_page=100");versions=[]
-  for item in tags:
-   m=re.match(r"^v?(\d+)\.(\d+)\.(\d+)(?:-(.*))?$",item.get("name",""))
-   if m and not m.group(4):versions.append((tuple(map(int,m.groups()[:3])),item["name"]))
-  print(max(versions)[1] if versions else "main")
- except Exception:print("main")
-PY
-}
-SRC="$(cd "$(dirname "${BASH_SOURCE[0]:-.}")" 2>/dev/null&&pwd)";CLEANUP="";USE_LOCAL=0
-if [ -f "$SRC/SKILL.md" ]&&[ -d "$SRC/src/sisyfus" ]&&[ -z "$TARGET_VERSION" ];then USE_LOCAL=1;fi
-if [ "$USE_LOCAL" -eq 0 ];then command -v git >/dev/null||die "git required";REF="$(resolve_ref)";SRC="$(mktemp -d ${TMPDIR:-/tmp}/sisyfus-skill.XXXXXX)";CLEANUP="$SRC";say "fetching $REPOSITORY@$REF";git clone --quiet --depth 1 --branch "$REF" "$REPO_URL" "$SRC"||die "fetch failed";if [ ! -f "$SRC/src/sisyfus/updater.py" ];then warn "$REF predates updater; bootstrapping main";rm -rf "$SRC";SRC="$(mktemp -d ${TMPDIR:-/tmp}/sisyfus-skill.XXXXXX)";CLEANUP="$SRC";git clone --quiet --depth 1 --branch main "$REPO_URL" "$SRC";REF=main;fi;else REF=local;fi
-trap '[ -n "$CLEANUP" ]&&rm -rf "$CLEANUP"' EXIT
-export SISYFUS_ENGINE_HOME="$ENGINE_HOME" SISYFUS_BIN_DIR="$BIN_DIR";if [ -z "${SISYFUS_SKILL_DIRS:-}" ];then dirs=();while IFS= read -r dir;do dirs+=("$dir");done < <(skill_dirs);export SISYFUS_SKILL_DIRS="$(IFS=:;echo "${dirs[*]}")";fi
-ALLOW=False;[ "$ALLOW_ACTIVE" -eq 1 ]&&ALLOW=True
-PYTHONPATH="$SRC/src" "$PY" - "$SRC" "$CHANNEL" "$REF" "$ALLOW" <<'PY'
-import json,sys
-from sisyfus.updater import bootstrap_from_source
-source,channel,ref,allow=sys.argv[1:];print(json.dumps(bootstrap_from_source(source,channel=channel,tag=ref if ref.startswith("v") else None,allow_active=allow=="True"),sort_keys=True))
-PY
-VERSION="$("$BIN_DIR/sisyfus" --version)";say "engine ready: sisyfus $VERSION";say "restart coding-agent session"
-if [ "$ENABLE_AUTO" -eq 1 ];then "$BIN_DIR/sisyfus" update --enable-auto --mode "$AUTO_MODE" --channel "$CHANNEL" --interval-hours "$AUTO_INTERVAL" --yes;fi
-'''
-RELEASE_BUILDER = '''#!/usr/bin/env python3
-from __future__ import annotations
-import argparse,hashlib,json,os,re,subprocess
-from pathlib import Path
-def main(argv=None):
- p=argparse.ArgumentParser();p.add_argument("--output",default="dist");p.add_argument("--repository",default="DionisAI/sisyfus-skill");a=p.parse_args(argv);root=Path(__file__).resolve().parents[1];text=(root/"pyproject.toml").read_text();version=re.search(r'(?m)^version\s*=\s*"([^"]+)"',text).group(1);tag=f"v{version}";ref=os.environ.get("GITHUB_REF_NAME") or tag
- if ref!=tag:raise SystemExit(f"tag {ref} != {tag}")
- commit=subprocess.check_output(["git","rev-parse","HEAD"],cwd=root,text=True).strip();out=(root/a.output).resolve();out.mkdir(parents=True,exist_ok=True);archive=out/f"sisyfus-{version}.tar.gz";subprocess.run(["git","archive","--format=tar.gz",f"--prefix=sisyfus-{version}/","-o",str(archive),"HEAD"],cwd=root,check=True);digest=hashlib.sha256(archive.read_bytes()).hexdigest();manifest={"schema_version":"sisyfus.release.v1","repository":a.repository,"version":version,"tag":tag,"commit_sha":commit,"archive_name":archive.name,"archive_sha256":digest,"minimum_python":"3.11","autonomy_schema_version":2,"breaking":False};(out/"release-manifest.json").write_text(json.dumps(manifest,indent=2,sort_keys=True)+"\n");(out/f"{archive.name}.sha256").write_text(f"{digest}  {archive.name}\n");print(json.dumps(manifest,sort_keys=True));return 0
-if __name__=="__main__":raise SystemExit(main())
-'''
-RELEASE_WORKFLOW = '''name: Publish Sisyfus release
-on:
-  push:
-    tags: ['v*']
-permissions:
-  contents: write
-jobs:
-  validate:
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ['3.11','3.12','3.13']
-    steps:
-      - uses: actions/checkout@v4
-        with: {fetch-depth: 0}
-      - uses: actions/setup-python@v5
-        with: {python-version: '${{ matrix.python-version }}', cache: pip}
-      - run: python -m pip install --upgrade pip pytest && python -m pip install -e .
-      - env: {SISYFUS_AUTO_SERVE: '0', SISYFUS_AUTO_OPEN: '0'}
-        run: test "v$(sisyfus --version)" = "$GITHUB_REF_NAME" && python -m compileall -q src tests && python -m pytest -q
-  publish:
-    needs: validate
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with: {fetch-depth: 0}
-      - uses: actions/setup-python@v5
-        with: {python-version: '3.12'}
-      - run: python scripts/build_release_assets.py --output dist
-      - uses: softprops/action-gh-release@v2
-        with:
-          body_path: RELEASE_NOTES_v0.8.1.md
-          files: |
-            dist/sisyfus-*.tar.gz
-            dist/sisyfus-*.tar.gz.sha256
-            dist/release-manifest.json
-'''
-TEST_UPDATER = '''from __future__ import annotations
-import hashlib,io,json,os,tarfile
-from pathlib import Path
-import pytest
-from sisyfus import __version__
-from sisyfus.updater import *
-ROOT=Path(__file__).resolve().parents[1]
-def layout(t):return InstallLayout(t/"engine",t/"bin",t/"engine"/"releases",t/"engine"/"current",t/"engine"/"previous",t/"engine"/"update-state.json",t/"engine"/"projects.json",t/"engine"/"update.lock",(t/"skills",))
-class FakeClient:
- def __init__(self,responses,archive=None):self.responses=responses;self.archive=archive
- def json(self,url):
-  v=self.responses[url]
-  if isinstance(v,Exception):raise v
-  return v
- def download(self,url,destination,**kwargs):destination.write_bytes(self.archive);return hashlib.sha256(self.archive).hexdigest()
-def release(v):return {"tag_name":f"v{v}","tarball_url":f"https://x/{v}.tgz","target_commitish":"a"*40,"prerelease":False,"draft":False,"assets":[{"name":f"sisyfus-{v}.tar.gz","browser_download_url":f"https://x/sisyfus-{v}.tar.gz"},{"name":"release-manifest.json","browser_download_url":"https://x/release-manifest.json"}]}
-def archive():
- b=io.BytesIO()
- with tarfile.open(fileobj=b,mode="w:gz") as t:
-  for r in ("pyproject.toml","SKILL.md","references","templates","src/sisyfus"):t.add(ROOT/r,arcname=f"sisyfus-{__version__}/{r}",recursive=True)
- return b.getvalue()
-def test_semver():assert SemVer.parse("0.8.1-rc.1")<SemVer.parse("0.8.1")
-def test_resolve_assets():
- c=resolve_candidate(client=FakeClient({f"{API_BASE}/repos/DionisAI/sisyfus-skill/releases/latest":release("0.8.1")}));assert c.verification=="manifest_sha256"
-def test_safe_extract(tmp_path):
- a=tmp_path/"bad.tgz"
- with tarfile.open(a,"w:gz") as t:
-  i=tarfile.TarInfo("../x");i.size=1;t.addfile(i,io.BytesIO(b"x"))
- with pytest.raises(IntegrityError):_safe_extract(a,tmp_path/"out")
-def test_bootstrap(tmp_path,monkeypatch):
- monkeypatch.setenv("SISYFUS_UPDATE_FORCE_STDLIB","1");r=bootstrap_from_source(ROOT,layout=layout(tmp_path),allow_active=True);assert r["status"]=="UPDATED";assert (tmp_path/"skills"/"sisyfus-research"/"SKILL.md").exists()
-def test_rollback(tmp_path,monkeypatch):
- monkeypatch.setenv("SISYFUS_UPDATE_FORCE_STDLIB","1");l=layout(tmp_path);l.ensure();a=_build_release(ROOT,Candidate(__version__,"a","edge",str(ROOT),"a"),l,archive_sha256=None,remote_manifest=None);b=_build_release(ROOT,Candidate(__version__,"b","edge",str(ROOT),"b"),l,archive_sha256=None,remote_manifest=None);_activate_release(a,l);_activate_release(b,l);assert UpdateManager(layout=l,client=FakeClient({}),installed_version=__version__).rollback(allow_active=True)["status"]=="ROLLED_BACK";assert l.current_link.resolve()==a
-def test_active_blocks(tmp_path,monkeypatch):
- monkeypatch.setenv("SISYFUS_UPDATE_FORCE_STDLIB","1");l=layout(tmp_path);p=tmp_path/"p";d=p/".sisyfus"/"live";d.mkdir(parents=True);(d/"activity.json").write_text(json.dumps({"status":"RUNNING","heartbeat_at":"2999-01-01T00:00:00Z","pid":os.getpid()}));register_project(p,layout=l)
- with pytest.raises(ActiveWorkError):bootstrap_from_source(ROOT,layout=l)
-def test_verified_apply(tmp_path,monkeypatch):
- monkeypatch.setenv("SISYFUS_UPDATE_FORCE_STDLIB","1");data=archive();digest=hashlib.sha256(data).hexdigest();rel=release(__version__);responses={f"{API_BASE}/repos/DionisAI/sisyfus-skill/releases/latest":rel,"https://x/release-manifest.json":{"schema_version":RELEASE_MANIFEST_SCHEMA,"repository":"DionisAI/sisyfus-skill","version":__version__,"tag":f"v{__version__}","archive_sha256":digest}};m=UpdateManager(layout=layout(tmp_path),client=FakeClient(responses,data),installed_version="0.8.0");assert m.apply(allow_active=True)["verification"]=="manifest_sha256"
-def test_scheduler(tmp_path,monkeypatch):
- l=layout(tmp_path);monkeypatch.setattr("sisyfus.updater.platform.system",lambda:"Linux");monkeypatch.setenv("XDG_CONFIG_HOME",str(tmp_path/"cfg"));monkeypatch.setenv("SISYFUS_UPDATE_SKIP_SCHEDULER_ACTIVATION","1");r=UpdateManager(layout=l,client=FakeClient({}),installed_version=__version__).configure_auto(enabled=True,interval_hours=6);assert r["enabled"];assert "21600s" in (tmp_path/"cfg"/"systemd"/"user"/"sisyfus-update.timer").read_text()
-'''
-TEST_UPDATE_CLI = '''from pathlib import Path
-import json
-from sisyfus import __version__
-from sisyfus.cli import build_parser,main
-def env(t,m):m.setenv("SISYFUS_ENGINE_HOME",str(t/"e"));m.setenv("SISYFUS_BIN_DIR",str(t/"b"));m.setenv("SISYFUS_SKILL_DIRS",str(t/"s"))
-def test_parser():
- a=build_parser().parse_args(["update","--check","--channel","beta","--version","0.8.1","--json"]);assert a.target_version=="0.8.1"
-def test_status(tmp_path,monkeypatch,capsys):
- env(tmp_path,monkeypatch);assert main(["update","--status","--json"])==0;assert json.loads(capsys.readouterr().out)["installed_version"]==__version__
-def test_noninteractive(tmp_path,monkeypatch,capsys):
- env(tmp_path,monkeypatch);monkeypatch.setattr("sys.stdin",type("X",(),{"isatty":lambda s:False})());assert main(["update"])==1;assert "requires --yes" in capsys.readouterr().err
-def test_installer():
- s=(Path(__file__).resolve().parents[1]/"install.sh").read_text();assert "--version X.Y.Z" in s and "bootstrap_from_source" in s
-'''
-TEST_RELEASE_ASSETS = '''from pathlib import Path
-def test_release_assets():
- r=Path(__file__).resolve().parents[1];w=(r/".github/workflows/release.yml").read_text();b=(r/"scripts/build_release_assets.py").read_text();assert "release-manifest.json" in w and "archive_sha256" in b
-def test_version_docs():
- r=Path(__file__).resolve().parents[1];assert 'version = "0.8.1"' in (r/"pyproject.toml").read_text();assert "sisyfus update --rollback" in (r/"README.md").read_text()
-'''
-CMD_UPDATE = '''
-def cmd_update(args: argparse.Namespace) -> int:
-    from .updater import ActiveWorkError, UpdateManager, format_result
-    manager = UpdateManager()
-    try:
-        if args.update_status: result = manager.status()
-        elif args.check: result = manager.check(channel=args.channel, version=args.target_version)
-        elif args.rollback:
-            if not args.yes and not args.scheduled:
-                import sys
-                if not sys.stdin.isatty(): raise RuntimeError("rollback requires --yes in a non-interactive session")
-                if input("Roll back Sisyfus? [y/N] ").strip().lower() not in {"y","yes"}: return 4
-            result = manager.rollback(allow_active=args.allow_active)
-        elif args.enable_auto:
-            if not args.yes:
-                import sys
-                if not sys.stdin.isatty(): raise RuntimeError("enabling automatic updates requires --yes non-interactively")
-                if input("Enable automatic Sisyfus updates? [y/N] ").strip().lower() not in {"y","yes"}: return 4
-            result = manager.configure_auto(enabled=True, mode=args.mode, channel=args.channel, interval_hours=args.interval_hours)
-        elif args.disable_auto: result = manager.configure_auto(enabled=False, mode=args.mode, channel=args.channel, interval_hours=args.interval_hours)
-        else:
-            if not args.yes and not args.scheduled:
-                import sys
-                if not sys.stdin.isatty(): raise RuntimeError("installing an update requires --yes in a non-interactive session")
-                preview=manager.check(channel=args.channel,version=args.target_version)
-                if not preview.get("update_available") and not args.force: result=preview
-                elif input(f"Update to {(preview.get('candidate') or {}).get('version')}? [y/N] ").strip().lower() not in {"y","yes"}: return 4
-                else: result=manager.apply(channel=args.channel,version=args.target_version,force=args.force,allow_active=args.allow_active)
-            else: result=manager.apply(channel=args.channel,version=args.target_version,force=args.force,allow_active=args.allow_active)
-    except ActiveWorkError as exc:
-        result={"status":"DEFERRED_ACTIVE_WORK","message":str(exc),"active_work":exc.active}
-        if args.json:_print_json(result)
-        else:
-            print("Sisyfus update deferred because active work is running.")
-            for item in exc.active:print(f"  - {item.get('summary') or item}")
-        return 0 if args.scheduled else 3
-    if args.json:_print_json(result)
-    else:print(format_result(result))
-    return 0
-
-'''
-PARSER_UPDATE = '''
-    p_update = sub.add_parser("update", help="check, install, schedule, or roll back Sisyfus releases")
-    action = p_update.add_mutually_exclusive_group()
-    action.add_argument("--check", action="store_true")
-    action.add_argument("--status", dest="update_status", action="store_true")
-    action.add_argument("--rollback", action="store_true")
-    action.add_argument("--enable-auto", action="store_true")
-    action.add_argument("--disable-auto", action="store_true")
-    p_update.add_argument("--channel", choices=["stable","beta","edge"], default="stable")
-    p_update.add_argument("--version", dest="target_version")
-    p_update.add_argument("--mode", choices=["notify","auto"], default="notify")
-    p_update.add_argument("--interval-hours", type=float, default=24.0)
-    p_update.add_argument("--yes", action="store_true")
-    p_update.add_argument("--force", action="store_true")
-    p_update.add_argument("--allow-active", action="store_true")
-    p_update.add_argument("--json", action="store_true")
-    p_update.add_argument("--scheduled", action="store_true", help=argparse.SUPPRESS)
-    p_update.set_defaults(func=cmd_update)
-
-'''
-README_UPDATE = '''## Updating Sisyfus
-
-Sisyfus updates the **engine and installed Skill together**. Releases live under
-`~/.local/share/sisyfus/releases/`; activation is an atomic `current` symlink
-switch and the previous release remains available for rollback.
-
-```bash
-sisyfus update --check
-sisyfus update --yes
-sisyfus update --version 0.8.1 --yes
-sisyfus update --channel beta --yes
-sisyfus update --channel edge --yes
-sisyfus update --status
-sisyfus update --rollback
-```
-
-Recommended automatic mode only checks and records availability:
-
-```bash
-sisyfus update --enable-auto --mode notify --interval-hours 24 --yes
-```
-
-`--mode auto` installs Stable only while all registered projects are idle.
-Running activities, experiments, verifier work, Continuations, Decisions, and
-unknown commits defer activation. Linux uses a systemd user timer; macOS uses a
-LaunchAgent. Restart the coding-agent session after a switch so it reloads the
-new Skill. Project `.sisyfus/` state is never removed.
-
-'''
-README_UPDATE_ZH = '''## 更新 Sisyfus
-
-Sisyfus 会把 **Engine 与已安装 Skill 一起更新**。版本分别安装到
-`~/.local/share/sisyfus/releases/`，校验后原子切换 `current`，上一版本可回滚。
-
-```bash
-sisyfus update --check
-sisyfus update --yes
-sisyfus update --version 0.8.1 --yes
-sisyfus update --status
-sisyfus update --rollback
-sisyfus update --enable-auto --mode notify --interval-hours 24 --yes
-```
-
-自动安装只会在所有登记项目空闲时执行；运行中的 Activity、Experiment、Verifier、
-Continuation、Decision 或 Unknown Commit 会让升级延后。升级后重启 Coding Agent
-Session 以重新加载 Skill。项目 `.sisyfus/` 状态不会被删除。
-
-'''
-SKILL_UPDATE = '''## Updating the Skill and engine
-
-The Skill and engine are one compatibility unit. Check with `sisyfus update
---check`; never install silently. After explicit approval use `sisyfus update
---yes`, an exact `--version`, or `--rollback`. Stable is the default channel;
-beta includes prereleases and edge resolves main to one commit SHA. Activation
-is blocked by running research, verifier work, leased Continuations, pending
-Decisions, or unknown commits. After any switch tell the user to restart the
-coding-agent session.
-
-'''
-CHANGELOG_BLOCK = '''## 0.8.1 — 2026-08-20
-
-- Added `sisyfus update` with stable/beta/edge channels, exact versions, status,
-  automatic checks, active-work protection, atomic activation, and rollback.
-- Engine and Skill files now activate together from versioned release directories.
-- Tagged releases publish a SHA-256 verified archive and `sisyfus.release.v1` manifest.
-- `install.sh` is an idempotent bootstrap/update command with version and channel selection.
-
-'''
-RELEASE_NOTES = '''# Sisyfus v0.8.1
-
-v0.8.1 adds versioned, atomic self-update and rollback for the Engine and Skill.
-
-```bash
-sisyfus update --check
-sisyfus update --yes
-sisyfus update --version 0.8.1 --yes
-sisyfus update --status
-sisyfus update --rollback
-```
-
-Stable releases prefer GitHub Release archives verified by SHA-256 manifests.
-Automatic Notify or Auto mode uses systemd user timers on Linux and LaunchAgents
-on macOS. Auto installs defer while research, verifier, Continuation, Decision,
-or unknown-commit work is active. Restart the coding-agent session after a switch.
-'''
-write("src/sisyfus/updater.py", UPDATER)
-write("install.sh", INSTALLER, 0o755)
-write("scripts/build_release_assets.py", RELEASE_BUILDER, 0o755)
-write(".github/workflows/release.yml", RELEASE_WORKFLOW)
-write("tests/test_updater.py", TEST_UPDATER)
-write("tests/test_update_cli.py", TEST_UPDATE_CLI)
-write("tests/test_release_assets.py", TEST_RELEASE_ASSETS)
-write("RELEASE_NOTES_v0.8.1.md", RELEASE_NOTES)
-replace_once("pyproject.toml", 'version = "0.8.0"', 'version = "0.8.1"')
-replace_once("src/sisyfus/__init__.py", '__version__ = "0.8.0"', '__version__ = "0.8.1"')
-cli=read("src/sisyfus/cli.py")
-if "def cmd_update(" not in cli:cli=cli.replace("def build_parser() -> argparse.ArgumentParser:\n",CMD_UPDATE+"def build_parser() -> argparse.ArgumentParser:\n",1)
-if 'sub.add_parser("update"' not in cli:cli=cli.replace('    p_research = sub.add_parser("research", help="event-sourced branching research skill")\n',PARSER_UPDATE+'    p_research = sub.add_parser("research", help="event-sourced branching research skill")\n',1)
-write("src/sisyfus/cli.py",cli)
-paths=read("src/sisyfus/paths.py")
-old='''def ensure_layout(root: str | Path | None = None) -> Path:\n    root_path = find_project_root(root)\n    sf = root_path / ".sisyfus"\n    for rel in LAYOUT_DIRS:\n        (sf / rel).mkdir(parents=True, exist_ok=True)\n    return sf\n'''
-new='''def ensure_layout(root: str | Path | None = None) -> Path:\n    root_path = find_project_root(root)\n    sf = root_path / ".sisyfus"\n    for rel in LAYOUT_DIRS:\n        (sf / rel).mkdir(parents=True, exist_ok=True)\n    try:\n        from .updater import register_project\n        register_project(root_path)\n    except Exception:\n        pass\n    return sf\n'''
-if new not in paths:paths=paths.replace(old,new,1)
-write("src/sisyfus/paths.py",paths)
-for path in ("README.md","README.zh-CN.md","SKILL.md"):write(path,read(path).replace("@v0.8.0","@v0.8.1"))
-r=read("README.md");write("README.md",r if README_UPDATE.strip() in r else r.replace("## Install\n",README_UPDATE+"## Install\n",1))
-r=read("README.zh-CN.md");write("README.zh-CN.md",r if README_UPDATE_ZH.strip() in r else r.replace("## 安装\n",README_UPDATE_ZH+"## 安装\n",1))
-r=read("SKILL.md");write("SKILL.md",r if SKILL_UPDATE.strip() in r else r.replace("## Monitor-first lifecycle\n",SKILL_UPDATE+"## Monitor-first lifecycle\n",1))
-r=read("CHANGELOG.md");write("CHANGELOG.md",r if "## 0.8.1" in r else r.replace("# Changelog\n\n","# Changelog\n\n"+CHANGELOG_BLOCK,1))

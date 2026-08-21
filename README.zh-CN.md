@@ -55,6 +55,24 @@ v0.8.0 把 Sisyfus 从验证者门控的研究引擎升级成了一个
 完整内容见 [`RELEASE_NOTES_v0.8.0.md`](RELEASE_NOTES_v0.8.0.md) 和
 [`CHANGELOG.md`](CHANGELOG.md)。
 
+## 更新 Sisyfus
+
+Sisyfus 会把 **Engine 与已安装 Skill 一起更新**。版本分别安装到
+`~/.local/share/sisyfus/releases/`，校验后原子切换 `current`，上一版本可回滚。
+
+```bash
+sisyfus update --check
+sisyfus update --yes
+sisyfus update --version 0.8.1 --yes
+sisyfus update --status
+sisyfus update --rollback
+sisyfus update --enable-auto --mode notify --interval-hours 24 --yes
+```
+
+自动安装只会在所有登记项目空闲时执行；运行中的 Activity、Experiment、Verifier、
+Continuation、Decision 或 Unknown Commit 会让升级延后。升级后重启 Coding Agent
+Session 以重新加载 Skill。项目 `.sisyfus/` 状态不会被删除。
+
 ## 安装
 
 **一条命令**——skill 和引擎一起装,幂等、无需 sudo、不碰系统 Python:
@@ -84,7 +102,7 @@ Skill:把 `SKILL.md`、`references/`、`templates/` 复制进
 引擎(纯标准库,Python >= 3.11):
 
 ```bash
-python3 -m pip install "sisyfus @ git+https://github.com/DionisAI/sisyfus-skill@v0.8.0"
+python3 -m pip install "sisyfus @ git+https://github.com/DionisAI/sisyfus-skill@v0.8.1"
 ```
 
 `SKILL.md` 自带这项检查,agent 落到干净机器上首次使用时会自行装好引擎。

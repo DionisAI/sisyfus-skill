@@ -67,6 +67,34 @@ v0.8.0 turns Sisyfus from a verifier-gated research engine into a
 See [`RELEASE_NOTES_v0.8.0.md`](RELEASE_NOTES_v0.8.0.md) and
 [`CHANGELOG.md`](CHANGELOG.md) for the complete release notes.
 
+## Updating Sisyfus
+
+Sisyfus updates the **engine and installed Skill together**. Releases live under
+`~/.local/share/sisyfus/releases/`; activation is an atomic `current` symlink
+switch and the previous release remains available for rollback.
+
+```bash
+sisyfus update --check
+sisyfus update --yes
+sisyfus update --version 0.8.1 --yes
+sisyfus update --channel beta --yes
+sisyfus update --channel edge --yes
+sisyfus update --status
+sisyfus update --rollback
+```
+
+Recommended automatic mode only checks and records availability:
+
+```bash
+sisyfus update --enable-auto --mode notify --interval-hours 24 --yes
+```
+
+`--mode auto` installs Stable only while all registered projects are idle.
+Running activities, experiments, verifier work, Continuations, Decisions, and
+unknown commits defer activation. Linux uses a systemd user timer; macOS uses a
+LaunchAgent. Restart the coding-agent session after a switch so it reloads the
+new Skill. Project `.sisyfus/` state is never removed.
+
 ## Install
 
 **One command** — installs the skill *and* the engine, idempotent, no sudo,
@@ -100,7 +128,7 @@ or use a skills CLI: `npx skills add github:DionisAI/sisyfus-skill`.
 Engine (pure standard library, Python >= 3.11):
 
 ```bash
-python3 -m pip install "sisyfus @ git+https://github.com/DionisAI/sisyfus-skill@v0.8.0"
+python3 -m pip install "sisyfus @ git+https://github.com/DionisAI/sisyfus-skill@v0.8.1"
 ```
 
 `SKILL.md` performs this check itself, so an agent landing on a clean machine

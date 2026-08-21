@@ -1,124 +1,70 @@
 #!/usr/bin/env bash
-# One-shot installer for the sisyfus-research skill + engine.
-#
-#   From a clone:            ./install.sh
-#   Straight from GitHub:    curl -fsSL https://raw.githubusercontent.com/DionisAI/sisyfus-skill/main/install.sh | bash
-#   Remove everything:       ./install.sh --uninstall
-#
-# What it does (all idempotent, no sudo, nothing touches system Python):
-#   1. copies SKILL.md + references/ + templates/ into every detected skill
-#      directory (~/.claude/skills/, ~/.agents/skills/) as `sisyfus-research`;
-#   2. installs the engine under ~/.local/share/sisyfus and links the CLI to
-#      ~/.local/bin/sisyfus. Preferred route is a venv + pip; on machines
-#      missing python3-venv/ensurepip/pip it falls back to a pure-stdlib
-#      source install (sisyfus has zero runtime dependencies).
 set -euo pipefail
-
 REPO_URL="https://github.com/DionisAI/sisyfus-skill"
+REPOSITORY="DionisAI/sisyfus-skill"
 SKILL_NAME="sisyfus-research"
 ENGINE_HOME="${SISYFUS_ENGINE_HOME:-${HOME}/.local/share/sisyfus}"
-VENV_DIR="${ENGINE_HOME}/venv"
-LIB_DIR="${ENGINE_HOME}/lib"
-BIN_LINK="${HOME}/.local/bin/sisyfus"
-
-say()  { printf '\033[1;32m[sisyfus]\033[0m %s\n' "$*"; }
-warn() { printf '\033[1;33m[sisyfus]\033[0m %s\n' "$*"; }
-
-skill_dirs() {
-  local dirs=()
-  [ -d "${HOME}/.claude/skills" ] && dirs+=("${HOME}/.claude/skills")
-  [ -d "${HOME}/.agents/skills" ] && dirs+=("${HOME}/.agents/skills")
-  [ ${#dirs[@]} -eq 0 ] && dirs+=("${HOME}/.claude/skills")
-  printf '%s\n' "${dirs[@]}"
-}
-
-if [ "${1:-}" = "--uninstall" ]; then
-  while IFS= read -r dir; do
-    rm -rf "${dir}/${SKILL_NAME}" && say "removed ${dir}/${SKILL_NAME}"
-  done < <(skill_dirs)
-  rm -rf "${ENGINE_HOME}" "${HOME}/.sisyfus/venv" && say "removed ${ENGINE_HOME}"
-  rm -f "${BIN_LINK}" && say "removed ${BIN_LINK}"
-  say "uninstalled. Per-project .sisyfus/ state trees are untouched."
-  exit 0
-fi
-
-# --- locate the skill source (local clone, or fetch when piped) --------------
-SRC="$(cd "$(dirname "${BASH_SOURCE[0]:-.}")" 2>/dev/null && pwd)"
-CLEANUP=""
-if [ ! -f "${SRC}/SKILL.md" ] || [ ! -d "${SRC}/references" ]; then
-  command -v git >/dev/null || { warn "git is required"; exit 1; }
-  SRC="$(mktemp -d "${TMPDIR:-/tmp}/sisyfus-skill.XXXXXX")"
-  CLEANUP="${SRC}"
-  say "fetching ${REPO_URL} ..."
-  git clone --quiet --depth 1 "${REPO_URL}" "${SRC}"
-fi
-trap '[ -n "${CLEANUP}" ] && rm -rf "${CLEANUP}"' EXIT
-
-# --- 1. install the skill files ---------------------------------------------
-while IFS= read -r dir; do
-  target="${dir}/${SKILL_NAME}"
-  mkdir -p "${target}"
-  cp "${SRC}/SKILL.md" "${target}/SKILL.md"
-  rm -rf "${target}/references" "${target}/templates"
-  cp -R "${SRC}/references" "${SRC}/templates" "${target}/"
-  say "skill installed -> ${target}"
-done < <(skill_dirs)
-
-# --- 2. install the engine ---------------------------------------------------
-PY="$(command -v python3 || true)"
-[ -z "${PY}" ] && { warn "python3 (>= 3.11) is required"; exit 1; }
-"${PY}" - <<'EOF' || { printf '\033[1;33m[sisyfus]\033[0m python3 >= 3.11 required (found %s)\n' "$("${PY}" -V 2>&1)"; exit 1; }
-import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)
+BIN_DIR="${SISYFUS_BIN_DIR:-${HOME}/.local/bin}"
+CHANNEL="stable"; TARGET_VERSION=""; ACTION="install"; ALLOW_ACTIVE=0; ENABLE_AUTO=0; AUTO_MODE="notify"; AUTO_INTERVAL=24
+say(){ printf '[1;32m[sisyfus][0m %s
+' "$*"; }
+warn(){ printf '[1;33m[sisyfus][0m %s
+' "$*" >&2; }
+die(){ printf '[1;31m[sisyfus][0m %s
+' "$*" >&2; exit 1; }
+usage(){ cat <<'EOF'
+Usage: install.sh [options]
+  --version X.Y.Z
+  --channel stable|beta|edge
+  --check
+  --allow-active
+  --enable-auto
+  --auto-mode notify|auto
+  --interval-hours N
+  --uninstall
 EOF
-mkdir -p "${ENGINE_HOME}" "$(dirname "${BIN_LINK}")"
-
-install_engine_venv() {
-  [ -n "${SISYFUS_FORCE_STDLIB:-}" ] && return 1
-  if [ ! -x "${VENV_DIR}/bin/python" ]; then
-    "${PY}" -m venv "${VENV_DIR}" 2>/dev/null \
-      || "${PY}" -m venv --without-pip "${VENV_DIR}" 2>/dev/null \
-      || return 1
-  fi
-  local vpy="${VENV_DIR}/bin/python"
-  if ! "${vpy}" -m pip --version >/dev/null 2>&1; then
-    "${vpy}" -m ensurepip --upgrade >/dev/null 2>&1 || return 1
-  fi
-  "${vpy}" -m pip install --quiet --upgrade pip >/dev/null 2>&1 || true
-  "${vpy}" -m pip install --quiet --force-reinstall "${SRC}" || return 1
-  rm -f "${BIN_LINK}"
-  ln -s "${VENV_DIR}/bin/sisyfus" "${BIN_LINK}"
-  say "engine installed via venv+pip (${VENV_DIR})"
 }
-
-install_engine_stdlib() {
-  # sisyfus is pure standard library: a source copy plus a launcher is a
-  # complete install. No venv, no pip, no ensurepip, no sudo, no network
-  # beyond the clone itself.
-  rm -rf "${LIB_DIR}"
-  mkdir -p "${LIB_DIR}"
-  cp -R "${SRC}/src/sisyfus" "${LIB_DIR}/"
-  rm -f "${BIN_LINK}"
-  cat > "${BIN_LINK}" <<EOF
-#!/usr/bin/env python3
-import sys
-sys.path.insert(0, "${LIB_DIR}")
-from sisyfus.cli import main
-sys.exit(main())
-EOF
-  chmod +x "${BIN_LINK}"
-  say "engine installed from source, no pip needed (${LIB_DIR})"
+while [ "$#" -gt 0 ]; do case "$1" in --version) TARGET_VERSION="${2:?}";shift 2;;--channel) CHANNEL="${2:?}";shift 2;;--check)ACTION="check";shift;;--allow-active)ALLOW_ACTIVE=1;shift;;--enable-auto)ENABLE_AUTO=1;shift;;--auto-mode)AUTO_MODE="${2:?}";shift 2;;--interval-hours)AUTO_INTERVAL="${2:?}";shift 2;;--uninstall)ACTION="uninstall";shift;;-h|--help)usage;exit 0;;*)die "unknown option: $1";;esac;done
+case "$CHANNEL" in stable|beta|edge);;*)die "invalid channel";;esac
+skill_dirs(){ if [ -n "${SISYFUS_SKILL_DIRS:-}" ];then printf '%s' "$SISYFUS_SKILL_DIRS"|tr ':' '
+';return;fi;local found=0;for dir in "$HOME/.claude/skills" "$HOME/.agents/skills";do if [ -d "$dir" ];then printf '%s
+' "$dir";found=1;fi;done;[ "$found" -eq 0 ]&&printf '%s
+' "$HOME/.claude/skills"; }
+if [ "$ACTION" = uninstall ];then if [ -x "$BIN_DIR/sisyfus" ];then "$BIN_DIR/sisyfus" update --disable-auto --yes >/dev/null 2>&1||true;fi;while IFS= read -r dir;do rm -rf "$dir/$SKILL_NAME";done < <(skill_dirs);rm -rf "$ENGINE_HOME";rm -f "$BIN_DIR/sisyfus" "$BIN_DIR/sisyfus-autonomy";say "uninstalled; project state untouched";exit 0;fi
+if [ "$ACTION" = check ]&&[ -x "$BIN_DIR/sisyfus" ];then args=(update --check --channel "$CHANNEL");[ -n "$TARGET_VERSION" ]&&args+=(--version "$TARGET_VERSION");exec "$BIN_DIR/sisyfus" "${args[@]}";fi
+PY="$(command -v python3||true)";[ -n "$PY" ]||die "python3 >=3.11 required";"$PY" - <<'PY'||die "python3 >=3.11 required"
+import sys;raise SystemExit(0 if sys.version_info>=(3,11) else 1)
+PY
+resolve_ref(){ "$PY" - "$CHANNEL" "$TARGET_VERSION" <<'PY'
+import json,re,sys,urllib.request
+repo="DionisAI/sisyfus-skill";channel,version=sys.argv[1:]
+def get(url):
+ r=urllib.request.Request(url,headers={"Accept":"application/vnd.github+json","User-Agent":"sisyfus-installer"});return json.loads(urllib.request.urlopen(r,timeout=20).read())
+if version:print("v"+version.lstrip("v"));raise SystemExit
+if channel=="edge":print("main");raise SystemExit
+try:
+ release=get(f"https://api.github.com/repos/{repo}/releases/latest") if channel=="stable" else max([x for x in get(f"https://api.github.com/repos/{repo}/releases?per_page=100") if not x.get("draft")],key=lambda x:x.get("published_at") or "")
+ print(release["tag_name"])
+except Exception:
+ try:
+  tags=get(f"https://api.github.com/repos/{repo}/tags?per_page=100");versions=[]
+  for item in tags:
+   m=re.match(r"^v?(\d+)\.(\d+)\.(\d+)(?:-(.*))?$",item.get("name",""))
+   if m and not m.group(4):versions.append((tuple(map(int,m.groups()[:3])),item["name"]))
+  print(max(versions)[1] if versions else "main")
+ except Exception:print("main")
+PY
 }
-
-if ! install_engine_venv; then
-  warn "venv/pip route unavailable (python3-venv or ensurepip missing?) — using the pure-stdlib install"
-  install_engine_stdlib
-fi
-
-# --- verify ------------------------------------------------------------------
-VERSION="$("${BIN_LINK}" --version)" || { warn "install verification failed"; exit 1; }
-say "engine ready: sisyfus ${VERSION} (${BIN_LINK})"
-case ":${PATH}:" in
-  *":${HOME}/.local/bin:"*) ;;
-  *) warn "~/.local/bin is not on your PATH — add:  export PATH=\"\$HOME/.local/bin:\$PATH\"" ;;
-esac
-say "try it:  mkdir /tmp/sisyfus-demo && cd /tmp/sisyfus-demo && sisyfus init && sisyfus research demo --root . && sisyfus research serve latest --open --root ."
+SRC="$(cd "$(dirname "${BASH_SOURCE[0]:-.}")" 2>/dev/null&&pwd)";CLEANUP="";USE_LOCAL=0
+if [ -f "$SRC/SKILL.md" ]&&[ -d "$SRC/src/sisyfus" ]&&[ -z "$TARGET_VERSION" ];then USE_LOCAL=1;fi
+if [ "$USE_LOCAL" -eq 0 ];then command -v git >/dev/null||die "git required";REF="$(resolve_ref)";SRC="$(mktemp -d ${TMPDIR:-/tmp}/sisyfus-skill.XXXXXX)";CLEANUP="$SRC";say "fetching $REPOSITORY@$REF";git clone --quiet --depth 1 --branch "$REF" "$REPO_URL" "$SRC"||die "fetch failed";if [ ! -f "$SRC/src/sisyfus/updater.py" ];then warn "$REF predates updater; bootstrapping main";rm -rf "$SRC";SRC="$(mktemp -d ${TMPDIR:-/tmp}/sisyfus-skill.XXXXXX)";CLEANUP="$SRC";git clone --quiet --depth 1 --branch main "$REPO_URL" "$SRC";REF=main;fi;else REF=local;fi
+trap '[ -n "$CLEANUP" ]&&rm -rf "$CLEANUP"' EXIT
+export SISYFUS_ENGINE_HOME="$ENGINE_HOME" SISYFUS_BIN_DIR="$BIN_DIR";if [ -z "${SISYFUS_SKILL_DIRS:-}" ];then dirs=();while IFS= read -r dir;do dirs+=("$dir");done < <(skill_dirs);export SISYFUS_SKILL_DIRS="$(IFS=:;echo "${dirs[*]}")";fi
+ALLOW=False;[ "$ALLOW_ACTIVE" -eq 1 ]&&ALLOW=True
+PYTHONPATH="$SRC/src" "$PY" - "$SRC" "$CHANNEL" "$REF" "$ALLOW" <<'PY'
+import json,sys
+from sisyfus.updater import bootstrap_from_source
+source,channel,ref,allow=sys.argv[1:];print(json.dumps(bootstrap_from_source(source,channel=channel,tag=ref if ref.startswith("v") else None,allow_active=allow=="True"),sort_keys=True))
+PY
+VERSION="$("$BIN_DIR/sisyfus" --version)";say "engine ready: sisyfus $VERSION";say "restart coding-agent session"
+if [ "$ENABLE_AUTO" -eq 1 ];then "$BIN_DIR/sisyfus" update --enable-auto --mode "$AUTO_MODE" --channel "$CHANNEL" --interval-hours "$AUTO_INTERVAL" --yes;fi
