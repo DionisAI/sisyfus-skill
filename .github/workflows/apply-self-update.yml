@@ -7,12 +7,18 @@ on:
     paths:
       - .github/self-update/**
       - .github/workflows/apply-self-update.yml
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/self-update/**
+      - .github/workflows/apply-self-update.yml
 
 permissions:
   contents: write
 
 concurrency:
-  group: apply-self-update-${{ github.ref }}
+  group: apply-self-update-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
