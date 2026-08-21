@@ -134,6 +134,29 @@ jobs:
               raise SystemExit(main())
           PY
           chmod +x scripts/build_release_assets.py
+          python - <<'PY'
+          from pathlib import Path
+
+          updater_tests = Path("tests/test_updater.py")
+          text = updater_tests.read_text(encoding="utf-8")
+          marker = "from sisyfus.updater import *\n"
+          addition = (
+              marker
+              + "from sisyfus.updater import "
+              + "_activate_release, _build_release, _safe_extract\n"
+          )
+          if addition not in text:
+              if text.count(marker) != 1:
+                  raise SystemExit("unexpected updater import marker")
+              text = text.replace(marker, addition, 1)
+          updater_tests.write_text(text, encoding="utf-8")
+
+          release_test = Path("tests/test_release_version.py")
+          text = release_test.read_text(encoding="utf-8")
+          text = text.replace('VERSION = "0.8.0"', 'VERSION = "0.8.1"')
+          text = text.replace('TAG = "v0.8.0"', 'TAG = "v0.8.1"')
+          release_test.write_text(text, encoding="utf-8")
+          PY
           python scripts/sync_skill_assets.py
           bash -n install.sh
       - name: Install
