@@ -36,6 +36,29 @@ jobs:
           cache: pip
       - name: Apply hardening changes
         run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path(".github/updater-hardening/apply.py")
+          text = path.read_text(encoding="utf-8")
+          replacements = {
+              'pattern.subn(replacement.rstrip() + "\\n\\n", text, count=1)': (
+                  'pattern.subn(lambda _match: replacement.rstrip() + "\\n\\n", '
+                  'text, count=1)'
+              ),
+              'pattern.subn(replacement.rstrip() + "\\n", text, count=1)': (
+                  'pattern.subn(lambda _match: replacement.rstrip() + "\\n", '
+                  'text, count=1)'
+              ),
+          }
+          for before, after in replacements.items():
+              if text.count(before) != 1:
+                  raise SystemExit(
+                      f"unexpected hardening patch marker: {before!r}"
+                  )
+              text = text.replace(before, after, 1)
+          path.write_text(text, encoding="utf-8")
+          PY
           python .github/updater-hardening/apply.py
           python scripts/sync_skill_assets.py
           bash -n install.sh
