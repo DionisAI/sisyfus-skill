@@ -221,3 +221,56 @@ def test_serve_falls_back_to_ephemeral_port_for_foreign_occupier(
     assert ports == [live.derived_port(root), 0]
     assert "listening on http://127.0.0.1:54321" in capsys.readouterr().out
     assert live.read_live_state(root) is None  # cleared on shutdown by its owner
+
+
+def test_maybe_open_observatory_once_per_task(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("SISYFUS_AUTO_OPEN", "1")
+    calls: list[str] = []
+    monkeypatch.setattr(live.webbrowser, "open", lambda url, **kwargs: calls.append(url) or True)
+
+    url = "http://127.0.0.1:8787/index.html"
+    assert live.maybe_open_observatory(tmp_path, url, open_key="task-a")
+    assert not live.maybe_open_observatory(tmp_path, url, open_key="task-a")
+    assert live.maybe_open_observatory(tmp_path, url, open_key="task-b")
+    assert calls == [url, url]
+
+
+def test_ensure_activity_observatory_spawns_bootstrap_daemon(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("SISYFUS_AUTO_SERVE", "1")
+    monkeypatch.setenv("SISYFUS_AUTO_OPEN", "0")
+    calls: list[list[str]] = []
+    monkeypatch.setattr(live.subprocess, "Popen", lambda argv, **kwargs: calls.append(list(argv)))
+    (tmp_path / ".sisyfus").mkdir()
+
+    assert live.ensure_activity_observatory(tmp_path, "task-x", spawn_timeout=0.1) is None
+    assert len(calls) == 1
+    assert calls[0][-5:] == ["monitor-serve", "--task-id", "task-x", "--root", str(tmp_path.resolve())]
+
+
+def test_arena_includes_live_activity_hud(tmp_path: Path) -> None:
+    engine = ResearchEngine.create(tmp_path, spec())
+    document = engine.workspace.report_path.read_text(encoding="utf-8")
+    assert 'id="sf-live-hud"' in document
+    assert "activity.json" in document
+
+
+def test_arena_server_exposes_activity_projection(tmp_path: Path) -> None:
+    engine = ResearchEngine.create(tmp_path, spec())
+    server, url = engine.serve_report(port=0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        import urllib.request
+
+        with urllib.request.urlopen(url.rsplit("/", 1)[0] + "/activity.json", timeout=2) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+            assert payload["research_id"] == engine.workspace.research_id
+            assert response.headers["Cache-Control"].startswith("no-store")
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)

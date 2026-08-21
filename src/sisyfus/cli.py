@@ -6,6 +6,14 @@ import os
 from pathlib import Path
 from typing import Any
 
+from .activity import (
+    activity_index_path,
+    read_activity,
+    render_activity_monitor,
+    serve_activity_monitor,
+    start_activity,
+    update_activity,
+)
 from .beam import BeamRunner, BeamStore
 from .distill import make_distill
 from .evals import run_builtin_evals
@@ -25,6 +33,7 @@ from .research_v2.engine import ResearchEngine, build_demo, load_json_object
 from .research_v2.live import (
     AlreadyServing,
     clear_live_state,
+    ensure_activity_observatory,
     ensure_observatory,
     live_observatory_url,
     observatory_entry_path,
@@ -594,6 +603,164 @@ def cmd_eval_run(args: argparse.Namespace) -> int:
 
 
 
+def cmd_research_monitor_start(args: argparse.Namespace) -> int:
+    root = Path(args.root or Path.cwd()).expanduser().resolve()
+    ensure_layout(root)
+    activity = start_activity(
+        root,
+        title=args.task,
+        objective=args.objective or "",
+        actor=args.actor,
+    )
+    entry = render_activity_monitor(root)
+    url = ensure_activity_observatory(
+        root,
+        str(activity["task_id"]),
+        open_browser=not args.no_open,
+    )
+    _print_json(
+        {
+            "status": "MONITOR_READY",
+            "task_id": activity["task_id"],
+            "monitor_url": url,
+            "monitor_entry": str(entry),
+            "activity_path": str(root / ".sisyfus" / "live" / "activity.json"),
+        }
+    )
+    return 0
+
+
+def cmd_research_monitor_clarify(args: argparse.Namespace) -> int:
+    root = Path(args.root or Path.cwd()).expanduser().resolve()
+    ensure_layout(root)
+    current = read_activity(root)
+    if not current.get("task_id"):
+        current = start_activity(
+            root,
+            title=args.task or "Clarify Sisyfus research task",
+            objective="",
+            actor=args.actor,
+        )
+    missing = sorted({str(item) for item in (args.missing or [])})
+    questions = [str(item).strip() for item in (args.question or []) if str(item).strip()]
+    if not missing and not questions:
+        raise ValueError("monitor-clarify requires at least one --missing or --question")
+    detail_parts = []
+    if missing:
+        detail_parts.append("missing=" + ", ".join(missing))
+    if questions:
+        detail_parts.append("questions=" + " | ".join(questions))
+    activity = update_activity(
+        root,
+        phase="CLARIFYING",
+        status="NEEDS_USER",
+        operation="research.intake.clarify",
+        message="Waiting for user clarification before research begins.",
+        detail="; ".join(detail_parts),
+        progress={"percent": 0.0, "label": "Clarification required"},
+        actor=args.actor,
+        metadata={
+            "missing_intake_fields": missing,
+            "clarification_questions": questions,
+        },
+        heartbeat=True,
+    )
+    entry = render_activity_monitor(root)
+    url = ensure_activity_observatory(
+        root,
+        str(activity["task_id"]),
+        open_browser=not args.no_open,
+    )
+    _print_json(
+        {
+            "status": "NEEDS_USER",
+            "task_id": activity["task_id"],
+            "missing": missing,
+            "questions": questions,
+            "monitor_url": url,
+            "monitor_entry": str(entry),
+        }
+    )
+    return 0
+
+
+def cmd_research_monitor_resume(args: argparse.Namespace) -> int:
+    root = Path(args.root or Path.cwd()).expanduser().resolve()
+    ensure_layout(root)
+    current = read_activity(root)
+    if not current.get("task_id"):
+        raise RuntimeError("monitor-resume requires an existing task; run monitor-start first")
+    summary = str(args.summary or "").strip()
+    if not summary:
+        raise ValueError("monitor-resume requires a non-empty --summary")
+    activity = update_activity(
+        root,
+        phase="INTAKE",
+        status="RUNNING",
+        operation="research.intake.lock",
+        message="Clarification received. Locking the research program.",
+        detail=summary,
+        progress={"percent": 5.0, "label": "Intake contract"},
+        actor=args.actor,
+        metadata={
+            "missing_intake_fields": [],
+            "clarification_questions": [],
+            "clarification_summary": summary,
+        },
+        heartbeat=True,
+    )
+    entry = render_activity_monitor(root)
+    url = ensure_activity_observatory(
+        root,
+        str(activity["task_id"]),
+        open_browser=not args.no_open,
+    )
+    _print_json(
+        {
+            "status": "INTAKE_LOCKED",
+            "task_id": activity["task_id"],
+            "summary": summary,
+            "monitor_url": url,
+            "monitor_entry": str(entry),
+        }
+    )
+    return 0
+
+
+def cmd_research_monitor_serve(args: argparse.Namespace) -> int:
+    root = Path(args.root or Path.cwd()).expanduser().resolve()
+    ensure_layout(root)
+    activity = read_activity(root)
+    task_id = str(args.task_id or activity.get("task_id") or "bootstrap")
+    monitor_id = f"activity:{task_id}"
+    try:
+        port = resolve_serve_port(root, monitor_id, args.port)
+    except AlreadyServing as running:
+        print(f"Sisyfus Mission Control already live at {running.url}")
+        return 0
+    server, url = serve_activity_monitor(
+        root,
+        host=args.host,
+        port=port,
+        verbose=args.verbose,
+    )
+    write_live_state(
+        root,
+        host=args.host,
+        port=int(server.server_address[1]),
+        research_id=monitor_id,
+    )
+    print(f"Sisyfus Mission Control listening on {url}")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nSisyfus Mission Control stopped.")
+    finally:
+        server.server_close()
+        clear_live_state(root, pid=os.getpid())
+    return 0
+
+
 def _research_engine(args: argparse.Namespace, *, ensure_live: bool = True) -> ResearchEngine:
     engine = ResearchEngine.load(args.root, args.research_id)
     if ensure_live:
@@ -665,8 +832,31 @@ def _verdict_brief(result: dict[str, Any]) -> dict[str, Any]:
 
 
 def cmd_research_new(args: argparse.Namespace) -> int:
-    engine = ResearchEngine.create(args.root, load_json_object(args.spec), actor=args.actor)
-    ensure_observatory(engine.workspace.root, engine.workspace.research_id)
+    raw_spec = load_json_object(args.spec)
+    root = Path(args.root or Path.cwd()).expanduser().resolve()
+    ensure_layout(root)
+    title = str(raw_spec.get("topic") or raw_spec.get("objective") or raw_spec.get("id") or "Sisyfus Research")
+    objective = str(raw_spec.get("objective") or raw_spec.get("topic") or "")
+    current = read_activity(root)
+    if not current.get("task_id") or str(current.get("status") or "").upper() in {"ERROR", "COMPLETED"}:
+        current = start_activity(root, title=title, objective=objective, actor=args.actor)
+    else:
+        current = update_activity(
+            root,
+            title=title,
+            objective=objective,
+            phase="INITIALIZING",
+            status="RUNNING",
+            operation="research.compile",
+            message="Compiling TaskSpec, claims, verifier contracts, and completion gates.",
+            progress={"percent": 10.0, "label": "Research program"},
+            actor=args.actor,
+            heartbeat=True,
+        )
+        render_activity_monitor(root)
+    ensure_activity_observatory(root, str(current["task_id"]), open_browser=True)
+    engine = ResearchEngine.create(root, raw_spec, actor=args.actor)
+    ensure_observatory(engine.workspace.root, engine.workspace.research_id, open_browser=True)
     snapshot = engine.snapshot()
     summary = _research_summary(snapshot, engine)
     hard_constraints = engine.task.get("hard_constraints") or []
@@ -760,7 +950,22 @@ def cmd_research_execute(args: argparse.Namespace) -> int:
 
 
 def cmd_research_begin(args: argparse.Namespace) -> int:
-    _print_json(_research_engine(args).begin_attempt(args.experiment_id, actor=args.actor))
+    engine = _research_engine(args)
+    attempt = engine.begin_attempt(args.experiment_id, actor=args.actor)
+    update_activity(
+        engine.workspace.root,
+        research_id=engine.workspace.research_id,
+        phase="EXECUTING",
+        status="RUNNING",
+        operation="research.external",
+        message=f"External attempt {attempt['id']} is in progress.",
+        detail=f"experiment={args.experiment_id}; settle this attempt when evidence is ready",
+        progress={"percent": None, "label": "External execution"},
+        actor=args.actor,
+        metadata={"attempt_id": attempt["id"], "experiment_id": args.experiment_id},
+        heartbeat=True,
+    )
+    _print_json(attempt)
     return 0
 
 
@@ -1295,6 +1500,60 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_research = sub.add_parser("research", help="event-sourced branching research skill")
     research_sub = p_research.add_subparsers(dest="research_command", required=True)
+
+    p_rmonitor = research_sub.add_parser(
+        "monitor-start",
+        help="host and open the live Mission Control before TaskSpec compilation",
+    )
+    p_rmonitor.add_argument("--task", required=True, help="short current-task title")
+    p_rmonitor.add_argument("--objective", default="")
+    p_rmonitor.add_argument("--root")
+    p_rmonitor.add_argument("--actor", default="skill")
+    p_rmonitor.add_argument("--no-open", action="store_true", help="host without opening a browser tab")
+    p_rmonitor.set_defaults(func=cmd_research_monitor_start)
+
+
+    p_rclarify = research_sub.add_parser(
+        "monitor-clarify",
+        help="mark Mission Control as waiting for material user clarification",
+    )
+    p_rclarify.add_argument(
+        "--missing",
+        action="append",
+        choices=["scope", "objective", "verification"],
+        help="material intake dimension that is unresolved; may be repeated",
+    )
+    p_rclarify.add_argument(
+        "--question",
+        action="append",
+        help="question being asked of the user; may be repeated",
+    )
+    p_rclarify.add_argument("--task", help="fallback title when monitor-start was not called")
+    p_rclarify.add_argument("--root")
+    p_rclarify.add_argument("--actor", default="skill")
+    p_rclarify.add_argument("--no-open", action="store_true")
+    p_rclarify.set_defaults(func=cmd_research_monitor_clarify)
+
+    p_rresume = research_sub.add_parser(
+        "monitor-resume",
+        help="resume intake after the user clarifies scope, objective, and verifier",
+    )
+    p_rresume.add_argument("--summary", required=True, help="locked intake contract")
+    p_rresume.add_argument("--root")
+    p_rresume.add_argument("--actor", default="skill")
+    p_rresume.add_argument("--no-open", action="store_true")
+    p_rresume.set_defaults(func=cmd_research_monitor_resume)
+
+    p_rmonitor_serve = research_sub.add_parser(
+        "monitor-serve",
+        help=argparse.SUPPRESS,
+    )
+    p_rmonitor_serve.add_argument("--task-id", required=True)
+    p_rmonitor_serve.add_argument("--root")
+    p_rmonitor_serve.add_argument("--host", default="127.0.0.1")
+    p_rmonitor_serve.add_argument("--port", type=int, default=None)
+    p_rmonitor_serve.add_argument("--verbose", action="store_true")
+    p_rmonitor_serve.set_defaults(func=cmd_research_monitor_serve)
 
     p_rnew = research_sub.add_parser("new", help="create a research run from a TaskSpec JSON")
     p_rnew.add_argument("spec")

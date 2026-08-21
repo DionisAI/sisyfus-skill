@@ -9,6 +9,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from ..activity import (
+    ActivityTracker,
+    bind_research,
+    ensure_activity,
+    progress_signal_path,
+    update_activity,
+)
 from ..utils import run_process
 from .models import (
     normalize_contract,
@@ -83,7 +90,19 @@ class ResearchEngine:
         render: bool = True,
     ) -> "ResearchEngine":
         engine = cls(ResearchWorkspace.create(root, spec, actor=actor))
-        engine.sync(render=render)
+        snapshot = engine.sync(render=render)
+        ensure_activity(
+            engine.workspace.root,
+            title=str(snapshot.get("topic") or "Sisyfus Research"),
+        )
+        bind_research(
+            engine.workspace.root,
+            engine.workspace.research_id,
+            title=str(snapshot.get("topic") or "Sisyfus Research"),
+            actor=actor,
+        )
+        if render:
+            engine.sync(render=True)
         return engine
 
     @classmethod
@@ -693,6 +712,23 @@ class ResearchEngine:
         contract = snapshot["contracts"].get(attempt["contract_id"])
         if not contract:
             raise RuntimeError(f"contract disappeared before settlement: {attempt['contract_id']}")
+        update_activity(
+            self.workspace.root,
+            research_id=self.workspace.research_id,
+            phase="VERIFYING",
+            status="RUNNING",
+            operation="research.verify",
+            message=f"Applying verifier contract {contract['id']}.",
+            detail=f"attempt={attempt_id} · experiment={experiment['id']}",
+            progress={"percent": 90.0, "label": "Verifier"},
+            actor=actor,
+            metadata={
+                "attempt_id": attempt_id,
+                "experiment_id": experiment["id"],
+                "contract_id": contract["id"],
+            },
+            heartbeat=True,
+        )
         if self._contract_hash(contract) != attempt.get("contract_hash"):
             verdict = {
                 "status": "INVALID",
@@ -735,6 +771,27 @@ class ResearchEngine:
             data=data,
         )
         new_snapshot = self.sync()
+        run_status = str(new_snapshot.get("run_status") or "ACTIVE")
+        terminal = run_status not in {"ACTIVE", "PAUSED"}
+        update_activity(
+            self.workspace.root,
+            research_id=self.workspace.research_id,
+            phase="COMPLETED" if terminal else "READY",
+            status="COMPLETED" if terminal else "READY",
+            operation="research.settle",
+            message=f"Verifier returned {verdict['status']}: {verdict.get('summary') or verdict.get('reason_code') or ''}",
+            detail=f"attempt={attempt_id} · run_status={run_status}",
+            progress={"percent": 100.0, "label": "Attempt settled"},
+            actor=actor,
+            metadata={
+                "attempt_id": attempt_id,
+                "experiment_id": experiment["id"],
+                "verdict": verdict["status"],
+                "run_status": run_status,
+            },
+            heartbeat=True,
+        )
+        self._persist(new_snapshot, render=True)
         return {
             "verdict": verdict,
             "claim_effects": claim_effects,
@@ -833,9 +890,52 @@ class ResearchEngine:
                 "SISYFUS_EXPERIMENT_ID": experiment_id,
                 "SISYFUS_ATTEMPT_ID": attempt_id,
                 "SISYFUS_ATTEMPT_DIR": str(self.workspace.attempts_dir / attempt_id),
+                "SISYFUS_PROGRESS_FILE": str(progress_signal_path(self.workspace.root)),
             }
         )
-        result = run_process(str(action["command"]), cwd=cwd, timeout=timeout, env=env, shell=True)
+        tracker = ActivityTracker(
+            self.workspace.root,
+            phase="EXECUTING",
+            operation="research.execute",
+            message=f"Running experiment {experiment_id}.",
+            research_id=self.workspace.research_id,
+            detail=str(action.get("summary") or action.get("command") or ""),
+            actor=actor,
+            metadata={
+                "experiment_id": experiment_id,
+                "attempt_id": attempt_id,
+                "cwd": str(cwd),
+            },
+            heartbeat_interval=0.75,
+        ).start()
+        try:
+            result = run_process(
+                str(action["command"]),
+                cwd=cwd,
+                timeout=timeout,
+                env=env,
+                shell=True,
+            )
+        except BaseException as exc:
+            tracker.fail(exc)
+            raise
+        tracker.finish(
+            exit_code=int(result.get("exit_code") or 0),
+            message=f"Experiment {experiment_id} command finished; collecting artifacts.",
+        )
+        update_activity(
+            self.workspace.root,
+            research_id=self.workspace.research_id,
+            phase="COLLECTING",
+            status="RUNNING",
+            operation="research.collect",
+            message=f"Collecting observation and artifacts for {experiment_id}.",
+            detail=f"attempt={attempt_id}",
+            progress={"percent": 80.0, "label": "Collecting artifacts"},
+            actor=actor,
+            metadata={"experiment_id": experiment_id, "attempt_id": attempt_id},
+            heartbeat=True,
+        )
         self.workspace.write_attempt_text(attempt_id, "stdout.txt", str(result.get("stdout") or ""))
         self.workspace.write_attempt_text(attempt_id, "stderr.txt", str(result.get("stderr") or ""))
 

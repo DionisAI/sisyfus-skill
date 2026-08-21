@@ -1,0 +1,14 @@
+{
+  "source": "example-inbox",
+  "title": "Create and verify an objective artifact",
+  "objective": "Persist this objective as an exact UTF-8 artifact and finish only after verifier PASS.",
+  "priority": 10,
+  "dedupe_key": "example:objective-artifact:v1",
+  "max_attempts": 4,
+  "payload": {
+    "environment": "example"
+  },
+  "context": {
+    "risk_scope": "workspace-only"
+  }
+}

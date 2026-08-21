@@ -21,6 +21,7 @@ SKILL_FILES = [
     "references/event-model.md",
     "references/task-spec.md",
     "references/verifier-contract.md",
+    "references/live-mission-control.md",
     "templates/experiment.json",
     "templates/research-task.json",
 ]

@@ -1,14 +1,18 @@
 """Self-healing live Observatory.
 
-One daemon per project root serves the Arena page for the run most recently
-worked on. Its coordinates persist in `<root>/.sisyfus/observatory.json`, its
-port is derived deterministically from the root path (so the URL survives
-restarts and can be bookmarked), and `ensure_observatory` — called by every
-research CLI command — respawns it whenever it is found dead. Liveness is
-always established by connecting to the recorded port, never by trusting the
-state file alone, so a stale file left by a killed daemon heals itself.
+One daemon per project root serves either the bootstrap Mission Control page or
+the Arena page for the research run most recently worked on. Coordinates
+persist in ``<root>/.sisyfus/observatory.json`` and the port is derived
+deterministically from the project root, so one browser tab survives daemon
+restarts and the bootstrap-to-research handoff.
 
-Set SISYFUS_AUTO_SERVE=0 to disable respawning (tests, CI, one-shot runs).
+``ensure_activity_observatory`` is used before TaskSpec compilation.
+``ensure_observatory`` is called by every research CLI command after a run
+exists. Both are idempotent, self-heal stale state, and open the browser once
+per task by default.
+
+Set ``SISYFUS_AUTO_SERVE=0`` to disable respawning and
+``SISYFUS_AUTO_OPEN=0`` to disable browser opening (tests/headless CI).
 """
 
 from __future__ import annotations
@@ -21,9 +25,11 @@ import socket
 import subprocess
 import sys
 import time
+import webbrowser
 from pathlib import Path
 from typing import Any
 
+from ..activity import read_activity
 from .workspace import atomic_write_json, utc_now
 
 _PORT_BASE = 8700
@@ -42,6 +48,10 @@ def observatory_log_path(root: Path) -> Path:
     return Path(root) / ".sisyfus" / "observatory.log"
 
 
+def observatory_open_state_path(root: Path) -> Path:
+    return Path(root) / ".sisyfus" / "observatory-open.json"
+
+
 def derived_port(root: Path) -> int:
     """Stable per-project port so the live URL survives daemon restarts."""
     digest = hashlib.sha256(str(Path(root).resolve()).encode("utf-8")).digest()
@@ -49,7 +59,21 @@ def derived_port(root: Path) -> int:
 
 
 def auto_serve_enabled() -> bool:
-    return os.environ.get("SISYFUS_AUTO_SERVE", "1").strip().lower() not in {"0", "false", "no", "off"}
+    return os.environ.get("SISYFUS_AUTO_SERVE", "1").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+
+
+def auto_open_enabled() -> bool:
+    return os.environ.get("SISYFUS_AUTO_OPEN", "1").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
 
 
 def read_live_state(root: Path) -> dict[str, Any] | None:
@@ -60,16 +84,20 @@ def read_live_state(root: Path) -> dict[str, Any] | None:
         return None
     if not isinstance(state, dict) or not state.get("port"):
         return None
-    # A copied project directory carries the old state file; its daemon serves
-    # the original path, so a root mismatch makes the state meaningless here.
     if state.get("root") and str(state["root"]) != str(Path(root).resolve()):
         return None
     return state
 
 
-def write_live_state(root: Path, *, host: str, port: int, research_id: str) -> dict[str, Any]:
+def write_live_state(
+    root: Path,
+    *,
+    host: str,
+    port: int,
+    research_id: str,
+) -> dict[str, Any]:
     state = {
-        "schema_version": "sisyfus.observatory.v1",
+        "schema_version": "sisyfus.observatory.v2",
         "pid": os.getpid(),
         "host": host,
         "port": int(port),
@@ -102,7 +130,7 @@ def server_alive(host: str, port: int, *, timeout: float = 0.25) -> bool:
 
 
 def live_observatory_url(root: Path) -> str | None:
-    """URL of the running daemon for this root, or None. Probes; never trusts the file."""
+    """URL of the running daemon for this root, or ``None``."""
     state = read_live_state(root)
     if not state:
         return None
@@ -112,7 +140,67 @@ def live_observatory_url(root: Path) -> str | None:
     return str(state.get("url") or f"http://{host}:{port}/index.html")
 
 
-def _terminate(pid: int, host: str, port: int, *, timeout: float = 2.0) -> bool:
+def _open_key(root: Path, fallback: str) -> str:
+    activity = read_activity(root)
+    return str(activity.get("task_id") or fallback)
+
+
+def maybe_open_observatory(
+    root: Path,
+    url: str,
+    *,
+    open_key: str,
+    force: bool = False,
+) -> bool:
+    """Open the stable monitor URL once per logical task.
+
+    The marker is written before invoking the browser so concurrent CLI
+    processes cannot open duplicate tabs. A failed browser launch is recorded
+    and the URL remains available in command output.
+    """
+    if not auto_open_enabled():
+        return False
+    root = Path(root).resolve()
+    marker_path = observatory_open_state_path(root)
+    marker: dict[str, Any] = {}
+    try:
+        loaded = json.loads(marker_path.read_text(encoding="utf-8"))
+        if isinstance(loaded, dict):
+            marker = loaded
+    except (OSError, json.JSONDecodeError):
+        marker = {}
+    if (
+        not force
+        and marker.get("open_key") == open_key
+        and marker.get("url") == url
+    ):
+        return False
+    attempt = {
+        "schema_version": "sisyfus.observatory-open.v1",
+        "root": str(root),
+        "url": url,
+        "open_key": open_key,
+        "attempted_at": utc_now(),
+        "opened": None,
+        "pid": os.getpid(),
+    }
+    atomic_write_json(marker_path, attempt)
+    opened = False
+    try:
+        opened = bool(webbrowser.open(url, new=2, autoraise=True))
+    except Exception:
+        opened = False
+    atomic_write_json(marker_path, {**attempt, "opened": opened})
+    return opened
+
+
+def _terminate(
+    pid: int,
+    host: str,
+    port: int,
+    *,
+    timeout: float = 2.0,
+) -> bool:
     try:
         os.kill(int(pid), signal.SIGTERM)
     except (OSError, ValueError):
@@ -125,32 +213,92 @@ def _terminate(pid: int, host: str, port: int, *, timeout: float = 2.0) -> bool:
     return False
 
 
-def ensure_observatory(root: Path, research_id: str, *, spawn_timeout: float = 3.0) -> str | None:
-    """Guarantee a live Observatory daemon for this root; return its URL.
+def _alive_url_for(root: Path, expected_id: str) -> str | None:
+    state = read_live_state(root)
+    if state is None:
+        return None
+    host, port = str(state.get("host") or "127.0.0.1"), int(state["port"])
+    if not server_alive(host, port) or state.get("research_id") != expected_id:
+        return None
+    return str(state.get("url") or f"http://{host}:{port}/index.html")
 
-    Idempotent and safe on every CLI invocation: an alive daemon already
-    serving `research_id` is left untouched; one serving another run is
-    retargeted; a dead or missing one is respawned detached.
-    """
+
+def ensure_observatory(
+    root: Path,
+    research_id: str,
+    *,
+    spawn_timeout: float = 3.0,
+    open_browser: bool = True,
+) -> str | None:
+    """Guarantee a live Arena daemon for a research run and open it once."""
     root = Path(root).resolve()
     state = read_live_state(root)
     if state is not None:
         host, port = str(state.get("host") or "127.0.0.1"), int(state["port"])
         if server_alive(host, port):
+            url = str(state.get("url") or f"http://{host}:{port}/index.html")
             if state.get("research_id") == research_id:
-                return str(state.get("url") or f"http://{host}:{port}/index.html")
+                if open_browser:
+                    maybe_open_observatory(
+                        root,
+                        url,
+                        open_key=_open_key(root, research_id),
+                    )
+                return url
             if not auto_serve_enabled():
-                return str(state.get("url") or f"http://{host}:{port}/index.html")
+                return url
             if not _terminate(int(state.get("pid") or 0), host, port):
-                # Could not free the port; a live page beats a dead one.
-                return str(state.get("url") or f"http://{host}:{port}/index.html")
+                return url
     if not auto_serve_enabled():
         return None
     _spawn_daemon(root, research_id)
     deadline = time.monotonic() + spawn_timeout
     while time.monotonic() < deadline:
-        url = live_observatory_url(root)
+        url = _alive_url_for(root, research_id)
         if url is not None:
+            if open_browser:
+                maybe_open_observatory(
+                    root,
+                    url,
+                    open_key=_open_key(root, research_id),
+                )
+            return url
+        time.sleep(0.1)
+    return None
+
+
+def ensure_activity_observatory(
+    root: Path,
+    task_id: str,
+    *,
+    spawn_timeout: float = 3.0,
+    open_browser: bool = True,
+) -> str | None:
+    """Host and open the bootstrap Mission Control before a TaskSpec exists."""
+    root = Path(root).resolve()
+    monitor_id = f"activity:{task_id}"
+    state = read_live_state(root)
+    if state is not None:
+        host, port = str(state.get("host") or "127.0.0.1"), int(state["port"])
+        if server_alive(host, port):
+            url = str(state.get("url") or f"http://{host}:{port}/index.html")
+            if state.get("research_id") == monitor_id:
+                if open_browser:
+                    maybe_open_observatory(root, url, open_key=task_id)
+                return url
+            if not auto_serve_enabled():
+                return url
+            if not _terminate(int(state.get("pid") or 0), host, port):
+                return url
+    if not auto_serve_enabled():
+        return None
+    _spawn_activity_daemon(root, task_id)
+    deadline = time.monotonic() + spawn_timeout
+    while time.monotonic() < deadline:
+        url = _alive_url_for(root, monitor_id)
+        if url is not None:
+            if open_browser:
+                maybe_open_observatory(root, url, open_key=task_id)
             return url
         time.sleep(0.1)
     return None
@@ -161,7 +309,16 @@ def _spawn_daemon(root: Path, research_id: str) -> None:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("ab") as log:
         subprocess.Popen(
-            [sys.executable, "-m", "sisyfus", "research", "serve", research_id, "--root", str(root)],
+            [
+                sys.executable,
+                "-m",
+                "sisyfus",
+                "research",
+                "serve",
+                research_id,
+                "--root",
+                str(root),
+            ],
             stdout=log,
             stderr=log,
             stdin=subprocess.DEVNULL,
@@ -170,13 +327,36 @@ def _spawn_daemon(root: Path, research_id: str) -> None:
         )
 
 
-def resolve_serve_port(root: Path, research_id: str, requested: int | None) -> int:
-    """Pick the port for a serve process; make an unqualified serve idempotent.
+def _spawn_activity_daemon(root: Path, task_id: str) -> None:
+    log_path = observatory_log_path(root)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("ab") as log:
+        subprocess.Popen(
+            [
+                sys.executable,
+                "-m",
+                "sisyfus",
+                "research",
+                "monitor-serve",
+                "--task-id",
+                task_id,
+                "--root",
+                str(root),
+            ],
+            stdout=log,
+            stderr=log,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+            cwd=str(root),
+        )
 
-    An explicit request is honored verbatim. Otherwise: an alive daemon for the
-    same run means nothing to do (signalled via AlreadyServing); one for another
-    run is terminated so the stable derived port can be reclaimed.
-    """
+
+def resolve_serve_port(
+    root: Path,
+    research_id: str,
+    requested: int | None,
+) -> int:
+    """Pick the stable port and make an unqualified serve idempotent."""
     if requested is not None:
         return int(requested)
     state = read_live_state(root)
@@ -184,7 +364,9 @@ def resolve_serve_port(root: Path, research_id: str, requested: int | None) -> i
         host, port = str(state.get("host") or "127.0.0.1"), int(state["port"])
         if server_alive(host, port):
             if state.get("research_id") == research_id:
-                raise AlreadyServing(str(state.get("url") or f"http://{host}:{port}/index.html"))
+                raise AlreadyServing(
+                    str(state.get("url") or f"http://{host}:{port}/index.html")
+                )
             _terminate(int(state.get("pid") or 0), host, port)
     return derived_port(root)
 

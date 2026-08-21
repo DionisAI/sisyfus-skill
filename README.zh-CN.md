@@ -29,6 +29,32 @@ skill 的确定性后端——agent 通过 `sisyfus` CLI 驱动它,永远不能�
 run;`sisyfus research reproduce` 重跑任意 command 证据的哈希锁定测量代码,并在
 同一份锁定合约下重新裁决——全程没有模型参与。
 
+## v0.8.0 新版内容
+
+v0.8.0 把 Sisyfus 从验证者门控的研究引擎升级成了一个
+**Monitor-first 的持续自主研究运行时**：
+
+- **先打开 Mission Control，再开始工作。** 每次调用 Skill，系统都会先 host 并
+  打开稳定的游戏化监控网页，再进行搜索、编码或实验；当前操作、进度、心跳、等待、
+  错误和 Verifier 状态持续更新，但不会被误当成研究证据。
+- **信息不明确时主动暂停并追问。** Scope、最终目标、验证方法是三道阻断式 intake
+  gate。重大信息缺失时进入 `CLARIFYING / NEEDS_USER`，Coding Agent 一次性询问尚未
+  解决的问题，并在编译 TaskSpec 前锁定 Intake Contract。
+- **启动页和正式地图是一套 Arena。** Preflight Map 与正式 Claim Map 共用相同顶栏、
+  配色、字体、节点、连线、Hero、战报、任务面板、Replay 和 Live HUD，不再有明显拼接感。
+- **可恢复的 24×7 自主运行。** Canonical SQLite-WAL 控制平面提供版本化状态、可续租
+  Worker Lease、Heartbeat Fencing、崩溃恢复、持久化 Decision、幂等 Receipt、有限重试和
+  机械终局。
+- **Verifier 拥有真相。** Planner 只能提案，不能自己宣布成功；`FINISH` 必须引用已持久化
+  的 PASS Evidence，五种 Verdict 语义保持严格分离。
+- **更安全的无人值守执行。** Typed Capability、默认 R0/R1 风险上限、严格项目根目录、
+  有界 Planner 输出、进程组终止、Sensor 隔离和 Unknown Commit 阻断共同降低重复副作用。
+- **不会被重复证据污染的经验。** Lesson 晋升只统计唯一 Evidence Observation，同一条结果
+  重放多次不能伪造“已验证经验”。
+
+完整内容见 [`RELEASE_NOTES_v0.8.0.md`](RELEASE_NOTES_v0.8.0.md) 和
+[`CHANGELOG.md`](CHANGELOG.md)。
+
 ## 安装
 
 **一条命令**——skill 和引擎一起装,幂等、无需 sudo、不碰系统 Python:
@@ -58,7 +84,7 @@ Skill:把 `SKILL.md`、`references/`、`templates/` 复制进
 引擎(纯标准库,Python >= 3.11):
 
 ```bash
-python3 -m pip install "sisyfus @ git+https://github.com/DionisAI/sisyfus-skill@v0.7.4"
+python3 -m pip install "sisyfus @ git+https://github.com/DionisAI/sisyfus-skill@v0.8.0"
 ```
 
 `SKILL.md` 自带这项检查,agent 落到干净机器上首次使用时会自行装好引擎。

@@ -12,10 +12,70 @@ Sisyfus is a control surface for an event-sourced research engine. The skill may
 This skill drives the `sisyfus` CLI (pure-stdlib Python >= 3.11). Check availability first:
 
 ```bash
-sisyfus --version || python3 -m pip install "sisyfus @ git+https://github.com/DionisAI/sisyfus-skill@v0.7.4"
+sisyfus --version || python3 -m pip install "sisyfus @ git+https://github.com/DionisAI/sisyfus-skill@v0.8.0"
 ```
 
 Pin the install to a release tag (as above) rather than a floating branch — an agent following this skill should never pull unreviewed code from a moving ref. Working from a clone of this repository, `python3 -m pip install -e .` is equivalent. All commands below take `--root <project>` — the project directory that owns the `.sisyfus/` state tree. An explicit `--root` is honored exactly: the engine never walks upward to an ancestor that happens to contain `.sisyfus/` or `.git`; upward discovery only happens when `--root` is omitted (from the current directory).
+
+## Monitor-first lifecycle
+
+**The first action for every new Sisyfus task is to host and open Mission Control — before web search, source collection, TaskSpec drafting, coding, or experimentation:**
+
+```bash
+sisyfus research monitor-start \
+  --task "<short task title>" \
+  --objective "<what completion must achieve>" \
+  --root <project>
+```
+
+This command is mandatory unless `SISYFUS_AUTO_SERVE=0` was explicitly selected for a headless environment. It creates the project activity stream, starts or reuses the stable local Observatory port, prints the URL, and opens one browser tab for the logical task. `SISYFUS_AUTO_OPEN=0` disables only browser opening; hosting and state recording remain enabled.
+
+The bootstrap page is already the game-style Mission Control: it must show research intake, source qualification, TaskSpec compilation, verifier design, and the current operation even before a Research Run exists. When `research new` compiles the TaskSpec, the same stable URL hands off to the full Arena automatically; do not open a second dashboard.
+
+While work is running, keep the monitor truthful:
+
+- engine and CLI boundaries update phase, operation, status, current attempt, and verifier;
+- long operations heartbeat continuously so a stalled process is visible;
+- child programs may write JSON progress to `$SISYFUS_PROGRESS_FILE` using `current`, `total`, `percent`, `label`, `message`, and `detail`;
+- the Arena polls research truth and live activity independently, so progress can update without fabricating evidence or mutating Claim status;
+- report the printed monitor URL to the user immediately.
+
+## Clarification gate — ask before acting
+
+Immediately after Mission Control starts, inspect the user's request for three mandatory intake dimensions. Treat them as blocking gates, not optional prompt polish:
+
+1. **Scope** — what is in scope and out of scope; target system, market, dataset, repository, time period, constraints, permitted actions, and required deliverables.
+2. **Objective** — the decision or artifact the work must produce, plus a mechanically recognizable completion condition. “Research this”, “improve it”, or “find a good strategy” is not a sufficient terminal objective.
+3. **Verification** — who or what can reject the result: deterministic tests, backtest/simulation, benchmark, external authority, human review, or an isolated model-jury rubric; include datasets, thresholds, invalidity rules, and guardrails where material.
+
+If any of these dimensions is materially missing, contradictory, or admits several high-impact interpretations:
+
+- **Do not begin web research, source collection, coding, experiments, or autonomous execution.** Do not silently choose a market, time horizon, deliverable, success threshold, or verifier.
+- Record the wait in Mission Control before asking:
+
+```bash
+sisyfus research monitor-clarify \
+  --missing scope \
+  --missing objective \
+  --missing verification \
+  --question "<question shown to the user>" \
+  --root <project>
+```
+
+- Ask the user one compact batch containing only the unresolved questions. Reuse facts already supplied in the conversation, files, repository, or prior answers; never ask the same question twice.
+- Make every question decision-oriented. Where useful, offer two or three concrete options and state the recommended default rather than asking an unbounded “what do you want?” question.
+- If the user cannot specify a verifier, propose the strongest feasible hierarchy: deterministic/programmatic first, hybrid second, isolated model jury third, human gate last. Ask the user to select or approve the proposed contract.
+- Do not block on low-impact implementation details that are reversible and do not change scope, objective, safety, cost, or truth criteria. Choose a reasonable default, record it as an assumption, and continue.
+
+After the user answers, restate and lock a compact intake contract containing **Scope / Objective / Deliverables / Verifier / Completion / Constraints**. Update Mission Control before compiling the TaskSpec:
+
+```bash
+sisyfus research monitor-resume \
+  --summary "<locked intake contract>" \
+  --root <project>
+```
+
+Proceed only when the three mandatory dimensions are sufficiently precise to compile falsifiable Claims and a verifier-backed Goal Graph. If the answer exposes another material contradiction, ask one follow-up batch limited to that contradiction; otherwise stop questioning and execute.
 
 ## Security model
 
