@@ -57,6 +57,12 @@ v0.8.0 把 Sisyfus 从验证者门控的研究引擎升级成了一个
 
 ## 更新 Sisyfus
 
+已经安装 v0.8.0 的用户需要先运行一次新版安装器，以获得 `update` 命令：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/DionisAI/sisyfus-skill/main/install.sh | bash
+```
+
 Sisyfus 会把 **Engine 与已安装 Skill 一起更新**。版本分别安装到
 `~/.local/share/sisyfus/releases/`，校验后原子切换 `current`，上一版本可回滚。
 
@@ -69,7 +75,7 @@ sisyfus update --rollback
 sisyfus update --enable-auto --mode notify --interval-hours 24 --yes
 ```
 
-自动安装只会在所有登记项目空闲时执行；运行中的 Activity、Experiment、Verifier、
+自动安装仅允许 Stable 通道，并且只会在所有登记项目空闲时执行；运行中的 Activity、Experiment、Verifier、
 Continuation、Decision 或 Unknown Commit 会让升级延后。升级后重启 Coding Agent
 Session 以重新加载 Skill。项目 `.sisyfus/` 状态不会被删除。
 
@@ -86,8 +92,7 @@ curl -fsSL https://raw.githubusercontent.com/DionisAI/sisyfus-skill/main/install
 1. 把 `SKILL.md` + `references/` + `templates/` 复制进所有检测到的技能目录
    (`~/.claude/skills/`、`~/.agents/skills/`),命名为 `sisyfus-research`;
 2. 把引擎装进 `~/.local/share/sisyfus` 并把 CLI 链接到 `~/.local/bin/sisyfus`——
-   优先使用专用 venv;在缺少 `python3-venv`/`ensurepip`/pip 的机器上自动降级为
-   纯标准库源码安装(sisyfus 零运行时依赖,因此永远不需要 sudo);
+   使用可回滚的版本化纯标准库源码安装(sisyfus 零运行时依赖,因此永远不需要 sudo);
 3. 校验 `sisyfus --version`,并在 `~/.local/bin` 不在 `PATH` 时给出提示。
 
 `install.sh --uninstall` 可完整卸载(各项目的 `.sisyfus/` 研究状态永不触碰)。

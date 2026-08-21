@@ -1210,8 +1210,8 @@ def cmd_update(args: argparse.Namespace) -> int:
                 preview=manager.check(channel=args.channel,version=args.target_version)
                 if not preview.get("update_available") and not args.force: result=preview
                 elif input(f"Update to {(preview.get('candidate') or {}).get('version')}? [y/N] ").strip().lower() not in {"y","yes"}: return 4
-                else: result=manager.apply(channel=args.channel,version=args.target_version,force=args.force,allow_active=args.allow_active)
-            else: result=manager.apply(channel=args.channel,version=args.target_version,force=args.force,allow_active=args.allow_active)
+                else: result=manager.apply(channel=args.channel,version=args.target_version,force=args.force,allow_active=args.allow_active,require_verified=args.scheduled)
+            else: result=manager.apply(channel=args.channel,version=args.target_version,force=args.force,allow_active=args.allow_active,require_verified=args.scheduled)
     except ActiveWorkError as exc:
         result={"status":"DEFERRED_ACTIVE_WORK","message":str(exc),"active_work":exc.active}
         if args.json:_print_json(result)
