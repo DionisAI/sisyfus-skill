@@ -33,9 +33,7 @@ jobs:
         env:
           SISYFUS_AUTO_SERVE: '0'
         run: |
-          if test -f src/sisyfus/research_os/cli.py; then
-            python -m sisyfus.research_os.cli demo --workspace validation/demo
-          fi
+          python -m sisyfus.research_os.cli demo --workspace validation/demo
       - name: Source snapshot
         if: always()
         run: |
