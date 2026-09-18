@@ -319,9 +319,45 @@ def test_output_syntax_failures_spend_budget_not_dropped(suite, tmp_path):
         assert row['final']['verdict'] == 'NOT_SUBMITTED'
 
 
-def test_development_export_does_not_include_final_data(suite, tmp_path):
-    pilot(suite, tmp_path / 'run')
+_HOLDOUT_CANARY = 'PRIVATE_HOLDOUT_CANARY_5adb9821'
+
+
+def _assert_no_heldout_payload(value):
+    # Match structured private data, not substrings in opaque IDs or hashes.
+    if isinstance(value, dict):
+        assert not {'holdout', 'cases', 'inputs', 'expected', 'private_canary'} & value.keys()
+        for child in value.values():
+            _assert_no_heldout_payload(child)
+    elif isinstance(value, list):
+        for child in value:
+            _assert_no_heldout_payload(child)
+    elif isinstance(value, str):
+        assert _HOLDOUT_CANARY not in value
+    elif type(value) in (int, float):
+        assert value != -7
+
+
+def test_development_export_does_not_include_final_data(suite, tmp_path, monkeypatch):
+    # Reproduce the CI collision: a legitimate opaque run ID contains '-7'.
+    monkeypatch.setattr('sisyfus.research_v2.workspace.make_run_id',
+                        lambda prefix: prefix + 'frozen-7b6b5a9d')
+    cases = suite.parent / 'absolute.json'
+    private = json.loads(cases.read_text())
+    private['holdout'][0]['private_canary'] = _HOLDOUT_CANARY
+    cases.write_text(json.dumps(private))
+    report = pilot(suite, tmp_path / 'run')
     history = json.loads(next((tmp_path / 'run').glob('*research_os/history.json')).read_text())
+    assert '-7' in history['research_id']
     assert len(history['nodes']) == 1
     assert history['nodes'][0]['outcome']['verdict'] == 'PASS'
-    assert '-7' not in json.dumps(history)
+    assert all(row['final']['verdict'] == 'FAIL' for row in report['rows'])
+    _assert_no_heldout_payload(history)
+
+
+@pytest.mark.parametrize('leak', [
+    {'holdout': []}, {'nested': [{'expected': 7}]},
+    {'value': -7}, {'text': _HOLDOUT_CANARY},
+])
+def test_export_leakage_assertion_rejects_private_payload(leak):
+    with pytest.raises(AssertionError):
+        _assert_no_heldout_payload(leak)
