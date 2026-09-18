@@ -1,0 +1,61 @@
+name: Transfer tested Research OS source
+on:
+  push:
+    branches: [feat/closed-loop-research-os]
+permissions:
+  contents: write
+jobs:
+  transfer:
+    if: contains(github.event.head_commit.message, 'stage research os implementation')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Verify and apply exact locally tested source
+        run: |
+          python - <<'PY'
+          import base64, gzip, hashlib, json
+          from pathlib import Path
+          raw = ''.join(Path('.github/research-os-patch.' + p).read_text().strip() for p in ('a', 'b'))
+          fixes = Path('.github/research-os-transport-fixes.json')
+          if fixes.exists():
+              for start, end, old, new in sorted(json.loads(fixes.read_text()), reverse=True):
+                  assert raw[start:end] == old, 'unexpected transport bytes'
+                  raw = raw[:start] + new + raw[end:]
+          patch = gzip.decompress(base64.b64decode(raw, validate=True))
+          assert hashlib.sha256(patch).hexdigest() == '1ee48949b9c03d9b21f1ba1644674c519060c189018b4a1080327d8706986296'
+          Path('/tmp/research-os.patch').write_bytes(patch)
+          PY
+          git apply --check /tmp/research-os.patch
+          git apply --index /tmp/research-os.patch
+      - name: Test before committing implementation
+        env:
+          SISYFUS_AUTO_SERVE: '0'
+        run: |
+          python -m pip install pytest
+          python -m pip install -e .
+          python -m compileall -q src
+          python -m pytest -q
+      - name: Commit tested implementation without force push
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'feat: integrate verified closed-loop research OS'
+          git push origin HEAD:refs/heads/feat/closed-loop-research-os
+      - name: Preserve exact transport and source for verification
+        if: always()
+        run: |
+          mkdir -p transfer-validation
+          cp .github/research-os-patch.* transfer-validation/
+          git archive HEAD | gzip > transfer-validation/source.tar.gz
+          git rev-parse HEAD > transfer-validation/commit.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: research-os-transfer
+          path: transfer-validation/
+          retention-days: 3
