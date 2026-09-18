@@ -1,0 +1,50 @@
+name: Research OS validation
+
+on:
+  pull_request:
+  push:
+    branches: [feat/closed-loop-research-os]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: research-os-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install
+        run: python -m pip install pytest && python -m pip install -e .
+      - name: Regression tests
+        env:
+          SISYFUS_AUTO_SERVE: '0'
+        run: |
+          mkdir -p validation
+          python -m compileall -q src
+          python -m pytest -q --junitxml=validation/junit.xml
+      - name: Research OS demonstration
+        env:
+          SISYFUS_AUTO_SERVE: '0'
+        run: |
+          if test -f src/sisyfus/research_os/cli.py; then
+            python -m sisyfus.research_os.cli demo --workspace validation/demo
+          fi
+      - name: Source snapshot
+        if: always()
+        run: |
+          mkdir -p validation
+          git rev-parse HEAD > validation/commit.txt
+          git archive --format=tar HEAD | gzip > validation/source.tar.gz
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: research-os-validation
+          path: validation/
+          retention-days: 7
