@@ -19,6 +19,10 @@ classifiers = [
 ]
 dependencies = []
 
+[project.optional-dependencies]
+benchmark = ["openai"]
+jev = ["typesafe-sdk"]
+
 [project.urls]
 Homepage = "https://github.com/DionisAI/sisyfus-skill"
 Changelog = "https://github.com/DionisAI/sisyfus-skill/blob/main/CHANGELOG.md"

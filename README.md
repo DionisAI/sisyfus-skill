@@ -34,6 +34,22 @@ Every projection is rebuildable from an append-only, hash-chained event log.
 re-runs any command evidence's hashed measurement code and re-classifies it under
 the same locked contract — no model in the loop.
 
+## Experimental closed-loop Research OS
+
+The opt-in `sisyfus os` controller adds evidence-linked frontier scheduling, a
+small learned ranker, optional Jev judgments, versioned SOP gates, and
+Dream-RSI-inspired support-limited replay. It uses the existing engine for all
+research truth. Candidate policies require fresh matched execution and named
+operator promotion; replay never invents outcomes.
+
+```bash
+sisyfus os demo --workspace /tmp/sisyfus-os-demo
+```
+
+[Architecture, commands, tests and limitations](docs/research-os.md). The offline
+demo executes real measurements but does **not** establish an advantage over a
+strong LLM. Existing commands and production paths remain unchanged.
+
 ## What's new in v0.8.0
 
 v0.8.0 turns Sisyfus from a verifier-gated research engine into a
