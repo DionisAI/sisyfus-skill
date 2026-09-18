@@ -14,7 +14,12 @@ def _identities(histories: list[dict[str, Any]]) -> tuple[set[str], set[str]]:
     ids = {h["research_id"] for h in histories}
     if len(ids) != len(histories):
         raise ValueError("duplicate research episode")
-    return ids, {h["family"] for h in histories}
+    families = {h["family"] for h in histories}
+    # Portfolio aliases must not hide reuse of the same underlying episodes.
+    for history in histories:
+        ids.update(history.get("source_research_ids", ()))
+        families.update(history.get("source_families", ()))
+    return ids, families
 
 
 def optimize(train: list[dict[str, Any]], search: list[dict[str, Any]], holdout: list[dict[str, Any]], *, budget: float) -> dict[str, Any]:
@@ -120,6 +125,8 @@ def validate_fresh_trials(report: dict[str, Any], baseline: list[ResearchEngine]
                 execution[eid] = {"action": action, "code_hashes": approval["code_hashes"], "cost": exp["cost"], "contract": approval["contract_hash"], "priority": exp["priority"], "based_on": exp.get("based_on"), "context_id": exp["context_id"], "metadata": exp.get("metadata")}
             execution_manifests.append(digest({"experiments": execution, "sop": cfg["sop"]}))
             decisions = [e["data"] for e in engine.events if e["event_type"] == PREFIX + "DECISION"]
+            if any(d.get("dispatch_context") is not None for d in decisions):
+                raise ValueError("portfolio-dispatched trials need portfolio-level evaluation, not local-policy promotion")
             if {d["policy_hash"] for d in decisions} != {SchedulingPolicy.load(cfg["policy"]).hash}:
                 raise ValueError("mixed-policy trial")
             if any(d["config_hash"] != cfg["config_hash"] or d["sop_hash"] != digest(cfg["sop"]) for d in decisions):

@@ -22,6 +22,9 @@ def load(path: str) -> Any:
 
 
 def dispatch(args: argparse.Namespace) -> int:
+    if args.os_command == "portfolio":
+        from .portfolio_cli import dispatch as portfolio_dispatch
+        return portfolio_dispatch(args)
     if args.os_command == "benchmark-status":
         from .benchmark import inspect_benchmark
         result = inspect_benchmark(Path(args.output))
@@ -103,6 +106,8 @@ def dispatch(args: argparse.Namespace) -> int:
 
 def populate(parser: argparse.ArgumentParser) -> None:
     sub = parser.add_subparsers(dest="os_command", required=True)
+    from .portfolio_cli import populate as populate_portfolio
+    populate_portfolio(sub.add_parser("portfolio", help="shared-budget research across approved workspaces"))
     bench_status = sub.add_parser("benchmark-status", help="verify audit and expose unresolved spending; never auto-resume")
     bench_status.add_argument("--output", required=True)
     bench_status.set_defaults(func=dispatch)

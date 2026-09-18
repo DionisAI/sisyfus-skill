@@ -270,3 +270,12 @@ resource envelope. It freezes all selections before final tests and preserves
 unknown spending reservations. `benchmark-demo` is network-free; `benchmark-status`
 checks evidence without resuming. See [benchmark protocol and boundaries](research-os-benchmark.md).
 This is a bounded JSON-artifact pilot, not yet a full coding-agent effectiveness study.
+
+## Cross-workspace portfolio continuation
+
+`sisyfus os portfolio` now provides an opt-in shared-budget coordinator over
+multiple pinned research workspaces. It reuses the existing kernel, adds explicit
+cross-project claim dependencies, detects stale downstream results, and reconciles
+source verifier receipts after crashes. See [portfolio operator guide](research-os-portfolio.md).
+This supersedes the earlier "not implemented" statement about basic cross-workspace
+allocation; arbitrary workflow discovery and demonstrated LLM gains remain unimplemented/unproven.

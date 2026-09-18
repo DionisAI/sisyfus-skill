@@ -40,6 +40,12 @@ jobs:
         run: |
           python -m sisyfus.research_os.cli benchmark-demo --output validation/benchmark
           python -m sisyfus.research_os.cli benchmark-status --output validation/benchmark/run
+      - name: Cross-workspace portfolio and restart smoke
+        env:
+          SISYFUS_AUTO_SERVE: '0'
+        run: |
+          python -m sisyfus.research_os.cli portfolio demo --directory validation/portfolio
+          python -m sisyfus.research_os.cli portfolio status --directory validation/portfolio/registry
       - name: Source snapshot
         if: always()
         run: |

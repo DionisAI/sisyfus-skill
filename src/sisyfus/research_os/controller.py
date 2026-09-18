@@ -103,7 +103,9 @@ class ResearchOS:
         with coordinator_lock(self.engine):
             return self._run(max_steps)
 
-    def _run(self, max_steps: int) -> LoopReport:
+    def _run(self, max_steps: int, *, only_experiment: str | None = None, dispatch_context: dict[str, Any] | None = None) -> LoopReport:
+        # Internal seam: caller holds the member coordinator lock. A portfolio
+        # holds all member locks and passes one already-selected experiment.
         engine = self.engine
         config = configuration(engine)
         if digest(engine.task) != config["task_hash"]:
@@ -122,6 +124,8 @@ class ResearchOS:
                 stop = "unresolved_attempt:reconcile_before_retry"
                 break
             candidates = ready_frontier(snapshot, max_attempts=sop.max_attempts_per_experiment)
+            if only_experiment is not None:
+                candidates = [c for c in candidates if c.id == only_experiment]
             if not candidates:
                 stop = "no_ready_action"
                 break
@@ -130,7 +134,7 @@ class ResearchOS:
                 stop = "needs_operator_approval"
                 break
             started_judge = time.monotonic()
-            judgments = assess_safely(self.judge, approved)
+            judgments = assess_safely(self.judge if dispatch_context is None else NullJudge(), approved)
             judge_seconds = time.monotonic() - started_judge
             selected = policy.rank(approved, judgments)[0]
             # Refresh after external judgments. State changed => replan, not execute.
@@ -162,6 +166,7 @@ class ResearchOS:
                 "judgments": {k: asdict(v) for k, v in judgments.items()},
                 "judge_seconds": judge_seconds, "judge_cost_usd": None,
                 "selection_probability": None, "replay_mode": config["replay_mode"], "max_steps": max_steps,
+                "dispatch_context": dispatch_context,
             }
             engine.workspace.append_event(PREFIX + "DECISION", actor="research-os", data=decision)
             started = time.monotonic()
