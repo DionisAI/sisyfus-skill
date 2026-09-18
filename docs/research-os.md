@@ -260,3 +260,13 @@ calibration, real dollar savings, or real commercial research gains. Evaluate
 those with the same task pool, strong direct-agent and fixed-search baselines,
 held-out tasks, equal budgets, independent evaluators, false-acceptance counts,
 and both cold-start and steady-state costs before expanding this prototype.
+
+
+## Resource-matched provider pilot
+
+The optional `sisyfus os benchmark` command compares direct refinement,
+independent search, and actual Research OS scheduling with the same provider and
+resource envelope. It freezes all selections before final tests and preserves
+unknown spending reservations. `benchmark-demo` is network-free; `benchmark-status`
+checks evidence without resuming. See [benchmark protocol and boundaries](research-os-benchmark.md).
+This is a bounded JSON-artifact pilot, not yet a full coding-agent effectiveness study.

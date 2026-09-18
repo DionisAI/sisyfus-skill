@@ -34,6 +34,12 @@ jobs:
           SISYFUS_AUTO_SERVE: '0'
         run: |
           python -m sisyfus.research_os.cli demo --workspace validation/demo
+      - name: Paired benchmark protocol smoke (no paid provider)
+        env:
+          SISYFUS_AUTO_SERVE: '0'
+        run: |
+          python -m sisyfus.research_os.cli benchmark-demo --output validation/benchmark
+          python -m sisyfus.research_os.cli benchmark-status --output validation/benchmark/run
       - name: Source snapshot
         if: always()
         run: |

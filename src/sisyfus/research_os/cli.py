@@ -22,7 +22,35 @@ def load(path: str) -> Any:
 
 
 def dispatch(args: argparse.Namespace) -> int:
-    if args.os_command == "demo":
+    if args.os_command == "benchmark-status":
+        from .benchmark import inspect_benchmark
+        result = inspect_benchmark(Path(args.output))
+    elif args.os_command in {"benchmark", "benchmark-demo"}:
+        from .benchmark import run_benchmark
+        from .benchmark_provider import Limits, Rates, OpenAIProvider
+        if args.os_command == "benchmark-demo":
+            from .benchmark_fixture import FixtureProvider, create_fixture
+            base = Path(args.output).resolve()
+            if base.exists() and any(base.iterdir()):
+                raise ValueError("choose an empty benchmark demo path")
+            suite = create_fixture(base / "fixture")
+            result = run_benchmark(suite, base / "run", FixtureProvider(),
+                                   limits=Limits(max_calls=1, max_evaluations=1),
+                                   rates=Rates(1, 1))
+        else:
+            if not args.allow_paid_provider or not args.allow_local_evaluator:
+                raise PermissionError("review the suite, rate card and limits; explicit paid-provider and local-evaluator permission required")
+            limits = Limits(args.max_calls, args.max_evaluations, args.max_output_tokens,
+                            args.max_output_per_call, args.max_seconds, args.max_usd)
+            rates = Rates(**load(args.rates))
+            provider = OpenAIProvider(args.model, effort=args.effort)
+            policy = SchedulingPolicy.load(load(args.policy)) if args.policy else None
+            result = run_benchmark(Path(args.suite), Path(args.output), provider,
+                                   limits=limits, rates=rates, policy=policy,
+                                   repeats=args.repeats, seed=args.seed,
+                                   allowed_models=set(args.actual_model or [args.model]),
+                                   max_total_usd=args.max_total_usd)
+    elif args.os_command == "demo":
         result = run_demo(Path(args.workspace))
     elif args.os_command == "optimize":
         result = optimize([load(p) for p in args.train], [load(p) for p in args.search], [load(p) for p in args.holdout], budget=args.budget)
@@ -75,6 +103,30 @@ def dispatch(args: argparse.Namespace) -> int:
 
 def populate(parser: argparse.ArgumentParser) -> None:
     sub = parser.add_subparsers(dest="os_command", required=True)
+    bench_status = sub.add_parser("benchmark-status", help="verify audit and expose unresolved spending; never auto-resume")
+    bench_status.add_argument("--output", required=True)
+    bench_status.set_defaults(func=dispatch)
+    bench_demo = sub.add_parser("benchmark-demo", help="offline paired benchmark plumbing; deliberately no learned advantage")
+    bench_demo.add_argument("--output", required=True)
+    bench_demo.set_defaults(func=dispatch)
+    bench = sub.add_parser("benchmark", help="opt-in real-provider paired proposal/evaluation pilot")
+    for key in ("suite", "output", "model", "rates"):
+        bench.add_argument("--" + key, required=True)
+    bench.add_argument("--allow-paid-provider", action="store_true")
+    bench.add_argument("--allow-local-evaluator", action="store_true")
+    bench.add_argument("--actual-model", action="append", help="explicit allowed returned model IDs; defaults to requested model")
+    bench.add_argument("--policy", help="frozen Research OS SchedulingPolicy JSON")
+    bench.add_argument("--effort", choices=("low", "medium", "high", "xhigh"), default="medium")
+    bench.add_argument("--max-calls", type=int, default=3)
+    bench.add_argument("--max-evaluations", type=int, default=6)
+    bench.add_argument("--max-output-tokens", type=int, default=12000)
+    bench.add_argument("--max-output-per-call", type=int, default=4000)
+    bench.add_argument("--max-seconds", type=float, default=300)
+    bench.add_argument("--max-usd", type=float, default=1, help="token-priced reservation limit PER ARM/TASK/REPEAT, using supplied rates")
+    bench.add_argument("--max-total-usd", type=float, default=5, help="maximum nominal allowance for the WHOLE suite")
+    bench.add_argument("--repeats", type=int, default=1)
+    bench.add_argument("--seed", type=int, default=0)
+    bench.set_defaults(func=dispatch)
     demo = sub.add_parser("demo", help="run real bounded arithmetic evaluations and replay policy fitting")
     demo.add_argument("--workspace", required=True)
     demo.set_defaults(func=dispatch)
