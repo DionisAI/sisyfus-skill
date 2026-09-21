@@ -58,4 +58,4 @@ Machine-readable reports preserve:
 - Same-user shell execution is not isolation. Use an external container/process/credential boundary before untrusted workers. The new controller's lock does not fence unrelated legacy writers.
 - Cross-workspace portfolio scheduling is implemented as a serial, registered-workspace coordinator. Dynamic task/project creation, automatic execution of newly generated commands, production canaries, and live-provider effectiveness remain future work.
 
-The next effectiveness test is a resource-matched real-provider comparison against a strong direct-worker plus simple-search baseline, using independent task families and frozen evaluators. Each component must show incremental benefit before promotion.
+The learnable-SOP pilot currently optimizes only bounded retry depth; mandatory authorization, dependency, budget, and verifier gates are not learnable.\n\nThe next effectiveness test is a resource-matched real-provider comparison against a strong direct-worker plus simple-search baseline, using independent task families and frozen evaluators. Each component must show incremental benefit before promotion.
