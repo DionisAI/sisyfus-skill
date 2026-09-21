@@ -361,3 +361,13 @@ def test_development_export_does_not_include_final_data(suite, tmp_path, monkeyp
 def test_export_leakage_assertion_rejects_private_payload(leak):
     with pytest.raises(AssertionError):
         _assert_no_heldout_payload(leak)
+
+
+def test_release_undispatched_reservation_does_not_count_provider_call():
+    meter = Meter(Limits(max_calls=1, max_output_per_call=10), Rates(1, 1))
+    assert meter.reserve(10) == 10
+    assert meter.calls == 1 and meter.pending is not None
+    meter.release()
+    assert meter.calls == 0 and meter.pending is None and meter.reserved == 0
+    with pytest.raises(RuntimeError, match="no reserved"):
+        meter.release()

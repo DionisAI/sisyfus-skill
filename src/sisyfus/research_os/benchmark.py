@@ -204,7 +204,7 @@ def run_episode(root: Path, task: dict, arm: str, provider: Provider, limits: Li
                 remaining = limits.max_seconds - (time.monotonic() - started)
                 if remaining <= 0:
                     # No generation dispatched; release only this known-unused reservation.
-                    meter.pending, meter.reserved = None, 0.0
+                    meter.release()
                     state = "wall_budget_exhausted"
                     audit.append("PROVIDER_NOT_DISPATCHED", {"episode": root.name})
                     break

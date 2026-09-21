@@ -14,6 +14,7 @@ from .judgments import JevJudge
 from .lab import optimize, promote, record_candidate, validate_fresh_trials
 from .proposals import propose_next
 from .models import SOP
+from .sop_lab import optimize_sop, promote_sop, record_sop_candidate, validate_sop_fresh_trials
 from .policy import SchedulingPolicy
 
 
@@ -55,8 +56,9 @@ def dispatch(args: argparse.Namespace) -> int:
                                    max_total_usd=args.max_total_usd)
     elif args.os_command == "demo":
         result = run_demo(Path(args.workspace))
-    elif args.os_command == "optimize":
-        result = optimize([load(p) for p in args.train], [load(p) for p in args.search], [load(p) for p in args.holdout], budget=args.budget)
+    elif args.os_command in {"optimize", "optimize-sop"}:
+        fn = optimize if args.os_command == "optimize" else optimize_sop
+        result = fn([load(p) for p in args.train], [load(p) for p in args.search], [load(p) for p in args.holdout], budget=args.budget)
         atomic_write_json(Path(args.output), result)
     else:
         engine = ResearchEngine.load(args.root, args.research)
@@ -88,16 +90,21 @@ def dispatch(args: argparse.Namespace) -> int:
             from ..autonomy.adapters import CommandPlanner
             planner = CommandPlanner(args.planner_command, workspace=engine.workspace.root, timeout_seconds=args.timeout_seconds)
             result = propose_next(engine, planner, limit=args.limit)
-        elif args.os_command in {"validate-policy", "promote"}:
+        elif args.os_command in {"validate-policy", "promote", "validate-sop", "promote-sop"}:
             report = load(args.report)
             baseline = [ResearchEngine.load(p) for p in args.baseline_roots]
             challenger = [ResearchEngine.load(p) for p in args.challenger_roots]
             if args.os_command == "promote":
                 result = promote(engine, report, baseline, challenger, approver=args.approver)
+            elif args.os_command == "promote-sop":
+                result = promote_sop(engine, report, baseline, challenger, approver=args.approver)
+            elif args.os_command == "validate-sop":
+                result = validate_sop_fresh_trials(report, baseline, challenger)
             else:
                 result = validate_fresh_trials(report, baseline, challenger)
-        elif args.os_command == "stage":
-            result = {"event_hash": record_candidate(engine, load(args.report)), "status": "REPLAY_ONLY"}
+        elif args.os_command in {"stage", "stage-sop"}:
+            fn = record_candidate if args.os_command == "stage" else record_sop_candidate
+            result = {"event_hash": fn(engine, load(args.report)), "status": "REPLAY_ONLY"}
         else:
             raise ValueError("unknown Research OS command")
     print(json.dumps(result, indent=2, sort_keys=True, allow_nan=False))
@@ -135,13 +142,14 @@ def populate(parser: argparse.ArgumentParser) -> None:
     demo = sub.add_parser("demo", help="run real bounded arithmetic evaluations and replay policy fitting")
     demo.add_argument("--workspace", required=True)
     demo.set_defaults(func=dispatch)
-    opt = sub.add_parser("optimize", help="train/search/holdout replay; output an advisory candidate only")
-    for split in ("train", "search", "holdout"):
-        opt.add_argument("--" + split, required=True, nargs="+")
-    opt.add_argument("--budget", type=float, required=True)
-    opt.add_argument("--output", required=True)
-    opt.set_defaults(func=dispatch)
-    for name in ("frontier", "approve", "run", "propose", "export", "stage", "validate-policy", "promote"):
+    for command, help_text in (("optimize", "train/search/holdout replay; output an advisory policy only"), ("optimize-sop", "support-limited retry-SOP search; advisory only")):
+        opt = sub.add_parser(command, help=help_text)
+        for split in ("train", "search", "holdout"):
+            opt.add_argument("--" + split, required=True, nargs="+")
+        opt.add_argument("--budget", type=float, required=True)
+        opt.add_argument("--output", required=True)
+        opt.set_defaults(func=dispatch)
+    for name in ("frontier", "approve", "run", "propose", "export", "stage", "stage-sop", "validate-policy", "validate-sop", "promote", "promote-sop"):
         p = sub.add_parser(name)
         p.add_argument("--root")
         p.add_argument("--research", default="latest")
@@ -162,12 +170,12 @@ def populate(parser: argparse.ArgumentParser) -> None:
             p.add_argument("--allow-local-planner", action="store_true")
             p.add_argument("--limit", type=int, default=4)
             p.add_argument("--timeout-seconds", type=float, default=120)
-        elif name in {"stage", "validate-policy", "promote"}:
+        elif name in {"stage", "stage-sop", "validate-policy", "validate-sop", "promote", "promote-sop"}:
             p.add_argument("--report", required=True)
-            if name != "stage":
+            if name not in {"stage", "stage-sop"}:
                 p.add_argument("--baseline-roots", nargs="+", required=True)
                 p.add_argument("--challenger-roots", nargs="+", required=True)
-            if name == "promote":
+            if name in {"promote", "promote-sop"}:
                 p.add_argument("--approver", required=True)
 
 

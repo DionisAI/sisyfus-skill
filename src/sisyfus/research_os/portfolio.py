@@ -367,7 +367,9 @@ class Portfolio:
                 raise ValueError("no unresolved portfolio intent with that ID")
             d = op["intent"]
             events = self.engines[d["project"]].events
-            index = next(i for i, e in enumerate(events) if e["event_hash"] == d["source_anchor"])
+            index = next((i for i, e in enumerate(events) if e["event_hash"] == d["source_anchor"]), None)
+            if index is None:
+                raise ValueError("member history lost the portfolio source anchor")
             if any(e["event_type"] in {"ATTEMPT_RESERVED", PREFIX + "DECISION"} for e in events[index + 1:]):
                 raise ValueError("member dispatch may have started; cannot release reservation")
             self.store.append("RELEASED", {"operation_id": operation_id, "actor": actor,

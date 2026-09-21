@@ -279,3 +279,25 @@ cross-project claim dependencies, detects stale downstream results, and reconcil
 source verifier receipts after crashes. See [portfolio operator guide](research-os-portfolio.md).
 This supersedes the earlier "not implemented" statement about basic cross-workspace
 allocation; arbitrary workflow discovery and demonstrated LLM gains remain unimplemented/unproven.
+
+
+## Learnable SOP pilot: retry policy, not mutable safety gates
+
+The SOP can now be an explicit optimization target without allowing the learner to
+rewrite its own acceptance rules. Version 1 deliberately exposes only
+`max_attempts_per_experiment`; the mandatory `authorization`, `dependencies`, and
+`budget` preflight gates remain immutable and must each appear exactly once.
+
+```bash
+sisyfus os optimize-sop \
+  --train train-a.json train-b.json \
+  --search search.json --holdout holdout.json \
+  --budget 20 --output sop-candidate.json
+sisyfus os stage-sop --root /path/to/project --report sop-candidate.json
+```
+
+Replay is support-limited. Lower retry caps may truncate a recorded attempt chain;
+higher caps never fabricate attempts that were not actually executed. Search selects
+the candidate, holdout is reported once, and replay alone never activates it. Fresh
+matched execution plus a named operator is required for promotion. Mandatory gates,
+verification contracts and permissions are outside the learnable parameter space.

@@ -144,6 +144,15 @@ class Meter:
         self.pending = {"input_tokens": input_tokens, "max_output_tokens": cap}
         return cap
 
+    def release(self) -> None:
+        """Release a reservation only when no provider request was dispatched."""
+        if self.pending is None:
+            raise RuntimeError("no reserved provider request")
+        if self.calls < 1:
+            raise RuntimeError("provider call accounting underflow")
+        self.calls -= 1
+        self.pending, self.reserved = None, 0.0
+
     def settle(self, reply: Reply) -> None:
         if self.pending is None:
             raise RuntimeError("no reserved provider request")

@@ -44,7 +44,11 @@ def ready_frontier(snapshot: dict[str, Any], *, max_attempts: int = 3) -> list[C
         cost = number(exp["cost"]["units"])
         if budget["cost_units_remaining"] is not None and cost > budget["cost_units_remaining"]:
             continue
-        features = tuple(number(exp["priority"].get(k, 0), maximum=1) for k in FEATURES)
+        try:
+            features = tuple(number(exp["priority"].get(k, 0), maximum=1) for k in FEATURES)
+        except (TypeError, ValueError):
+            # One malformed proposal must not hide otherwise schedulable research.
+            continue
         ready.append(Candidate(
             id=exp["id"], research_id=snapshot["research_id"],
             family=str(exp.get("metadata", {}).get("research_family") or exp["action_family"]),

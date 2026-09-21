@@ -55,10 +55,18 @@ class PortfolioStore:
         event = {"seq": len(events), "previous": events[-1]["hash"] if events else None,
                  "kind": kind, "data": data}
         event["hash"] = digest(event)
-        with (self.root / "events.jsonl").open("a", encoding="utf-8") as handle:
+        path = self.root / "events.jsonl"
+        created = not path.exists()
+        with path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(event, sort_keys=True, allow_nan=False) + "\n")
             handle.flush()
             os.fsync(handle.fileno())
+        if created:
+            fd = os.open(self.root, os.O_RDONLY)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
         return event
 
     def manifest(self) -> dict:

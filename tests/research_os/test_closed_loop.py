@@ -458,3 +458,11 @@ def test_same_policy_fresh_pairs_do_not_demonstrate_improvement(tmp_path):
     baseline = [fresh_trial(tmp_path / f"b{i}", f"b{i}", f"pair{i}", fixed) for i in range(2)]
     challenger = [fresh_trial(tmp_path / f"c{i}", f"c{i}", f"pair{i}", fixed) for i in range(2)]
     assert not validate_fresh_trials(report, baseline, challenger)["eligible_for_operator_review"]
+
+
+def test_invalid_priority_skips_only_bad_candidate(engine):
+    snapshot = engine.snapshot()
+    snapshot["experiments"]["e1"]["priority"]["goal_progress"] = 2
+    ids = {c.id for c in ready_frontier(snapshot)}
+    assert "e1" not in ids
+    assert ids  # Other valid candidates remain visible.

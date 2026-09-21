@@ -20,7 +20,7 @@ classifiers = [
 dependencies = []
 
 [project.optional-dependencies]
-benchmark = ["openai"]
+benchmark = ["openai>=2.6.0"]
 jev = ["typesafe-sdk"]
 
 [project.urls]

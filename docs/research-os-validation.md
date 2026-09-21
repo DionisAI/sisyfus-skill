@@ -56,6 +56,6 @@ Machine-readable reports preserve:
 - Replay reveals only recorded supported actions. Reordering requires an explicit independence assumption; it cannot evaluate new code, worker behavior, prompts or unavailable outcomes.
 - Fresh-run promotion checks at least two matched pairs and requires a named operator. This is a small pilot gate, not a statistical performance guarantee or an authentication system.
 - Same-user shell execution is not isolation. Use an external container/process/credential boundary before untrusted workers. The new controller's lock does not fence unrelated legacy writers.
-- This release selects experiments within a research workspace. A global cross-workspace portfolio scheduler, automatic new-task creation/execution, and production canaries remain future work.
+- Cross-workspace portfolio scheduling is implemented as a serial, registered-workspace coordinator. Dynamic task/project creation, automatic execution of newly generated commands, production canaries, and live-provider effectiveness remain future work.
 
 The next effectiveness test is a resource-matched real-provider comparison against a strong direct-worker plus simple-search baseline, using independent task families and frozen evaluators. Each component must show incremental benefit before promotion.

@@ -40,7 +40,7 @@ def coordinator_lock(engine: ResearchEngine) -> Iterator[None]:
 
 
 def configuration(engine: ResearchEngine) -> dict[str, Any]:
-    records = [e["data"] for e in engine.events if e["event_type"] in {PREFIX + "CONFIGURED", PREFIX + "POLICY_ACTIVATED"}]
+    records = [e["data"] for e in engine.events if e["event_type"] in {PREFIX + "CONFIGURED", PREFIX + "POLICY_ACTIVATED", PREFIX + "SOP_ACTIVATED"}]
     if not records:
         raise RuntimeError("operator must configure and approve the run before execution")
     return records[-1]
