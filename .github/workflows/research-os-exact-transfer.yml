@@ -14,12 +14,11 @@ jobs:
           python-version: '3.11'
       - name: Apply exact patch
         run: |
-          cat .github/research-os-exact.{0,1,2,3,4} | base64 -d | gzip -d > /tmp/exact.patch
+          cat .github/research-os-exact.0a .github/research-os-exact.0b .github/research-os-exact.1 .github/research-os-exact.2 .github/research-os-exact.3 .github/research-os-exact.4 | base64 -d | gzip -d > /tmp/exact.patch
           echo "9de56ba718223222f654a0c9f3fd6420549b5b66807dcb964946e2577f7c1c06  /tmp/exact.patch" | sha256sum -c -
           git apply --check /tmp/exact.patch
           git apply /tmp/exact.patch
-          rm -f .github/research-os-next-patch.0 .github/research-os-next-patch.1 .github/research-os-next-patch.1b .github/research-os-next-patch.2 .github/research-os-next-patch.3 .github/research-os-next-patch.4
-          rm .github/research-os-exact.{0,1,2,3,4}
+          rm -f .github/research-os-next-patch.* .github/research-os-exact.*
           rm .github/workflows/research-os-exact-transfer.yml
       - name: Validate
         env:
