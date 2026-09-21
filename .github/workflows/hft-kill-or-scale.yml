@@ -21,12 +21,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Require benchmark credential
-        run: |
-          if [ -z "$OPENAI_API_KEY" ]; then
-            echo "::error::OPENAI_API_KEY repository secret is not configured; no paid request was sent."
-            exit 2
-          fi
       - name: Install benchmark adapter
         run: python -m pip install -e '.[benchmark]'
       - name: Freeze real Hyperliquid market data before model calls
@@ -35,6 +29,12 @@ jobs:
           python scripts/hft_live_benchmark.py freeze --root validation/hft-live/suite
           printf '%s\n' '{"input_per_million":10,"output_per_million":50}' > validation/hft-live/astra-rates.json
           sha256sum validation/hft-live/suite/* > validation/hft-live/frozen-assets.sha256
+      - name: Require benchmark credential
+        run: |
+          if [ -z "$OPENAI_API_KEY" ]; then
+            echo "::error::OPENAI_API_KEY repository secret is not configured; no paid request was sent."
+            exit 2
+          fi
       - name: Resource-matched Astra fight
         run: |
           sisyfus os benchmark \
