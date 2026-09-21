@@ -1,0 +1,62 @@
+name: HFT kill-or-scale Astra benchmark
+on:
+  push:
+    branches: [feat/closed-loop-research-os]
+    paths:
+      - scripts/hft_live_benchmark.py
+      - .github/workflows/hft-kill-or-scale.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      SISYFUS_AUTO_SERVE: '0'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install benchmark adapter
+        run: python -m pip install -e '.[benchmark]'
+      - name: Freeze real Hyperliquid market data before model calls
+        run: |
+          mkdir -p validation/hft-live
+          python scripts/hft_live_benchmark.py freeze --root validation/hft-live/suite
+          printf '%s\n' '{"input_per_million":10,"output_per_million":50}' > validation/hft-live/astra-rates.json
+          sha256sum validation/hft-live/suite/* > validation/hft-live/frozen-assets.sha256
+      - name: Require benchmark credential
+        run: |
+          if [ -z "$OPENAI_API_KEY" ]; then
+            echo "::error::OPENAI_API_KEY repository secret is not configured; no paid request was sent."
+            exit 2
+          fi
+      - name: Resource-matched Astra fight
+        run: |
+          sisyfus os benchmark \
+            --suite validation/hft-live/suite/suite.json \
+            --output validation/hft-live/run \
+            --model gpt-6-astra \
+            --rates validation/hft-live/astra-rates.json \
+            --allow-paid-provider --allow-local-evaluator \
+            --effort high \
+            --max-calls 3 --max-evaluations 6 \
+            --max-output-tokens 6000 --max-output-per-call 2000 \
+            --max-seconds 420 --max-usd 0.5 --max-total-usd 4.5 \
+            --repeats 1 --seed 20260921
+      - name: Verify evidence
+        if: always()
+        run: |
+          if [ -d validation/hft-live/run ]; then
+            sisyfus os benchmark-status --output validation/hft-live/run > validation/hft-live/status.json || true
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hft-kill-or-scale-astra
+          path: validation/hft-live/
+          retention-days: 14
