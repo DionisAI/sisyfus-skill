@@ -1,62 +1,113 @@
-name: Publish Sisyfus release
-
+name: Release validation and publication
 on:
   push:
-    tags:
-      - 'v*'
-
+    branches: [main, feat/control-plane-native-workers]
+    tags: ['v*']
+  workflow_dispatch:
 permissions:
-  contents: write
-
+  contents: read
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 jobs:
   validate:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
+      fail-fast: false
       matrix:
-        python-version:
-          - '3.11'
-          - '3.12'
-          - '3.13'
+        python: ['3.11', '3.12', '3.13']
+    env:
+      SISYFUS_AUTO_SERVE: '0'
+      SISYFUS_AUTO_OPEN: '0'
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
-          cache: pip
-      - name: Install
-        run: |
-          python -m pip install --upgrade pip pytest
-          python -m pip install -e .
-      - name: Verify tag and package version
-        run: test "v$(sisyfus --version)" = "$GITHUB_REF_NAME"
-      - name: Compile
-        run: python -m compileall -q src tests scripts
-      - name: Test
-        env:
-          SISYFUS_AUTO_SERVE: '0'
-          SISYFUS_AUTO_OPEN: '0'
-          SISYFUS_UPDATE_FORCE_STDLIB: '1'
-        run: python -m pytest -q
-
-  publish:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install -e . pytest
+      - run: python -m compileall -q src tests scripts
+      - run: python -m pytest -q --junitxml=validation-tests.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: release-tests-${{ matrix.python }}
+          path: validation-tests.xml
+  package:
     needs: validate
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      SISYFUS_AUTO_SERVE: '0'
+      SISYFUS_AUTO_OPEN: '0'
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Build deterministic source archive and manifest
-        run: python scripts/build_release_assets.py --output dist
-      - name: Publish GitHub Release assets
-        uses: softprops/action-gh-release@v2
+      - run: |
+          python -m pip install -e . pytest wheel playwright==1.57.0
+          python -m playwright install --with-deps chromium
+      - name: Browser and persisted controls
+        run: python scripts/native_console_smoke.py --directory /tmp/release-console
+      - name: Build exact-commit artifacts
+        run: |
+          VERSION=$(sisyfus --version)
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then test "$GITHUB_REF_NAME" = "v$VERSION"; fi
+          GITHUB_REF_NAME="v$VERSION" python scripts/build_release_assets.py --output dist
+          test -s dist/release-manifest.json
+          python -m pip wheel --no-deps --no-build-isolation . --wheel-dir dist
+          git rev-parse HEAD > dist/source-commit.txt
+          cp /tmp/release-console/browser-validation.json dist/
+          cp /tmp/release-console/desktop.png /tmp/release-console/mobile.png dist/
+      - name: Install built archive and verify updater routes
+        run: python scripts/release_install_smoke.py --dist dist --directory /tmp/release-install
+      - uses: actions/upload-artifact@v4
         with:
-          body_path: RELEASE_NOTES_v0.8.1.md
-          files: |
-            dist/sisyfus-*.tar.gz
-            dist/sisyfus-*.tar.gz.sha256
-            dist/release-manifest.json
+          name: release-candidate
+          path: dist/*
+          retention-days: 30
+  publish:
+    needs: package
+    if: github.repository == 'DionisAI/sisyfus-skill' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-candidate
+          path: dist
+      - name: Publish the validated main commit, never replace a release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VERSION=$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')
+          TAG="v$VERSION"
+          test "$(cat dist/source-commit.txt)" = "$GITHUB_SHA"
+          test "$(gh api repos/$GITHUB_REPOSITORY/git/ref/heads/main --jq .object.sha)" = "$GITHUB_SHA"
+          if [ "$VERSION" = 0.9.0 ]; then
+            for PR in 2 3 4; do
+              test "$(gh api repos/$GITHUB_REPOSITORY/pulls/$PR --jq .merged)" = true
+            done
+          fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; refusing to replace published assets."
+            exit 0
+          fi
+          (cd dist && sha256sum -c "sisyfus-$VERSION.tar.gz.sha256")
+          gh release create "$TAG" dist/* --target "$GITHUB_SHA" \
+            --title "Sisyfus $TAG — unified Research OS and Mission Control" \
+            --notes-file "RELEASE_NOTES_$TAG.md" --latest
+          gh release view "$TAG" --json tagName,isDraft,isPrerelease,targetCommitish,url
