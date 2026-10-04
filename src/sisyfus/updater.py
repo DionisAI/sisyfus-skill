@@ -25,6 +25,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+from urllib.parse import urlsplit
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping, Sequence
 
@@ -42,7 +43,7 @@ RELEASE_MANIFEST_SCHEMA = "sisyfus.release.v1"
 DEFAULT_MAX_ARCHIVE_BYTES = 128 * 1024 * 1024
 ACTIVE_ACTIVITY_STATUSES = {"RUNNING", "EXECUTING", "VERIFYING", "PLANNING", "RECOVERING"}
 ACTIVE_CONTINUATION_STATES = {"RUNNING", "VERIFYING"}
-ACTIVE_DECISION_STATES = {"RESERVED", "EXECUTED"}
+ACTIVE_DECISION_STATES = {"RESERVED", "EXECUTING", "EXECUTED"}
 TERMINAL_RESEARCH_STATUSES = {"SOLVED", "REFUTED", "FAILED", "BLOCKED", "EXHAUSTED", "BUDGET_EXHAUSTED", "CANCELLED"}
 
 class UpdateError(RuntimeError):
@@ -176,18 +177,34 @@ class InstallLayout:
         self.releases_dir.mkdir(parents=True, exist_ok=True)
         self.bin_dir.mkdir(parents=True, exist_ok=True)
 
+class CredentialSafeRedirect(urllib.request.HTTPRedirectHandler):
+    """Never forward authorization to a different download origin."""
+    def redirect_request(self, req: Any, fp: Any, code: int, msg: str,
+                         headers: Any, newurl: str) -> Any:
+        redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if redirected is not None and _origin(req.full_url) != _origin(newurl):
+            redirected.remove_header("Authorization")
+        return redirected
+
+
+def _origin(url: str) -> tuple[str, str | None, int | None]:
+    parsed = urlsplit(url)
+    return parsed.scheme, parsed.hostname, parsed.port
+
+
 class GitHubClient:
     def __init__(self, *, token: str | None = None, timeout: float = 30.0) -> None:
         self.token = token or os.environ.get("GITHUB_TOKEN")
         self.timeout = float(timeout)
+        self.opener = urllib.request.build_opener(CredentialSafeRedirect())
     def _request(self, url: str) -> urllib.request.Request:
         headers = {"Accept":"application/vnd.github+json", "User-Agent":"sisyfus-updater", "X-GitHub-Api-Version":"2022-11-28"}
-        if self.token:
+        if self.token and _origin(url) == _origin(API_BASE):
             headers["Authorization"] = f"Bearer {self.token}"
         return urllib.request.Request(url, headers=headers)
     def json(self, url: str) -> Any:
         try:
-            with urllib.request.urlopen(self._request(url), timeout=self.timeout) as response:
+            with self.opener.open(self._request(url), timeout=self.timeout) as response:
                 return json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")[:1000]
@@ -198,7 +215,7 @@ class GitHubClient:
         destination.parent.mkdir(parents=True, exist_ok=True)
         digest = hashlib.sha256(); total = 0
         try:
-            with urllib.request.urlopen(self._request(url), timeout=self.timeout) as response, destination.open("wb") as output:
+            with self.opener.open(self._request(url), timeout=self.timeout) as response, destination.open("wb") as output:
                 while True:
                     chunk = response.read(1024*1024)
                     if not chunk: break
@@ -416,6 +433,8 @@ def _safe_extract(archive: Path, destination: Path) -> Path:
     with tarfile.open(archive, "r:*") as bundle:
         members = bundle.getmembers()
         if not members: raise IntegrityError("release archive is empty")
+        if len(members) > 20000 or sum(m.size for m in members) > 512 * 1024 * 1024:
+            raise IntegrityError("release archive exceeds extraction limits")
         top_levels=set()
         for member in members:
             pure=Path(member.name.replace("\\","/"))
@@ -455,14 +474,20 @@ def _process_alive(pid: Any) -> bool:
 def update_lock(layout: InstallLayout) -> Iterator[None]:
     layout.ensure()
     with layout.lock_path.open("a+b") as handle:
-        if fcntl is not None: fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        if fcntl is not None:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as exc:
+                raise ActiveWorkError([{"kind": "running_controller_or_update", "summary": "a mission controller or another updater owns the installation lock"}]) from exc
         try: yield
         finally:
             if fcntl is not None: fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 def register_project(root: str | Path, *, layout: InstallLayout | None = None) -> None:
     layout=layout or InstallLayout.discover(); layout.ensure(); canonical=str(Path(root).expanduser().resolve())
-    with update_lock(layout):
+    with layout.project_registry_path.with_suffix(".lock").open("a+b") as handle:
+        if fcntl is not None:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
         data=_read_json(layout.project_registry_path,{"schema_version":PROJECT_REGISTRY_SCHEMA,"projects":[]})
         projects={str(item.get("path")):dict(item) for item in data.get("projects") or [] if isinstance(item,dict) and item.get("path")}
         projects[canonical]={"path":canonical,"last_seen_at":utc_now()}
@@ -484,7 +509,10 @@ def _active_activity(root: Path) -> dict[str, Any] | None:
     return {"kind":"activity","project":str(root),"status":status,"operation":activity.get("operation"),"summary":f"{root}: live activity {status} ({activity.get('operation') or 'unknown'})"}
 
 def _active_autonomy(root: Path) -> list[dict[str, Any]]:
-    database=root/".sisyfus"/"autonomy.sqlite3"
+    databases = (root / ".sisyfus" / "autonomy.sqlite3", root / "autonomy.sqlite3")
+    return [item for database in databases for item in _active_autonomy_database(root, database)]
+
+def _active_autonomy_database(root: Path, database: Path) -> list[dict[str, Any]]:
     if not database.exists():return []
     active=[]; connection=None
     try:
@@ -496,7 +524,11 @@ def _active_autonomy(root: Path) -> list[dict[str, Any]]:
         if "decisions" in tables:
             ph=",".join("?" for _ in ACTIVE_DECISION_STATES)
             for row in connection.execute(f"SELECT id,status,recovery_required FROM decisions WHERE status IN ({ph}) OR recovery_required=1",tuple(sorted(ACTIVE_DECISION_STATES))).fetchall(): active.append({"kind":"decision","project":str(root),"id":row["id"],"status":row["status"],"summary":f"{root}: decision {row['id']} is {row['status']}"})
-    except sqlite3.Error:return []
+        if "native_worker_runs" in tables:
+            for row in connection.execute("SELECT key,status FROM native_worker_runs WHERE status IN ('IN_FLIGHT','UNKNOWN')").fetchall():
+                active.append({"kind": "native_worker", "project": str(root), "id": row["key"], "status": row["status"], "summary": f"{root}: native worker {row['key']} is {row['status']}"})
+    except sqlite3.Error:
+        return [{"kind": "unreadable_state", "project": str(root), "summary": f"{root}: cannot verify whether autonomy work is active"}]
     finally:
         if connection is not None: connection.close()
     return active
@@ -599,11 +631,11 @@ def _copy_skill(source: Path, destination: Path) -> None:
     else: os.replace(temporary,destination)
 
 def _write_launcher(path: Path, package_dir: Path, module: str) -> None:
-    _atomic_text(path,"#!/usr/bin/env python3\nimport sys\n"+f"sys.path.insert(0, {str(package_dir)!r})\nfrom {module} import main\nraise SystemExit(main())\n",mode=0o755)
+    _atomic_text(path,"#!/usr/bin/env python3\nimport sys\nsys.dont_write_bytecode = True\n"+f"sys.path.insert(0, {str(package_dir)!r})\nfrom {module} import main\nraise SystemExit(main())\n",mode=0o755)
 
 def _install_stdlib(source: Path, release_dir: Path) -> None:
-    lib=release_dir/"lib"; bin_dir=release_dir/"bin"; shutil.rmtree(lib,ignore_errors=True); shutil.copytree(source/"src"/"sisyfus",lib/"sisyfus"); bin_dir.mkdir(parents=True,exist_ok=True)
-    _write_launcher(bin_dir/"sisyfus",lib,"sisyfus.cli"); _write_launcher(bin_dir/"sisyfus-autonomy",lib,"sisyfus.autonomy.cli")
+    lib=release_dir/"lib"; bin_dir=release_dir/"bin"; shutil.rmtree(lib,ignore_errors=True); shutil.copytree(source/"src"/"sisyfus",lib/"sisyfus", ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo")); bin_dir.mkdir(parents=True,exist_ok=True)
+    _write_launcher(bin_dir/"sisyfus",lib,"sisyfus.entrypoint" if (lib/"sisyfus"/"entrypoint.py").is_file() else "sisyfus.cli"); _write_launcher(bin_dir/"sisyfus-autonomy",lib,"sisyfus.autonomy.cli")
 
 def _install_venv(source: Path, release_dir: Path) -> None:
     venv=release_dir/"venv"; subprocess.run([sys.executable,"-m","venv",str(venv)],check=True)
@@ -630,7 +662,7 @@ def _release_content_hash(release_dir: Path) -> str:
     digest = hashlib.sha256()
     for path in sorted(release_dir.rglob("*"), key=lambda item: item.as_posix()):
         relative = path.relative_to(release_dir).as_posix()
-        if relative == "install-manifest.json" or path.is_dir():
+        if relative == "install-manifest.json" or path.is_dir() or "__pycache__" in path.parts or path.suffix in {".pyc", ".pyo"}:
             continue
         digest.update(relative.encode("utf-8"))
         digest.update(b"\0")
@@ -702,6 +734,8 @@ def _build_release(
         _verify_release(release_dir, expected_version)
         return release_dir
 
+    if release_dir.resolve() in {_symlink_target(layout.current_link), _symlink_target(layout.previous_link)}:
+        raise IntegrityError("refusing to replace a current/previous release in place; use a new version")
     shutil.rmtree(release_dir, ignore_errors=True)
     release_dir.mkdir(parents=True)
     # Sisyfus has no runtime dependencies. A source-copy release avoids running

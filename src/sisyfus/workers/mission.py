@@ -72,7 +72,7 @@ def validate_tasks(tasks: Any, spec: dict[str, Any]) -> list[dict[str, Any]]:
             raise ValueError("unknown task fields; agents cannot change policies or evaluators")
         task = {**raw, "depends_on": raw.get("depends_on", []), "max_attempts": raw.get("max_attempts", 2)}
         ident = task.get("id")
-        if not isinstance(ident, str) or not re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", ident) or ident in ids:
+        if not isinstance(ident, str) or not re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", ident) or ident in ids or ident == "planner":
             raise ValueError("invalid or duplicate task id")
         if task.get("driver") not in spec["drivers"] or task.get("check") not in spec["checks"]:
             raise ValueError("plan selected an unapproved driver/check")
@@ -306,6 +306,14 @@ class Mission:
             idempotency_key=key, terminal_on_pass=True)
 
     def run(self, *, max_cycles: int = 1000) -> dict[str, Any]:
+        from ..updater import InstallLayout, register_project
+        from .installation_guard import running_installation
+        layout = InstallLayout.discover()
+        register_project(self.directory, layout=layout)
+        with running_installation(layout):
+            return self._run(max_cycles=max_cycles)
+
+    def _run(self, *, max_cycles: int = 1000) -> dict[str, Any]:
         if type(max_cycles) is not int or not 1 <= max_cycles <= 1_000_000:
             raise ValueError("invalid supervisor cycle budget")
         if not all(d["available"] for d in self.doctor().values()):

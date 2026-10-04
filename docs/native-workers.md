@@ -1,9 +1,9 @@
 # Native workers: an opt-in Sisyfus control-plane increment
 
-This branch extends the existing `AutonomousRuntime`, `AutonomyStore`,
+This opt-in module, included in v0.9.0, extends the existing `AutonomousRuntime`, `AutonomyStore`,
 `AutonomousSupervisor` and `research_v2.verifier.classify_observation`. It is not
-another task-truth database, a v0.9 release, or a demonstrated research gain.
-`main`, PR #2, the original evaluators and holdouts remain unchanged.
+another task-truth database or a demonstrated research gain.
+The original evaluators and holdouts remain unchanged.
 
 ## What runs
 
@@ -236,3 +236,16 @@ canary, merge, self-update activation or policy promotion is performed. Existing
 Research OS policy/SOP learning stays unchanged and opt-in. Dynamic graph evolution,
 fresh matched native-agent benchmarks and demonstrable cross-task RSI remain open
 implementation stages, not successful results asserted by this delivery.
+
+## v0.9.0 installation integration
+
+The versioned source installer exposes the same `workers` entry point as pip
+installation. Mission execution registers its control directory and holds a
+shared installation lock until its bounded run returns. Update and rollback
+cannot take their exclusive activation lock in that interval. Registration uses
+a separate lock so independent mission controllers can coexist. Unknown native
+receipts and unreadable registered autonomy state block later upgrades as well.
+The inspection-only `serve` command does not hold an execution lock.
+
+The 390px Chromium regression checks horizontal containment of every console
+section. Large graphs scroll within their section instead of widening the page.

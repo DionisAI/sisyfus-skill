@@ -343,7 +343,8 @@ def test_planner_cannot_omit_mandatory_acceptance_check(tmp_path):
 def test_opt_in_entrypoint_preserves_legacy_version(capsys):
     from sisyfus.entrypoint import main
     assert main(['--version']) == 0
-    assert '0.8.0' in capsys.readouterr().out
+    from sisyfus import __version__
+    assert capsys.readouterr().out.strip() == __version__
     with pytest.raises(SystemExit) as help_exit:
         main(['workers', '--help'])
     assert help_exit.value.code == 0

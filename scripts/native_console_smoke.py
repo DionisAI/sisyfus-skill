@@ -48,12 +48,17 @@ def main() -> None:
             assert not mission.journal.paused()
             assert '#token=' not in page.url
             page.set_viewport_size({'width': 390, 'height': 844})
+            for section in page.locator('section').all():
+                box = section.bounding_box()
+                assert box is not None and box['x'] + box['width'] <= 391, box
+            assert page.evaluate("() => document.documentElement.scrollWidth <= innerWidth")
             page.screenshot(path=str(root / 'mobile.png'), full_page=True)
             assert not errors, errors
             browser.close()
         report = {'all_verified': result['all_verified'], 'native_invocations': 4,
                   'real_llm_executed': False, 'browser_errors': errors,
                   'historical_attempt_verdicts': [r['verdict'] for r in result['runs']],
+                  'mobile_sections_within_viewport': True,
                   'pause_resume_verified_in_database': True, 'token_removed_from_address_bar': True,
                   'chain': mission.store.verify_event_chain()}
         (root / 'browser-validation.json').write_text(json.dumps(report, indent=2))

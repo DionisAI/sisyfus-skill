@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from .. import __version__
 from .protocol import ControlSource, EventSink, Receipt, Request, environment
 from .transport import Process, ProtocolError, probe
 
@@ -85,7 +86,7 @@ class CodexDriver:
 
         try:
             emit("process_started", {"pid": proc.process.pid, "driver": self.name})
-            rpc("initialize", {"clientInfo": {"name": "sisyfus", "version": "0.8.0"}})
+            rpc("initialize", {"clientInfo": {"name": "sisyfus", "version": __version__}})
             proc.send({"method": "initialized", "params": {}})
             params: dict[str, Any] = {"model": request.model, "cwd": request.cwd,
                                       "approvalPolicy": "never", "sandbox": request.mode}

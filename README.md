@@ -11,6 +11,25 @@ under; [`templates/`](templates/) are the TaskSpec and experiment scaffolds. The
 Python engine in `src/` is the skill's deterministic backend — agents drive it
 through the `sisyfus` CLI and never mutate research state directly.
 
+## Current release: v0.9.0
+
+Sisyfus now includes the original research skill, versioned updates, opt-in
+Research OS and native-worker Mission Control in one package. The independent
+runtime owns execution and evidence; Codex and Claude are optional workers.
+
+```bash
+sisyfus update --version 0.9.0 --yes  # existing versioned installs
+sisyfus workers doctor
+sisyfus workers demo --directory /tmp/sisyfus-native-demo-new
+sisyfus workers serve --directory /tmp/sisyfus-native-demo-new/control --open
+```
+
+The demo is an offline protocol fixture, not a live-model run. Native workers
+are a trusted-local POSIX pilot. See [native worker guide](docs/native-workers.md),
+[Research OS guide](docs/research-os.md), and [release notes](RELEASE_NOTES_v0.9.0.md).
+Installed releases now expose `workers`, `os`, `update` and legacy commands
+through the same CLI. An installation without `update` needs one installer refresh.
+
 ## What the skill does
 
 Given an open research question, an agent using this skill:
@@ -98,7 +117,7 @@ switch and the previous release remains available for rollback.
 ```bash
 sisyfus update --check
 sisyfus update --yes
-sisyfus update --version 0.8.1 --yes
+sisyfus update --version 0.9.0 --yes
 sisyfus update --channel beta --yes
 sisyfus update --channel edge --yes
 sisyfus update --status
@@ -149,7 +168,7 @@ or use a skills CLI: `npx skills add github:DionisAI/sisyfus-skill`.
 Engine (pure standard library, Python >= 3.11):
 
 ```bash
-python3 -m pip install "sisyfus @ git+https://github.com/DionisAI/sisyfus-skill@v0.8.1"
+python3 -m pip install "sisyfus @ git+https://github.com/DionisAI/sisyfus-skill@v0.9.0"
 ```
 
 `SKILL.md` performs this check itself, so an agent landing on a clean machine
