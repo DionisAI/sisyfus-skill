@@ -34,6 +34,12 @@ local native workers. Pause suppresses new dispatch; an in-flight call can finis
 Resume continues the same mission. Stop is durable and requests cooperative
 interruption; its acknowledgement is not a terminal receipt.
 
+A model's stop/wait recommendation is advisory (`NEEDS_OPERATOR` /
+`WAITING_LEAD`), not the operator's durable Stop. After addressing the condition,
+explicit Start advances the diagnosis epoch and restarts an idle controller;
+Resume advances the epoch and clears dispatch pause but does not itself start
+an idle thread. Neither operation clears UNKNOWN or an operator-owned Stop.
+
 ## Run a prepared specification
 
 ```sh

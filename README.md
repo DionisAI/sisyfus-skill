@@ -268,7 +268,7 @@ pytest temporary cleanup is incompatible with the active no-permanent-deletion
 policy.
 
 ```bash
-python3 -m pytest -q
+python3 scripts/test_retained.py -q
 ```
 
 ## License

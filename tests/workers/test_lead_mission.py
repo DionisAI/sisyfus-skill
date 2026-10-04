@@ -951,7 +951,12 @@ def test_review_fix_explicit_resume_rediagnoses_saved_wait(tmp_path, decision):
 
 
 @pytest.mark.parametrize("role", ["lead", "worker", "reviewer"])
-def test_review_fix_pause_reservation_race_retains_single_attempt(tmp_path, role):
+@pytest.mark.parametrize("short_lease", [False, True])
+def test_review_fix_pause_reservation_race_retains_single_attempt(tmp_path, role, short_lease, monkeypatch):
+    if short_lease:
+        from sisyfus.workers import lead_mission as module
+        config = module.SupervisorConfig
+        monkeypatch.setattr(module, "SupervisorConfig", lambda **kw: config(lease_seconds=.5, **kw))
     m = mission(tmp_path, make_spec(tmp_path, initial=role != "lead"))
     original = m.journal.before_reserve
     hit = threading.Event()
@@ -973,7 +978,9 @@ def test_review_fix_pause_reservation_race_retains_single_attempt(tmp_path, role
     try:
         assert hit.wait(5), outcome
         # Hold the race open long enough to expose an ERROR on the old path.
-        time.sleep(.08)
+        # The long variant exceeds two lease lifetimes. Runtime's independent
+        # heartbeat must retain ownership while the reservation waits on pause.
+        time.sleep(1.3 if short_lease else .08)
         m.journal.pause(False)
         thread.join(timeout=10)
         assert not thread.is_alive() and "error" not in outcome, outcome

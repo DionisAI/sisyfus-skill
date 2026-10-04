@@ -70,5 +70,7 @@ Aggregate limits default to null; single-call limits and stop remain active.
 
 ## Status
 
-Implementation and end-to-end verification are in progress. The authoritative
-completion checklist is `TECHLEAD-ACCEPTANCE.md`, not this design document.
+Implementation, independent code-review repairs, real autonomous repair and a
+four-arm native procedure pilot have been verified. The pilot measured zero
+invocation savings, so its candidate was not promoted. The authoritative
+delivery and completion checklist is `TECHLEAD-ACCEPTANCE.md`.

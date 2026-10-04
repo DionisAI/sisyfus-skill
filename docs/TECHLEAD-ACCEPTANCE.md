@@ -1,9 +1,11 @@
 # Tech Lead / executor / RSI completion contract
 
-Status: native engineering and autonomous-repair loops verified; real paired
-policy evaluation settled with NONPROMOTION. Code-review repairs, final follow-up
-verification and durable delivery remain in progress. No full-goal completion
-claimed.
+Status: required implementation and verification complete. Native engineering,
+autonomous repair and durable browser execution verified. Six code-review
+defects repaired; fresh actual Opus follow-up PASS. Final workers suite: 405 PASS.
+Real paired policy evaluation settled with NONPROMOTION; no measured uplift or
+actual policy promotion is claimed. Global installed-release activation remains
+an explicitly separate operation, outside this delivery.
 
 ## Required deliverables
 
@@ -35,8 +37,10 @@ claimed.
 
 - Baseline: release v0.9.0, commit 10d7ad82e2cdf5c90cd39b470a6d23fc1513b402.
 - Existing preview: offline fixture only; not evidence for this contract.
-- Worker integration checkpoint: 369 retained tests passed before the independent
-  code-review repairs. Related autonomy regressions: 21 passed; one legacy
+- Final worker integration checkpoint: 405 retained tests passed in 123 seconds.
+  Long-pause/short-lease variants passed six focused cases, including pauses
+  longer than two continuation lease lifetimes.
+  Related autonomy regressions: 21 passed; one legacy
   migration test was deliberately excluded
   because its permanent database unlink violates the active deletion policy.
   The original policy-failure log is retained, not treated as a passing test.
@@ -60,8 +64,24 @@ claimed.
   and six actual native calls. No manual repair or test weakening occurred;
   runtime Sol attestation remained null. This is not an RSI benchmark.
 - Independent real Opus static review identified six concrete lifecycle and
-  trial-admission edge defects. Scoped repairs and new regressions are in
-  progress; that review is retained as FAIL until follow-up verification.
+  trial-admission edge defects. Scoped root-cause repairs and new regressions
+  completed. A new read-only Opus session returned PASS with zero findings;
+  all reviewed source hashes remained unchanged. Original FAIL is retained.
+- Durable browser mission `m_c2df3e19d09f96f5cf37ce013aa363a6` was created with
+  zero dispatch, then explicitly Started through the real page. Seven genuine
+  native calls produced a preserved FAIL and a versioned repair: independent
+  review rejected an exception message interpolating fetched status data despite
+  six-test PASS. Opus Lead classified the root cause as architecture, identified
+  its own flawed interface and issued `repair-poll-job-message-safety` with the
+  exact frozen acceptance unchanged. Native Codex requested Sol again; fresh
+  task and integration reviews passed. COMPLETED, all_verified=true, zero
+  unresolved runs, and 1795-event hash chain valid. Both worker actual_model
+  fields stayed null; all five Claude calls were attested Opus 5.5.
+- Durable source: `/Users/xinhuang/github/sisyfus-techlead-rsi`, independent
+  `codex/techlead-rsi` branch. New mission state:
+  `/Users/xinhuang/Documents/Sisyfus-TechLead/missions`. CLI/help, shell launcher
+  syntax, zero-dispatch binding, actual page Start and completed acceptance were
+  checked. The live 8781 hub runs this durable checkout, not the installed release.
 - Browser create/select/Start and pause/resume/stop were exercised. Actual native
   completion was visible in the page. At 390px, document scrollWidth was 390;
   normal viewport was restored. Screenshots and canonical readbacks are under
@@ -78,3 +98,23 @@ claimed.
   COMPLETED, all_verified=true, with 31 parent+child reservations and no
   unresolved runs at readback. Runtime Sol attestation remains unverified,
   and this small pilot is not evidence of general model-capability improvement.
+
+## Requirement-by-requirement receipt
+
+| Item | Implementation and acceptance surface |
+| --- | --- |
+| 1 | Lead architecture/interfaces/spec/DAG in `lead_mission`; real durable plan and scoped tasks |
+| 2 | Explicit native role requests; fresh read-only review; deterministic PASS plus independent PASS |
+| 3 | Real durable architecture diagnosis, new repair ID, unchanged acceptance and preserved initial FAIL |
+| 4 | Parallel lease/scope/conflict/integration regressions; actual whole-project integration PASS. Concurrent native worker execution is not claimed by this pilot |
+| 5 | Null aggregate defaults; finite main-mission caps, UNKNOWN/stop/pause tests; finite parents conservatively fence child labs |
+| 6 | Same-store procedure history, promotion/rollback/provenance tests; actual four-arm comparison rejected zero-gain candidate. No actual promotion/uplift claim |
+| 7 | Actual browser creation/control tests, durable real Start, visible COMPLETED and 390px readback |
+| 8 | Restart/epoch/unknown/reservation tests; explicit missing Sol runtime identity and incomplete cost telemetry |
+| 9 | 405 worker + 21 related autonomy tests; original policy failure retained; real positive, negative, automatic repair and independent Opus code follow-up |
+| 10 | Durable independent checkout, executable launcher, Chinese/English docs, persistent mission DB, private retained evidence archive |
+
+Local execution evidence lives under `artifacts/techlead/` in the delivered
+checkout and is ignored by Git. Canonical archive copies preserve original
+paths/provenance and are historical readbacks, not relocated resumable missions.
+The new durable mission under Documents is the resumable operational state.
