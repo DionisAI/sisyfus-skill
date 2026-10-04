@@ -28,7 +28,7 @@ Homepage = "https://github.com/DionisAI/sisyfus-skill"
 Changelog = "https://github.com/DionisAI/sisyfus-skill/blob/main/CHANGELOG.md"
 
 [project.scripts]
-sisyfus = "sisyfus.cli:main"
+sisyfus = "sisyfus.entrypoint:main"
 sisyfus-autonomy = "sisyfus.autonomy.cli:main"
 
 [tool.setuptools]
