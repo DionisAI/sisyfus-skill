@@ -102,7 +102,7 @@ class Journal:
                 raise DispatchBlocked("mission is paused")
             if db.execute("SELECT 1 FROM native_worker_runs WHERE status='UNKNOWN'").fetchone():
                 raise DispatchBlocked("unresolved worker result blocks shared spending")
-            if db.execute("SELECT count(*) FROM native_worker_runs").fetchone()[0] >= spec["max_calls"]:
+            if spec.get("max_calls") is not None and db.execute("SELECT count(*) FROM native_worker_runs").fetchone()[0] >= spec["max_calls"]:
                 raise DispatchBlocked("native call budget exhausted")
             if db.execute("SELECT count(*) FROM native_worker_runs WHERE status='IN_FLIGHT'").fetchone()[0] >= spec["parallelism"]:
                 raise DispatchBlocked("worker capacity exhausted")

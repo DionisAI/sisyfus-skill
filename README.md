@@ -251,6 +251,22 @@ the wheel payload and a test fails if the two ever drift.
 
 ## Test
 
+### Opt-in Tech Lead development extension
+
+This checkout adds `sisyfus techlead`: Opus architecture/diagnosis, scoped Codex
+implementation, independent Opus verification, an operational browser console,
+and evidence-gated versioned procedure trials. It leaves the installed release
+and the research observatory unchanged. This is a local development extension,
+not a new upstream release or a claim of improved model weights.
+
+- [中文启动与操作手册](docs/TECHLEAD-QUICKSTART.zh-CN.md)
+- [Runbook and limits](docs/TECHLEAD-RUNBOOK.md)
+- [Required acceptance and observed evidence](docs/TECHLEAD-ACCEPTANCE.md)
+
+For this checkout's retained validation, use `scripts/test_retained.py`; ordinary
+pytest temporary cleanup is incompatible with the active no-permanent-deletion
+policy.
+
 ```bash
 python3 -m pytest -q
 ```
