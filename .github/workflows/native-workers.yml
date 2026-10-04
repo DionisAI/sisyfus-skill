@@ -1,0 +1,66 @@
+name: Native workers validation
+on:
+  push:
+    branches: [feat/control-plane-native-workers]
+  pull_request:
+    paths:
+      - 'src/sisyfus/workers/**'
+      - 'tests/workers/**'
+      - 'src/sisyfus/entrypoint.py'
+      - 'src/sisyfus/__main__.py'
+      - 'pyproject.toml'
+      - 'scripts/native_console_smoke.py'
+      - '.github/workflows/native-workers.yml'
+permissions:
+  contents: read
+concurrency:
+  group: native-workers-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.12', '3.13']
+    env:
+      SISYFUS_AUTO_SERVE: '0'
+      SISYFUS_AUTO_OPEN: '0'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install -e . pytest
+      - name: Regression suite
+        run: python -m pytest -q --junitxml=test-results.xml
+      - name: Install browser test tooling
+        if: matrix.python == '3.11'
+        run: |
+          python -m pip install playwright==1.57.0
+          python -m playwright install --with-deps chromium
+      - name: Native console browser smoke (no model calls)
+        if: matrix.python == '3.11'
+        run: python scripts/native_console_smoke.py --directory /tmp/native-console-smoke
+      - name: Exact source snapshot
+        if: always() && matrix.python == '3.11'
+        run: |
+          git archive --format=zip --output=source.zip HEAD
+          git rev-parse HEAD > source-commit.txt
+          sha256sum source.zip > source.sha256
+      - uses: actions/upload-artifact@v4
+        if: always() && matrix.python == '3.11'
+        with:
+          name: native-workers-validation
+          path: |
+            source.zip
+            source-commit.txt
+            source.sha256
+            test-results.xml
+            /tmp/native-console-smoke/browser-validation.json
+            /tmp/native-console-smoke/desktop.png
+            /tmp/native-console-smoke/mobile.png
+          retention-days: 7

@@ -9,6 +9,24 @@
 [`templates/`](templates/) 是 TaskSpec 与实验的脚手架。`src/` 下的 Python 引擎是
 skill 的确定性后端——agent 通过 `sisyfus` CLI 驱动它,永远不能直接篡改研究状态。
 
+## 当前版本：v0.9.0
+
+本版统一合入自更新、Research OS 和原生 Codex／Claude worker 控制台。
+安装后的同一个 `sisyfus` 命令可使用 `workers`、`os`、`update` 与原有命令。
+运行中的 worker 控制器、未确认回执或无法读取的状态会阻止升级切换。
+
+```bash
+sisyfus update --version 0.9.0 --yes
+sisyfus workers doctor
+sisyfus workers demo --directory /tmp/sisyfus-native-demo-new
+sisyfus workers serve --directory /tmp/sisyfus-native-demo-new/control --open
+```
+
+首次安装或旧版没有 `update` 的用户，请重新运行当前安装器。Demo 是离线协议模拟，
+不是已认证的真实模型调用；多 Agent 研究效果和跨任务 RSI 尚未证实。
+原生 worker 仍为需要明确启用的本地 POSIX 试验功能，不是恶意代码安全沙箱。
+详情见 [v0.9.0 发布说明](RELEASE_NOTES_v0.9.0.md)。
+
 ## 这个 skill 做什么
 
 给定一个开放的研究问题,使用本 skill 的 agent 会:
@@ -55,6 +73,30 @@ v0.8.0 把 Sisyfus 从验证者门控的研究引擎升级成了一个
 完整内容见 [`RELEASE_NOTES_v0.8.0.md`](RELEASE_NOTES_v0.8.0.md) 和
 [`CHANGELOG.md`](CHANGELOG.md)。
 
+## 更新 Sisyfus
+
+已经安装 v0.8.0 的用户需要先运行一次新版安装器，以获得 `update` 命令：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/DionisAI/sisyfus-skill/main/install.sh | bash
+```
+
+Sisyfus 会把 **Engine 与已安装 Skill 一起更新**。版本分别安装到
+`~/.local/share/sisyfus/releases/`，校验后原子切换 `current`，上一版本可回滚。
+
+```bash
+sisyfus update --check
+sisyfus update --yes
+sisyfus update --version 0.9.0 --yes
+sisyfus update --status
+sisyfus update --rollback
+sisyfus update --enable-auto --mode notify --interval-hours 24 --yes
+```
+
+自动安装仅允许 Stable 通道，并且只会在所有登记项目空闲时执行；运行中的 Activity、Experiment、Verifier、
+Continuation、Decision 或 Unknown Commit 会让升级延后。升级后重启 Coding Agent
+Session 以重新加载 Skill。项目 `.sisyfus/` 状态不会被删除。
+
 ## 安装
 
 **一条命令**——skill 和引擎一起装,幂等、无需 sudo、不碰系统 Python:
@@ -68,8 +110,7 @@ curl -fsSL https://raw.githubusercontent.com/DionisAI/sisyfus-skill/main/install
 1. 把 `SKILL.md` + `references/` + `templates/` 复制进所有检测到的技能目录
    (`~/.claude/skills/`、`~/.agents/skills/`),命名为 `sisyfus-research`;
 2. 把引擎装进 `~/.local/share/sisyfus` 并把 CLI 链接到 `~/.local/bin/sisyfus`——
-   优先使用专用 venv;在缺少 `python3-venv`/`ensurepip`/pip 的机器上自动降级为
-   纯标准库源码安装(sisyfus 零运行时依赖,因此永远不需要 sudo);
+   使用可回滚的版本化纯标准库源码安装(sisyfus 零运行时依赖,因此永远不需要 sudo);
 3. 校验 `sisyfus --version`,并在 `~/.local/bin` 不在 `PATH` 时给出提示。
 
 `install.sh --uninstall` 可完整卸载(各项目的 `.sisyfus/` 研究状态永不触碰)。
@@ -84,7 +125,7 @@ Skill:把 `SKILL.md`、`references/`、`templates/` 复制进
 引擎(纯标准库,Python >= 3.11):
 
 ```bash
-python3 -m pip install "sisyfus @ git+https://github.com/DionisAI/sisyfus-skill@v0.8.0"
+python3 -m pip install "sisyfus @ git+https://github.com/DionisAI/sisyfus-skill@v0.9.0"
 ```
 
 `SKILL.md` 自带这项检查,agent 落到干净机器上首次使用时会自行装好引擎。

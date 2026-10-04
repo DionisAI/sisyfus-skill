@@ -66,4 +66,9 @@ def ensure_layout(root: str | Path | None = None) -> Path:
     sf = root_path / ".sisyfus"
     for rel in LAYOUT_DIRS:
         (sf / rel).mkdir(parents=True, exist_ok=True)
+    try:
+        from .updater import register_project
+        register_project(root_path)
+    except Exception:
+        pass
     return sf

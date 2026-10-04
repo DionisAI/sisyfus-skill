@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.9.0 — 2026-10-04
+
+- Integrates versioned updates (#2), opt-in Research OS (#3), and native-worker Mission Control (#4).
+- Fixes unified installed CLI routing, native-worker update fencing, release immutability, bytecode integrity, download credential scope and mobile overflow.
+- Adds release-integration tests and gated, exact-commit GitHub Release assets.
+- Native orchestration and RSI experiments remain opt-in; offline tests do not establish live-provider or research gains.
+
+## 0.8.1 — 2026-08-20
+
+- Added `sisyfus update` with stable/beta/edge channels, exact versions, status,
+  automatic checks, active-work protection, atomic activation, and rollback.
+- Engine and Skill files now activate together from versioned release directories.
+- Tagged releases publish a SHA-256 verified archive and `sisyfus.release.v1` manifest.
+- `install.sh` is an idempotent bootstrap/update command with version and channel selection.
+
 ## 0.8.0 — 2026-08-20
 
 v0.8.0 is the first release of the monitor-first, verifier-gated autonomous
