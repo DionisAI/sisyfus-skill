@@ -51,7 +51,7 @@ jobs:
         with:
           python-version: '3.12'
       - run: |
-          python -m pip install -e . pytest wheel playwright==1.57.0
+          python -m pip install -e . pytest wheel 'setuptools>=61' playwright==1.57.0
           python -m playwright install --with-deps chromium
       - name: Browser and persisted controls
         run: python scripts/native_console_smoke.py --directory /tmp/release-console
