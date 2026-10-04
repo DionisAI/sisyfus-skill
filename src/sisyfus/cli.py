@@ -1746,6 +1746,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_run = eval_sub.add_parser("run", help="run built-in evals")
     p_run.add_argument("--root")
     p_run.set_defaults(func=cmd_eval_run)
+    from .research_os.cli import add_parser as add_research_os_parser
+    add_research_os_parser(sub)
     return parser
 
 
@@ -1761,7 +1763,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     try:
         return int(args.func(args))
-    except (ValueError, KeyError, RuntimeError, FileNotFoundError, json.JSONDecodeError) as exc:
+    except (ValueError, KeyError, RuntimeError, PermissionError, ImportError, FileNotFoundError, json.JSONDecodeError) as exc:
         import os
         import sys
 

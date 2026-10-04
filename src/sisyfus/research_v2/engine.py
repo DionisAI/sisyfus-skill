@@ -868,6 +868,7 @@ class ResearchEngine:
         *,
         workdir: str | Path | None = None,
         actor: str = "command-executor",
+        expected_code_hashes: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         snapshot = self.snapshot()
         experiment = snapshot["experiments"].get(experiment_id)
@@ -876,6 +877,8 @@ class ResearchEngine:
         action = dict(experiment.get("action") or {})
         if action.get("kind") != "command":
             raise RuntimeError("execute_experiment only supports action.kind=command; use begin/settle for external or manual work")
+        if expected_code_hashes is not None and {p: self._action_code_hashes(action).get(p, "missing") for p in expected_code_hashes} != expected_code_hashes:
+            raise RuntimeError("measurement code changed before execution")
         attempt = self.begin_attempt(experiment_id, actor=actor)
         attempt_id = attempt["id"]
         cwd = Path(workdir or action.get("cwd") or self.workspace.root)
@@ -992,6 +995,17 @@ class ResearchEngine:
             else:
                 observation["artifacts"].append({"path": str(artifact_path), "missing": True})
 
+        # For approved ResearchOS measurements, runtime receipts override any
+        # observation-file/stdout fields. Code drift cannot create PASS evidence.
+        if expected_code_hashes is not None:
+            observation["execution"] = {
+                "exit_code": result.get("exit_code"),
+                "timed_out": result.get("timed_out", False),
+                "error": result.get("error"),
+                "elapsed_seconds": result.get("elapsed_seconds"),
+            }
+            if {p: self._action_code_hashes(action).get(p, "missing") for p in expected_code_hashes} != expected_code_hashes:
+                observation["execution"]["error"] = "measurement_code_changed_during_execution"
         self.record_observation(attempt_id, observation, actor=actor)
         return self.settle_attempt(attempt_id)
 
