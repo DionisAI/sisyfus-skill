@@ -1,0 +1,84 @@
+name: Apply reviewed integration fixes
+on:
+  push:
+    branches: [feat/control-plane-native-workers]
+    paths: ['.github/release-fixes-*.json', '.github/workflows/prepare-release.yml']
+permissions:
+  contents: read
+jobs:
+  apply-and-test:
+    if: github.repository == 'DionisAI/sisyfus-skill'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      SISYFUS_AUTO_SERVE: '0'
+      SISYFUS_AUTO_OPEN: '0'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply only exact prehashed non-workflow source changes
+        run: |
+          python - <<'PY'
+          import hashlib,json,pathlib,subprocess
+          allowed = {'CHANGELOG.md','README.md','README.zh-CN.md','RELEASE_NOTES_v0.9.0.md','SKILL.md','docs/native-workers.md','pyproject.toml','scripts/native_console_smoke.py','scripts/release_install_smoke.py','src/sisyfus/__init__.py','src/sisyfus/skill_assets/sisyfus-research/SKILL.md','src/sisyfus/updater.py','src/sisyfus/workers/codex.py','src/sisyfus/workers/console.py','src/sisyfus/workers/installation_guard.py','src/sisyfus/workers/mission.py','tests/test_release_assets.py','tests/test_release_integration.py','tests/test_release_version.py','tests/workers/test_workers.py'}
+          entries=[]
+          parts=sorted(pathlib.Path('.github').glob('release-fixes-*.json'))
+          assert len(parts)==4
+          for part in parts: entries.extend(json.loads(part.read_text()))
+          assert len(entries)==len(allowed) and {e['path'] for e in entries}==allowed
+          changes=[]
+          for e in entries:
+              p=pathlib.Path(e['path'])
+              assert not p.is_symlink()
+              if e['before_sha256'] is None:
+                  assert not p.exists(), str(p)
+                  text=e['content']
+              else:
+                  raw=p.read_bytes()
+                  assert hashlib.sha256(raw).hexdigest()==e['before_sha256'], 'before:'+str(p)
+                  text=raw.decode('utf-8')
+                  for start,end,value in reversed(e['edits']): text=text[:start]+value+text[end:]
+              assert hashlib.sha256(text.encode()).hexdigest()==e['after_sha256'], 'after:'+str(p)
+              changes.append((p,text))
+          for p,text in changes:
+              p.parent.mkdir(parents=True,exist_ok=True)
+              p.write_text(text,encoding='utf-8')
+          subprocess.run(['git','add','--',*sorted(allowed)],check=True)
+          subprocess.run(['git','rm','--',*[str(p) for p in parts]],check=True)
+          pathlib.Path('applied-files.json').write_text(json.dumps(entries,indent=2))
+          PY
+      - run: python -m pip install -e . pytest
+      - name: Full integrated regression suite
+        run: python -m pytest -q --junitxml=integration-tests.xml
+      - name: Commit validated fixes
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git diff --cached --check
+          git commit -m 'fix: integrate updater and native missions for Sisyfus v0.9.0'
+          git rev-parse HEAD > source-commit.txt
+          git archive --format=zip --output=source.zip HEAD
+      - name: Push tested commit to integration branch only
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          AUTH=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $AUTH" push origin HEAD:refs/heads/feat/control-plane-native-workers
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: integrated-fixes-validation
+          path: |
+            integration-tests.xml
+            applied-files.json
+            source-commit.txt
+            source.zip
+          retention-days: 7
