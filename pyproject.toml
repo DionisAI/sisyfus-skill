@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sisyfus"
-version = "0.8.0"
+version = "0.8.1"
 description = "Local-first agent orchestration with an event-sourced, verifier-gated branching research skill and HTML Observatory."
 readme = "README.md"
 requires-python = ">=3.11"

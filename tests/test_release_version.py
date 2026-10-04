@@ -7,8 +7,8 @@ import sisyfus
 
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = "0.8.0"
-TAG = "v0.8.0"
+VERSION = "0.8.1"
+TAG = "v0.8.1"
 
 
 def test_release_version_is_consistent() -> None:

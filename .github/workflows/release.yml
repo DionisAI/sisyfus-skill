@@ -1,0 +1,62 @@
+name: Publish Sisyfus release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version:
+          - '3.11'
+          - '3.12'
+          - '3.13'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip pytest
+          python -m pip install -e .
+      - name: Verify tag and package version
+        run: test "v$(sisyfus --version)" = "$GITHUB_REF_NAME"
+      - name: Compile
+        run: python -m compileall -q src tests scripts
+      - name: Test
+        env:
+          SISYFUS_AUTO_SERVE: '0'
+          SISYFUS_AUTO_OPEN: '0'
+          SISYFUS_UPDATE_FORCE_STDLIB: '1'
+        run: python -m pytest -q
+
+  publish:
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build deterministic source archive and manifest
+        run: python scripts/build_release_assets.py --output dist
+      - name: Publish GitHub Release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: RELEASE_NOTES_v0.8.1.md
+          files: |
+            dist/sisyfus-*.tar.gz
+            dist/sisyfus-*.tar.gz.sha256
+            dist/release-manifest.json
