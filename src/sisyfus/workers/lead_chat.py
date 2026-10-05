@@ -154,11 +154,46 @@ class ChatSessions:
         flush_directory(path)
         flush_directory(self.root)
 
+    @staticmethod
+    def _readiness(state: dict[str, Any]) -> dict[str, Any]:
+        """Explain attached prerequisites; inspecting them is never dispatch.
+
+        These are draft/binding states, not proof of file integrity or acceptance.
+        The start path still revalidates the immutable contract before reservation.
+        """
+        checks = (state.get('bound_spec') or {}).get('checks', {})
+        status = state['status']
+        native_detail = {
+            'IDLE': '没有在途或结果待核对的调用。',
+            'RUNNING': 'Opus 正在回复；可以查看准备清单，等回复完成再确认最新方案。',
+            'STARTING': '开工请求正在处理；先查询任务记录，不重复提交。',
+            'UNKNOWN': '上次调用结果待核对；只查看记录，不重复派发。',
+            'ERROR': '上次调用出现错误；先查看诊断，再继续讨论并取得完整回复。',
+        }[status]
+        requirements = [
+            {'id': 'proposal', 'label': '方案草案', 'ready': bool(state.get('proposal')),
+             'detail': ('已整理 %s 项工作；这是讨论草案，还不是执行结果。' % len(state['proposal']['tasks'])
+                        if state.get('proposal') else '先在聊天里形成包含任务与逐项验收的完整方案。')},
+            {'id': 'source', 'label': '工程目录', 'ready': bool(state['source']),
+             'detail': ('已绑定：' + state['source'] if state['source'] else
+                        '尚未绑定。聊天中的路径不会自动绑定；新项目需先创建目录，再在工程设置里绑定现存目录。')},
+            {'id': 'acceptance', 'label': '固定验收检查', 'ready': bool(checks),
+             'detail': ('已绑定 %s 项固定检查；开工时再次核对验收文件与脚本。' % len(checks) if checks else
+                        '方案已有的文字验收是需求草案；还需落实为带通过/失败条件的固定校验脚本和工程验收文件，审阅后绑定。当前聊天尚未自动生成这些文件。')},
+            {'id': 'native', 'label': '调用状态', 'ready': status == 'IDLE', 'detail': native_detail},
+        ]
+        ready = all(item['ready'] for item in requirements) and not state.get('mission_id')
+        missing = [item['label'] for item in requirements if not item['ready']]
+        reason = ('方案已关联执行任务，请到进度页查看真实状态。' if state.get('mission_id') else
+                  '工程与固定验收已绑定，审阅并确认本地执行许可后开工。' if ready else
+                  '开工前还需准备：' + '、'.join(missing) + '。点击“检查并准备开工”查看清单；检查本身不会创建目录或派发任务。')
+        return {'ready': ready, 'can_prepare': bool(state.get('proposal')) and not state.get('mission_id'),
+                'reason': reason, 'requirements': requirements}
+
     def _public(self, state: dict[str, Any]) -> dict[str, Any]:
         value = {k: copy.deepcopy(v) for k, v in state.items() if k not in {'bound_spec', 'requests', 'native_session'}}
-        ready = bool(state.get('bound_spec') and state.get('proposal') and state['status'] == 'IDLE' and not state.get('mission_id'))
         value['approval_hash'] = digest({'source': state['source'], 'spec': state.get('bound_spec'), 'proposal': state.get('proposal')}) if state.get('proposal') else None
-        value['readiness'] = {'ready': ready, 'reason': '工程与验收已就绪，确认后开工。' if ready else ('先在侧栏选择工程并附上固定验收方案；聊天仍可先聊需求。' if not state.get('bound_spec') else '先和 Opus 确认一版完整规划。')}
+        value['readiness'] = self._readiness(state)
         value['checks'] = [{'id': key, 'pass_if': check['contract'].get('pass_if'), 'fail_if': check['contract'].get('fail_if')}
                            for key, check in (state.get('bound_spec') or {}).get('checks', {}).items()]
         return redact(value)

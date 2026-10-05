@@ -1061,3 +1061,67 @@ def test_native_ambiguous_identity_is_error_and_public_diagnostics_survive_resta
     assert stored(reopened, ident)["model_identity"] == identity
     assert fresh.calls == [] and len(native.calls) == 1
     assert_no_mission(hub)
+
+
+def test_preflight_unbound_plan_explains_gaps_without_mutation_or_dispatch(chats, driver, hub):
+    ident = chats.create()["id"]
+    chats.message(ident, "新建工程，按讨论的验收推进", "preflight-plan-01")
+    finish(chats, ident)
+    before = draft_path(chats, ident).read_bytes()
+    public = chats.get(ident)
+    readiness = public["readiness"]
+    assert readiness["can_prepare"] is True and readiness["ready"] is False
+    requirements = {r["id"]: r for r in readiness["requirements"]}
+    assert requirements["proposal"]["ready"] is True
+    assert requirements["source"]["ready"] is False
+    assert requirements["acceptance"]["ready"] is False
+    assert requirements["native"]["ready"] is True
+    assert "不会自动绑定" in requirements["source"]["detail"]
+    assert "文字验收" in requirements["acceptance"]["detail"]
+    assert "工程目录" in readiness["reason"] and "固定验收" in readiness["reason"]
+    with pytest.raises(ValueError):
+        start_chat(chats, ident, True, "preflight-start-01")
+    assert draft_path(chats, ident).read_bytes() == before
+    assert len(driver.calls) == 1
+    assert_no_mission(hub)
+
+
+@pytest.mark.parametrize("context", ["source", "spec"])
+def test_preflight_distinguishes_source_and_approved_checks(chats, spec, spec_file, context):
+    ident = chats.create()["id"]
+    if context == "source":
+        chats.context(ident, source=spec["source"])
+    else:
+        chats.context(ident, spec_path=str(spec_file))
+    readiness = chats.get(ident)["readiness"]
+    requirements = {r["id"]: r for r in readiness["requirements"]}
+    assert requirements["source"]["ready"] is True
+    assert requirements["acceptance"]["ready"] is (context == "spec")
+    assert requirements["proposal"]["ready"] is False
+    assert readiness["can_prepare"] is False and readiness["ready"] is False
+
+
+@pytest.mark.parametrize("status", ["RUNNING", "STARTING", "UNKNOWN", "ERROR"])
+def test_preflight_can_inspect_but_fences_non_idle_native_outcomes(chats, ready_chat, driver, hub, status):
+    state = stored(chats, ready_chat)
+    state["status"] = status
+    chats._save(state)
+    before = draft_path(chats, ready_chat).read_bytes()
+    readiness = chats.get(ready_chat)["readiness"]
+    assert readiness["can_prepare"] is True and readiness["ready"] is False
+    requirements = {r["id"]: r for r in readiness["requirements"]}
+    assert requirements["native"]["ready"] is False
+    assert requirements["native"]["detail"] and "调用状态" in readiness["reason"]
+    assert draft_path(chats, ready_chat).read_bytes() == before
+    assert len(driver.calls) == 1
+    assert_no_mission(hub)
+
+
+def test_preflight_ready_draft_and_bound_mission_have_distinct_actions(chats, ready_chat):
+    readiness = chats.get(ready_chat)["readiness"]
+    assert readiness["ready"] is True and readiness["can_prepare"] is True
+    assert all(r["ready"] for r in readiness["requirements"])
+    result = start_chat(chats, ready_chat, True, "preflight-bound-01")
+    assert result["readiness"]["ready"] is False
+    assert result["readiness"]["can_prepare"] is False
+    assert "进度" in result["readiness"]["reason"]

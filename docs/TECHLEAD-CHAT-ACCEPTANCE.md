@@ -11,8 +11,17 @@ original developer console. Design context is in `.impeccable.md`.
   file through settings; no model-generated executable checks or JSON editor
   in the main conversation.
 - Display advisory architecture/task/acceptance outlines, not fake execution.
+- A proposal enables **检查并准备开工** even if project/checks are missing.
+  Inspection renders separate proposal/source/acceptance/native-state requirements,
+  is read-only, and never creates directories, reserves calls or dispatches agents.
+  Offline or uncertain submissions show cached-state warnings and fence execution.
+- Chat prose paths are not project bindings. Textual acceptance is not an approved
+  executable contract. New-project preparation and automatic checker generation
+  are not yet implemented in chat; the UI states this explicitly and links to
+  the relevant settings without borrowing unrelated demo checks.
 - Confirm local execution deliberately and bind the exact displayed plan hash.
-  A changed plan/source/approved contract invalidates old confirmation.
+  A changed plan/source/approved contract invalidates old confirmation; ordinary
+  unconfirmed chat updates do not announce a fictitious withdrawn approval.
 - Keep the original approved goal, constraints, deliverables, checks, role
   models and budgets; append the confirmed conversational goal.
 - Delegate execution, task truth and acceptance to the existing MissionHub and

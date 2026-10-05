@@ -14,6 +14,7 @@ PAGE = r'''<!doctype html>
 @media(max-width:850px){.sidebar{width:210px;padding-left:11px;padding-right:11px}.topbar{padding:0 22px}.content{padding:18px 28px 30px}.composer-wrap{padding-left:28px;padding-right:28px}.connection{max-width:110px}.connection span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
 @media(max-width:700px){.sidebar{display:none;position:fixed;left:0;top:0;bottom:0;width:min(290px,86vw);z-index:30;padding:23px 16px;background:var(--side)}.sidebar.open{display:flex}.sidebar-close{display:block}.mobile-menu{display:block}.topbar{height:63px;padding:0 14px;gap:8px}.topbar-actions{gap:11px}.topbar-title{font-size:12px}.topbar-subtitle{font-size:10px}.connection{font-size:10px;max-width:72px}.settings-trigger{font-size:11px}.content{padding:14px 22px 24px}.welcome{padding-top:clamp(25px,7vh,65px)}.welcome h1{font-size:29px}.welcome-intro{font-size:13px}.welcome-symbol{margin-bottom:16px;font-size:35px}.suggestions{margin-top:22px}.suggestion{font-size:12px;line-height:1.6}.composer-wrap{padding:9px 16px max(12px,env(safe-area-inset-bottom))}.composer{padding:11px 13px 9px}.composer-hint{font-size:9px}.message-text{font-size:14px}.proposal{padding:18px}.drawer{width:min(370px,100vw)}.drawer-header{padding:18px 22px}.drawer-body{padding:20px 22px}.global-note{padding:9px 18px}.mission-title{font-size:24px}.jump-latest{right:18px;bottom:145px}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;scroll-behavior:auto!important;transition:none!important}}
+.preflight{margin:17px 0;padding:18px;border:1px solid var(--line);border-radius:10px;background:#f6f3ed}.preflight h3{font-size:15px;margin:0 0 8px}.preflight ul{list-style:none;padding:0;margin:12px 0}.preflight li{padding:10px 0;border-top:1px solid var(--line);overflow-wrap:anywhere}.preflight li strong{font-size:13px;font-weight:500}.preflight li p{font-size:12px;color:var(--muted);margin:4px 0}.preflight details{margin:14px 0;font-size:12px;color:var(--muted)}.preflight summary{cursor:pointer;color:var(--accent)}
 </style>
 </head>
 <body>
@@ -46,7 +47,15 @@ PAGE = r'''<!doctype html>
         <div class="waiting" id="waiting" role="status" hidden><span class="waiting-dots" aria-hidden="true"><i></i><i></i><i></i></span><span id="waiting-text">正在思考，回复会出现在这里…</span></div>
         <section class="notice" id="chat-note" role="status" hidden><p id="chat-note-text" class="prose"></p><button class="text-button" id="context-action">设置工程与验收</button><button class="text-button" id="uncertain-refresh" hidden>查询最新记录</button><button class="text-button" id="uncertain-ack" hidden>已核对记录，继续讨论</button></section>
         <article class="proposal" id="proposal" aria-label="待确认方案草案" hidden><div class="draft-label">方案草案 · 尚未执行或验收</div><div id="proposal-body"></div></article>
-        <section class="proposal-actions" id="proposal-actions" hidden><p class="small muted" id="readiness-note"></p><button class="primary" id="review-plan">检查并准备开工</button><button class="text-button" id="linked-mission" hidden>查看任务进度 →</button>
+        <section class="proposal-actions" id="proposal-actions" hidden><p class="small muted" id="readiness-note"></p><button class="primary" id="review-plan" aria-controls="preflight" aria-expanded="false">检查并准备开工</button>
+        <section class="preflight" id="preflight" aria-labelledby="preflight-title" hidden>
+          <h3 id="preflight-title" tabindex="-1">开工准备清单</h3>
+          <p class="small" id="preflight-summary"></p>
+          <ul id="preflight-requirements"></ul>
+          <p class="small muted" id="preflight-note"></p>
+          <details id="acceptance-help"><summary>文字验收已经聊好了，为什么还要准备？</summary><p>文字验收说明“做成什么样”；固定检查说明“如何验证通过或失败”。依据上方逐项验收编写校验脚本，把检查、通过/失败条件和执行范围写入工程验收文件，经你审阅后绑定。</p><p>这是工程准备步骤，不是让你重新讲一遍需求。当前聊天尚未接入自动生成这些文件的流程；如果指标还写着“约定阈值”，需先确认具体数值。不要复用其他无关工程的检查来凑开工条件。</p><p>绑定新工程或验收文件会保留聊天记录、撤下旧方案；随后请 Opus 基于新上下文重新核对方案。</p></details>
+          <button class="secondary" id="preflight-settings" type="button">填写工程与验收</button>
+        </section><button class="text-button" id="linked-mission" hidden>查看任务进度 →</button>
           <form class="confirmation" id="chat-confirm" hidden><h3>这次开工的范围</h3><dl id="chat-confirm-context"></dl><button type="button" class="text-button small" id="open-confirm-plan" aria-controls="full-proposal">查看本次确认的完整方案与验收</button><label class="permission"><input type="checkbox" id="chat-permission"><span>我允许这项任务在本机执行<small>本地工作进程将使用当前用户的访问权限，读取或修改工程、运行命令，并可能产生模型调用费用。</small></span></label><p class="small muted">方案仅是草案；最终结果以固定验收、独立审查与集成证据为准。</p><div class="flex wrap"><button class="primary" id="chat-start" type="submit" disabled>确认方案并开工</button><button class="text-button" id="cancel-chat-start" type="button">再想一想</button></div></form>
         </section>
       </div>
@@ -62,7 +71,7 @@ PAGE = r'''<!doctype html>
 </main>
 </div>
 <button class="backdrop" id="backdrop" aria-label="关闭抽屉" tabindex="-1" hidden></button>
-<aside class="drawer" id="settings" role="dialog" aria-modal="true" aria-labelledby="settings-title" hidden><header class="drawer-header"><h2 id="settings-title">工程与验收</h2><button class="icon-button" id="close-settings" aria-label="关闭工程设置">×</button></header><div class="drawer-body"><p class="drawer-intro" id="settings-intro">先聊想法也可以。开工前，再绑定工程和已经批准的验收文件。</p><section id="reuse-project"><label class="field" for="existing-project">选择已有工程<select id="existing-project"><option value="">选择一个工程与验收方案…</option></select><small>按任务目标选择已批准的工程。不复用旧结果，也不会启动已有任务。</small></label><button class="primary" id="attach-mission" disabled>复用工程与验收</button><p class="small muted" id="attach-state" role="status"></p></section><details class="settings-section" id="manual-context"><summary>手动填写工程路径</summary><form id="context-form"><label class="field" for="source">工程目录<input id="source" type="text" placeholder="/Users/you/projects/my-project" autocomplete="off" spellcheck="false"><small>本机工程路径。留空表示暂未绑定。</small></label><label class="field" for="spec-path">验收文件<input id="spec-path" type="text" placeholder="/Users/you/specs/approved.json" autocomplete="off" spellcheck="false"><small>已存在、已批准的 spec 文件的绝对路径；不是上传文件，也不会由草案生成验收。</small></label><div class="form-actions"><button class="primary" type="submit" id="save-context">保存设置</button><span class="small muted" id="context-save-state" role="status"></span></div><p class="small error prose" id="context-error" role="alert" hidden></p></form></details><details class="settings-section"><summary>已绑定的验收条件</summary><div id="context-checks"><p class="small muted">尚未绑定验收文件。</p></div></details><details class="settings-section"><summary>模型与执行说明</summary><div class="stack small muted"><p id="settings-model">尚无运行模型记录。</p><p>默认请求模型：负责人、独立审查使用 claude-opus-5-5；实施使用 gpt-6.1-sol。实际模型以运行回执为准。</p><p>总预算：Unlimited（默认不设总量上限）</p><p>已绑定任务的实际预算以核心记录为准；单次调用超时、并行限制与人工停止仍然生效。</p><p>对话与方案不会派发工作。开工时单独确认本地执行许可。</p><p>收到控制请求、模型返回或单项检查通过，都不等于整项任务已验收。</p><button class="text-button" id="settings-debug" type="button">打开诊断信息</button><a href="/console">旧版开发者控制台 ↗</a></div></details></div></aside>
+<aside class="drawer" id="settings" role="dialog" aria-modal="true" aria-labelledby="settings-title" hidden><header class="drawer-header"><h2 id="settings-title">工程与验收</h2><button class="icon-button" id="close-settings" aria-label="关闭工程设置">×</button></header><div class="drawer-body"><p class="drawer-intro" id="settings-intro">先聊想法也可以。开工前，再绑定工程和已经批准的验收文件。</p><section id="reuse-project"><label class="field" for="existing-project">选择已有工程<select id="existing-project"><option value="">选择一个工程与验收方案…</option></select><small>按任务目标选择已批准的工程。不复用旧结果，也不会启动已有任务。</small></label><button class="primary" id="attach-mission" disabled>复用工程与验收</button><p class="small muted" id="attach-state" role="status"></p></section><details class="settings-section" id="manual-context"><summary>手动填写工程路径</summary><form id="context-form"><label class="field" for="source">工程目录<input id="source" type="text" placeholder="/Users/you/projects/my-project" autocomplete="off" spellcheck="false"><small>只绑定本机现存目录；输入路径不会创建目录。新工程先创建目录，再绑定。</small></label><label class="field" for="spec-path">验收文件<input id="spec-path" type="text" placeholder="/Users/you/specs/approved.json" autocomplete="off" spellcheck="false"><small>工程准备阶段产出的已批准验收文件（spec）的绝对路径。聊天中的文字验收不等于固定检查，尚未自动生成此文件。</small></label><div class="form-actions"><button class="primary" type="submit" id="save-context">保存设置</button><span class="small muted" id="context-save-state" role="status"></span></div><p class="small error prose" id="context-error" role="alert" hidden></p></form></details><details class="settings-section"><summary>已绑定的验收条件</summary><div id="context-checks"><p class="small muted">尚未绑定验收文件。</p></div></details><details class="settings-section"><summary>模型与执行说明</summary><div class="stack small muted"><p id="settings-model">尚无运行模型记录。</p><p>默认请求模型：负责人、独立审查使用 claude-opus-5-5；实施使用 gpt-6.1-sol。实际模型以运行回执为准。</p><p>总预算：Unlimited（默认不设总量上限）</p><p>已绑定任务的实际预算以核心记录为准；单次调用超时、并行限制与人工停止仍然生效。</p><p>对话与方案不会派发工作。开工时单独确认本地执行许可。</p><p>收到控制请求、模型返回或单项检查通过，都不等于整项任务已验收。</p><button class="text-button" id="settings-debug" type="button">打开诊断信息</button><a href="/console">旧版开发者控制台 ↗</a></div></details></div></aside>
 <aside class="drawer" id="debug" role="dialog" aria-modal="true" aria-labelledby="debug-title" hidden><header class="drawer-header"><h2 id="debug-title">诊断信息</h2><button class="icon-button" id="close-debug" aria-label="关闭诊断信息">×</button></header><div class="drawer-body"><p class="drawer-intro">只读原始记录。控制 ACK 仅表示请求已接收，验收以核心快照为准。访问令牌不会显示在这里。</p><details class="debug-block"><summary>当前对话 / 核心快照</summary><pre id="debug-state"></pre></details><details class="debug-block"><summary>任务事件</summary><pre id="debug-events"></pre></details><details class="debug-block"><summary>控制请求记录</summary><pre id="debug-controls"></pre></details><details class="debug-block"><summary>连接与请求诊断</summary><pre id="debug-requests"></pre></details><details class="debug-block"><summary>列表读取问题</summary><pre id="debug-issues"></pre></details><a href="/console">打开旧版开发者视图 ↗</a></div></aside>
 <div class="sr-only" role="status" aria-live="polite" id="announcement"></div>
 <script nonce="NONCE">
@@ -278,6 +287,7 @@ function switchView(kind, id) {
   state.cursor = 0; state.events = []; state.controlNote = ''; state.chatNotice = '';
   state.contextOwner = ''; state.contextDirty = false; state.contextEpoch++;
   state.confirmFingerprint = ''; state.confirmedApprovalHash = null; state.missionConfirmFingerprint = '';
+  $('preflight').hidden = true; $('review-plan').setAttribute('aria-expanded','false');
   $('chat-confirm').hidden = true; $('chat-permission').checked = false;
   $('mission-confirm').hidden = true; $('mission-permission').checked = false; $('stop-confirm').hidden = true;
   $('composer-input').value = state.drafts.get(id) || ''; resizeComposer();
@@ -341,6 +351,10 @@ function chatReady() {
   const chat = state.chat;
   return !!(chat && chat.proposal && typeof chat.approval_hash === 'string' && chat.approval_hash && chat.readiness?.ready === true && chat.status === 'IDLE' && !chat.mission_id);
 }
+function canPrepare() {
+  return !!(state.kind === 'chat' && state.chat?.proposal && state.chat.readiness?.can_prepare === true &&
+    !state.chat.mission_id && !state.loading && !state.busy);
+}
 function canChatStart() { return chatReady() && state.connected && !state.loading && !state.busy && !state.pending.has(pendingKey()); }
 function canSend() {
   return !state.busy && !state.loading && !state.loadError && !state.pending.has(pendingKey()) &&
@@ -357,12 +371,13 @@ function renderAvailability() {
     (state.chat && (state.chat.status !== 'IDLE' && state.chat.status !== 'ERROR' || !!state.chat.mission_id));
   $('attach-mission').disabled = $('save-context').disabled || !$('existing-project').value;
   $('existing-project').disabled = $('save-context').disabled;
-  $('review-plan').disabled = !canChatStart();
+  $('review-plan').disabled = !canPrepare();
   $('chat-start').disabled = !canChatStart() || !$('chat-permission').checked;
   $('new-chat').disabled = !!state.busy || state.pending.has('create');
   renderControlAvailability();
 }
 function missingContextMessage(chat) {
+  if (chat.readiness?.reason) return text(chat.readiness.reason);
   if (!chat.source && !chat.spec_path) return '我们可以先把想法聊清楚。开工前，还需要选定工程目录，以及已经批准的验收文件。';
   if (!chat.source) return '方案可以继续讨论。开工前，请先告诉我这次要处理的工程目录。';
   if (!chat.spec_path) return '工程已选好。开工前，再绑定已批准的验收文件，让每项工作都有明确的判断标准。';
@@ -434,7 +449,7 @@ function renderProposal(chat) {
       }
       body.append(tasks);
     }
-    body.append(node('p','这是讨论中的草案；固定验收以已批准的工程文件为准，不由草案生成。','small muted'));
+    body.append(node('p','这是讨论中的草案。文字验收还需落实为固定检查，经你审阅后绑定；下方检查清单会说明准备状态。','small muted'));
     full.append(body); rows.push(full); return rows;
   });
   $('review-plan').hidden = !proposal || !!chat.mission_id;
@@ -444,11 +459,41 @@ function renderProposal(chat) {
     chat.status === 'RUNNING' ? '先等这次回复，再审阅最新方案。' : missingContextMessage(chat) || '方案仍待准备，请继续讨论或检查设置。';
   const fingerprint = JSON.stringify([chat.approval_hash,chat.source,chat.spec_path,chat.checks,proposal,chat.readiness?.ready,chat.mission_id]);
   if (state.confirmFingerprint && state.confirmFingerprint !== fingerprint) {
+    const hadConfirmation = !!state.confirmedApprovalHash;
     $('chat-confirm').hidden = true; $('chat-permission').checked = false; state.confirmedApprovalHash = null;
-    say('开工范围已变化，请重新审阅并确认。');
+    if (hadConfirmation) say('开工范围已变化，请重新审阅并确认。');
   }
   state.confirmFingerprint = fingerprint;
+  if (!proposal || chat.mission_id) { $('preflight').hidden = true; $('review-plan').setAttribute('aria-expanded','false'); }
+  else if (!$('preflight').hidden) renderPreflight(chat);
   if (!chatReady()) { $('chat-confirm').hidden = true; $('chat-permission').checked = false; state.confirmedApprovalHash = null; }
+}
+function renderPreflight(chat) {
+  const requirements = array(chat.readiness?.requirements), missing = requirements.filter(item => item.ready !== true);
+  $('preflight-summary').textContent = missing.length ? '方案已整理，还需准备 ' + missing.length + ' 项：' + missing.map(item => text(item.label)).join('、') + '。' : '前置条件已绑定。继续审阅范围并确认执行许可；尚未开工。';
+  paint('preflight-requirements',requirements,() => requirements.map(item => {
+    const row = node('li');
+    row.append(node('strong',(item.ready === true ? '✓ 已具备 · ' : '○ 待准备 · ') + text(item.label),item.ready === true ? 'good' : ''),node('p',text(item.detail),'prose'));
+    return row;
+  }));
+  $('preflight-note').textContent = !state.connected || state.loadError ? '当前连接未确认，清单基于上次读取记录。恢复连接并查询最新状态后再确认开工。' :
+    state.pending.has(pendingKey()) ? '上次提交的结果仍待确认；先查询记录，不重复开工。' :
+    '这里只检查已绑定的前置条件，不运行测试、不创建目录、不调用 Agent。正式开工时会再次核对验收脚本。';
+  $('preflight-settings').hidden = !missing.some(item => item.id === 'source' || item.id === 'acceptance');
+  $('acceptance-help').hidden = !missing.some(item => item.id === 'acceptance');
+}
+function reviewPlan() {
+  if (!canPrepare()) return;
+  renderPreflight(state.chat); $('preflight').hidden = false; $('review-plan').setAttribute('aria-expanded','true');
+  // Inspection and preparation are read-only; only a ready, connected draft
+  // may show the separate execution-permission confirmation.
+  if (!canChatStart()) {
+    $('chat-confirm').hidden = true; $('chat-permission').checked = false; state.confirmedApprovalHash = null;
+    renderAvailability(); $('preflight').scrollIntoView({block:'nearest'}); $('preflight-title').focus({preventScroll:true}); return;
+  }
+  confirmationContext($('chat-confirm-context'),state.chat.source,state.chat.spec_path,checksForChat(state.chat).map(check => check.id || check.check).filter(Boolean));
+  state.confirmedApprovalHash = state.chat.approval_hash;
+  $('chat-confirm').hidden = false; $('chat-permission').checked = false; renderAvailability(); $('chat-permission').focus();
 }
 function checksForChat(chat) { return array(chat?.checks); }
 function checkNamesForMission() {
@@ -965,11 +1010,10 @@ $('context-form').onsubmit = saveContext;
 $('attach-mission').onclick = attachMission;
 $('existing-project').onchange = renderAvailability;
 for (const id of ['source','spec-path']) $(id).addEventListener('input',() => { state.contextDirty = true; $('context-save-state').textContent = '尚未保存'; });
-$('review-plan').onclick = () => {
-  if (!canChatStart()) return;
-  confirmationContext($('chat-confirm-context'),state.chat.source,state.chat.spec_path,checksForChat(state.chat).map(check => check.id || check.check).filter(Boolean));
-  state.confirmedApprovalHash = state.chat.approval_hash;
-  $('chat-confirm').hidden = false; $('chat-permission').checked = false; renderAvailability(); $('chat-permission').focus();
+$('review-plan').onclick = reviewPlan;
+$('preflight-settings').onclick = () => {
+  openDrawer('settings'); $('manual-context').open = true;
+  (state.chat?.source ? $('spec-path') : $('source')).focus({preventScroll:true});
 };
 $('open-confirm-plan').onclick = () => {
   const full = $('full-proposal'); if (!full || state.confirmedApprovalHash !== state.chat?.approval_hash) return;
