@@ -34,3 +34,9 @@
   Conversation drafts and native chat receipts are not task truth: execution
   still requires an operator-confirmed objective and existing immutable checks.
   Opening pages, attaching context and sending chat messages never dispatch Sol.
+
+- Explicit user chat directives may grant a controller-owned directory preparation
+  capability: exclusive creation or explicit binding, no shell commands, overwrite,
+  acceptance approval or worker dispatch. Prose supplies only a name inside the
+  granted parent. Persist the request before mkdir and fence interrupted outcomes.
+  Native chat remains read-only; report controller preparation back into its context.

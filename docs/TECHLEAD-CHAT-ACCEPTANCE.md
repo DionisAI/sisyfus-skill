@@ -16,9 +16,13 @@ original developer console. Design context is in `.impeccable.md`.
   is read-only, and never creates directories, reserves calls or dispatches agents.
   Offline or uncertain submissions show cached-state warnings and fence execution.
 - Chat prose paths are not project bindings. Textual acceptance is not an approved
-  executable contract. New-project preparation and automatic checker generation
-  are not yet implemented in chat; the UI states this explicitly and links to
-  the relevant settings without borrowing unrelated demo checks.
+  executable contract. Explicit user chat directives now drive a separate
+  controller-owned directory capability: reserve before exclusive mkdir, bind the
+  exact prepared path, reset stale native cwd/session, and report the result.
+  Existing paths, symbolic links, ambiguity and revoked instructions need chat
+  clarification; no overwrite or unreceipted retry. Operator approval is not a
+  requirement to handwrite code. Automatic checker generation remains pending;
+  do not borrow unrelated demo checks.
 - Confirm local execution deliberately and bind the exact displayed plan hash.
   A changed plan/source/approved contract invalidates old confirmation; ordinary
   unconfirmed chat updates do not announce a fictitious withdrawn approval.
@@ -53,3 +57,17 @@ while each task's existing autonomy database remains the task truth source.
 Tests and final browser/responsive readback are recorded in the delivery receipt
 in that private evidence directory, rather than treating this document as a
 live status database.
+
+### Directory-preparation follow-up
+
+The controller created and bound the user's previously requested project path
+through the real chat UI. Its exclusive-creation receipt matches the empty
+0700 directory identity; existing messages and proposal remain intact. Native
+receipt counts and mission inventory are unchanged. Acceptance remains unbound.
+
+Focused chat/HTTP/page tests pass (192); the full workers suite passes (544).
+The page harness additionally checks the directory button, native-state fences
+and exact request-ID reconciliation. Preparation-to-native-context behavior is
+covered by a protocol fixture, not a new provider invocation. The prior native
+review above predates this directory follow-up. Private evidence is retained in
+`artifacts/techlead/directory-20261005/`.

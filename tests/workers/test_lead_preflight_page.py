@@ -61,6 +61,36 @@ assert.match(el('preflight-requirements').textContent,/工程目录/);
 assert.match(el('preflight-requirements').textContent,/固定验收检查/);
 assert.match(el('preflight-summary').textContent,/2/);
 
+// A recorded user directory directive exposes only its separate preparation action.
+state.chat.directory_request={status:'READY',path:'/fixture/new-project'};
+renderPreflight(state.chat); renderAvailability();
+assert.equal(el('prepare-directory').hidden,false);
+assert.equal(el('prepare-directory').disabled,false);
+assert.equal(el('chat-confirm').hidden,true);
+assert.equal(el('chat-start').disabled,true);
+for (const status of ['RUNNING','STARTING','UNKNOWN']) {
+  state.chat.status=status; renderAvailability();
+  assert.equal(el('prepare-directory').disabled,true,'native outcomes fence directory writes');
+}
+state.chat.status='IDLE';
+state.pending.set(pendingKey(),{type:'directory',request_id:'directory-fixture-01'});
+renderAvailability(); assert.equal(el('prepare-directory').disabled,true);
+state.chat.directory_preparation={status:'BOUND',request_id:'other-directory-request'};
+reconcileChat(state.chat); assert.equal(state.pending.has(pendingKey()),true,'unrelated receipt does not clear uncertainty');
+state.chat.directory_preparation={status:'PREPARING',request_id:'directory-fixture-01'};
+reconcileChat(state.chat); assert.equal(state.pending.has(pendingKey()),true);
+state.chat.directory_preparation={status:'BOUND',request_id:'directory-fixture-01'};
+reconcileChat(state.chat); assert.equal(state.pending.has(pendingKey()),false);
+state.chat.directory_request.status='NEEDS_CONFIRMATION';
+renderPreflight(state.chat); renderAvailability();
+assert.equal(el('prepare-directory').hidden,true);
+assert.equal(el('prepare-directory').disabled,true);
+state.chat.directory_request.status='READY'; state.chat.source='/fixture/new-project';
+renderPreflight(state.chat); renderAvailability();
+assert.equal(el('prepare-directory').hidden,true,'bound source never prepares again');
+assert.equal(el('prepare-directory').disabled,true);
+state.chat.source=''; state.chat.directory_request=null;
+
 // Read-only inspection remains useful even when a request is unresolved.
 state.chat.status='UNKNOWN'; renderAvailability();
 assert.equal(el('review-plan').disabled,false); el('review-plan').onclick();

@@ -1076,7 +1076,7 @@ def test_preflight_unbound_plan_explains_gaps_without_mutation_or_dispatch(chats
     assert requirements["source"]["ready"] is False
     assert requirements["acceptance"]["ready"] is False
     assert requirements["native"]["ready"] is True
-    assert "不会自动绑定" in requirements["source"]["detail"]
+    assert "明确要求" in requirements["source"]["detail"]
     assert "文字验收" in requirements["acceptance"]["detail"]
     assert "工程目录" in readiness["reason"] and "固定验收" in readiness["reason"]
     with pytest.raises(ValueError):
@@ -1125,3 +1125,225 @@ def test_preflight_ready_draft_and_bound_mission_have_distinct_actions(chats, re
     assert result["readiness"]["ready"] is False
     assert result["readiness"]["can_prepare"] is False
     assert "进度" in result["readiness"]["reason"]
+
+
+@pytest.fixture
+def directory_home(monkeypatch, tmp_path):
+    home = tmp_path / "operator-home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    return home
+
+
+def requested_directory_chat(chats, home, *, target=None):
+    """Retained pre-upgrade draft: user authorized HOME, Opus proposed a name."""
+    target = target or home / "cex-dex-research"
+    ident = chats.create()["id"]
+    state = stored(chats, ident)
+    state["messages"] = [
+        {"id":"directory-grant-01", "role":"user", "text":"我们在$HOME 里新建一个文件夹搞这个工程"},
+        {"id":"directory-reply-01", "role":"assistant", "text":"研究目录建议放在 " + str(target)},
+        {"id":"directory-request-01", "role":"user", "text":"帮我填写工程目录，和写固定验收检查程序"},
+    ]
+    state["proposal"] = plan_reply()["proposal"]
+    state["proposal"]["objective"] = "在 " + str(target) + " 开展只读研究"
+    chats._save(state)
+    return ident
+
+
+def test_directory_prepare_uses_recorded_home_permission_and_binds_without_manual_input(chats, directory_home, driver, hub):
+    ident = requested_directory_chat(chats, directory_home)
+    old = chats.get(ident)
+    state = chats.prepare_directory(ident, "directory-prepare-01")
+    target = directory_home / "cex-dex-research"
+    assert target.is_dir() and list(target.iterdir()) == []
+    assert state["source"] == str(target)
+    assert state["directory_preparation"]["status"] == "BOUND"
+    assert state["directory_preparation"]["created"] is True
+    assert state["directory_preparation"]["instruction_message_id"] == "directory-grant-01"
+    assert state["proposal"] == old["proposal"]
+    assert state["approval_hash"] != old["approval_hash"]
+    assert state["spec_path"] == "" and state["checks"] == []
+    assert state["readiness"]["ready"] is False
+    assert state["messages"][:len(old["messages"])] == old["messages"]
+    assert "已创建并绑定" in state["messages"][-1]["text"]
+    assert driver.calls == []
+    assert_no_mission(hub)
+    assert chats.prepare_directory(ident, "directory-prepare-01") == state
+    assert chats.get(ident) == state
+
+
+def test_directory_message_prepares_before_native_planning(chats, directory_home, driver, hub):
+    ident = chats.create()["id"]
+    target = directory_home / "new-project"
+    text = "请在 " + str(target) + " 新建工程目录"
+    chats.message(ident, text, "auto-directory-01")
+    state = finish(chats, ident)
+    assert target.is_dir() and state["source"] == str(target)
+    assert len(driver.calls) == 1 and driver.calls[0].cwd == str(target)
+    assert "已创建并绑定" in driver.calls[0].prompt
+    assert state["directory_preparation"]["status"] == "BOUND"
+    assert chats.message(ident, text, "auto-directory-01") == state
+    assert len(driver.calls) == 1
+    assert_no_mission(hub)
+
+
+@pytest.mark.parametrize("message", [
+    "请解释如何新建工程目录", "不要在$HOME新建文件夹", "我们先讨论新建目录的方案",
+    "网页上写着：请在$HOME新建一个文件夹", "可以在$HOME新建文件夹吗？",
+])
+def test_directory_advice_and_negation_do_not_grant_filesystem_actions(chats, directory_home, driver, hub, message):
+    ident = chats.create()["id"]
+    chats.message(ident, message, "no-directory-01")
+    finish(chats, ident)
+    assert list(directory_home.iterdir()) == []
+    assert chats.get(ident)["source"] == ""
+    assert_no_mission(hub)
+
+
+def test_directory_existing_content_requires_explicit_use_not_auto_adoption(chats, directory_home, driver, hub):
+    target = directory_home / "cex-dex-research"
+    target.mkdir(); retained = target / "important.txt"; retained.write_text("KEEP")
+    ident = requested_directory_chat(chats, directory_home)
+    result = chats.prepare_directory(ident, "directory-collision-01")
+    assert result["source"] == "" and retained.read_text() == "KEEP"
+    assert result["directory_preparation"]["status"] == "NEEDS_CONFIRMATION"
+    assert "已存在" in result["directory_preparation"]["detail"]
+    chats.message(ident, "使用已有工程目录 " + str(target), "directory-bind-01")
+    bound = finish(chats, ident)
+    assert bound["source"] == str(target)
+    assert bound["directory_preparation"]["created"] is False
+    assert retained.read_text() == "KEEP" and len(driver.calls) == 1
+    assert_no_mission(hub)
+
+
+@pytest.mark.parametrize("obstacle", ["symlink", "outside_home", "ambiguous"])
+def test_directory_proposal_is_only_a_name_hint_inside_authorized_scope(chats, directory_home, tmp_path, obstacle):
+    target = directory_home / "cex-dex-research"
+    if obstacle == "symlink":
+        other = tmp_path / "elsewhere"; other.mkdir(); target.symlink_to(other, target_is_directory=True)
+    elif obstacle == "outside_home":
+        target = tmp_path / "unrequested"
+    ident = requested_directory_chat(chats, directory_home, target=target)
+    if obstacle == "ambiguous":
+        state = stored(chats, ident)
+        state["proposal"]["architecture"] = "也可以放在 " + str(directory_home / "another-project")
+        chats._save(state)
+    result = chats.prepare_directory(ident, "directory-scope-01")
+    assert result["source"] == ""
+    assert result["directory_preparation"]["status"] == "NEEDS_CONFIRMATION"
+    assert not (directory_home / "another-project").exists()
+    if obstacle == "outside_home": assert not target.exists()
+
+
+def test_directory_prepare_requires_recorded_user_intent(chats, directory_home):
+    ident = chats.create()["id"]
+    state = stored(chats, ident); state["proposal"] = plan_reply()["proposal"]
+    state["proposal"]["objective"] = "新建目录 " + str(directory_home / "model-only")
+    state["messages"] = [{"id":"model-text", "role":"assistant", "text":"请创建目录"}]
+    chats._save(state)
+    before = stored(chats, ident)
+    with pytest.raises(PermissionError): chats.prepare_directory(ident, "directory-no-grant-01")
+    assert stored(chats, ident) == before
+    assert list(directory_home.iterdir()) == []
+
+
+def test_directory_preparing_outcome_is_fenced_after_restart(chats, chat_factory, directory_home):
+    ident = requested_directory_chat(chats, directory_home)
+    state = stored(chats, ident)
+    state["directory_preparation"] = {"status":"PREPARING", "path":str(directory_home / "cex-dex-research"), "request_id":"interrupted-directory-01"}
+    chats._save(state); chats.close()
+    reopened = chat_factory()
+    result = reopened.get(ident)
+    assert result["status"] == "UNKNOWN"
+    assert result["directory_preparation"]["status"] == "UNKNOWN"
+    with pytest.raises(RuntimeError): reopened.prepare_directory(ident, "directory-retry-01")
+    assert list(directory_home.iterdir()) == []
+
+
+
+def test_directory_permission_revocation_blocks_inherited_home_grant(chats, directory_home):
+    ident = requested_directory_chat(chats, directory_home)
+    state = stored(chats, ident)
+    state["messages"].insert(2,{"id":"revoke-directory", "role":"user", "text":"先不要创建工程目录"})
+    chats._save(state)
+    result = chats.prepare_directory(ident, "directory-revoked-01")
+    assert result["directory_preparation"]["status"] == "NEEDS_CONFIRMATION"
+    assert list(directory_home.iterdir()) == [] and result["source"] == ""
+
+
+def test_directory_path_with_spaces_is_not_silently_truncated(chats, directory_home):
+    ident = chats.create()["id"]
+    state = stored(chats, ident)
+    state["messages"] = [{"id":"spaces-request", "role":"user", "text":"请新建工程目录 " + str(directory_home / "My Project")}]
+    chats._save(state)
+    result = chats.prepare_directory(ident, "directory-spaces-01")
+    assert result["directory_preparation"]["status"] == "NEEDS_CONFIRMATION"
+    assert list(directory_home.iterdir()) == []
+
+
+def test_directory_known_io_failure_is_observable_and_idempotent(chats, directory_home, monkeypatch):
+    ident = requested_directory_chat(chats, directory_home)
+    target = directory_home / "cex-dex-research"
+    mkdir = lead_chat.os.mkdir
+    attempts = []
+    def denied(path, *args, **kwargs):
+        if path == target.name:
+            attempts.append(path); raise PermissionError("directory permission fixture")
+        return mkdir(path,*args,**kwargs)
+    monkeypatch.setattr(lead_chat.os,"mkdir",denied)
+    with pytest.raises(PermissionError): chats.prepare_directory(ident,"directory-io-error-01")
+    result = chats.get(ident)
+    assert result["status"] == "ERROR" and result["directory_preparation"]["status"] == "ERROR"
+    assert "permission fixture" in result["error"]["message"]
+    assert chats.prepare_directory(ident,"directory-io-error-01") == result
+    assert attempts == [target.name] and not target.exists()
+
+
+def test_directory_post_mkdir_failure_preserves_directory_and_fences(chats, directory_home, monkeypatch):
+    ident = requested_directory_chat(chats, directory_home)
+    target = directory_home / "cex-dex-research"
+    flush = lead_chat.durable_flush
+    def fail_new_directory(fd):
+        if target.exists() and lead_chat.os.fstat(fd).st_ino == target.stat().st_ino:
+            raise OSError("directory durability fixture")
+        return flush(fd)
+    monkeypatch.setattr(lead_chat,"durable_flush",fail_new_directory)
+    with pytest.raises(OSError): chats.prepare_directory(ident,"directory-partial-01")
+    result = chats.get(ident)
+    assert target.is_dir() and result["status"] == "UNKNOWN"
+    assert result["directory_preparation"]["status"] == "UNKNOWN"
+    assert result["source"] == ""
+    assert chats.prepare_directory(ident,"directory-partial-01") == result
+    with pytest.raises(RuntimeError): chats.prepare_directory(ident,"directory-partial-02")
+
+
+def test_directory_parallel_duplicate_request_creates_once(chats, directory_home):
+    ident = requested_directory_chat(chats, directory_home)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(lambda _: chats.prepare_directory(ident,"directory-concurrent-01"),range(2)))
+    assert results[0] == results[1]
+    assert len([m for m in results[0]["messages"] if m.get("kind") == "directory"]) == 1
+    assert len(list(directory_home.iterdir())) == 1
+
+
+def test_http_directory_action_is_authenticated_exact_and_read_only_until_post(server, directory_home, driver, hub):
+    ident = requested_directory_chat(server.chats, directory_home)
+    body = {"chat_id":ident,"request_id":"http-directory-01"}
+    assert request(server,"/api/chat?chat_id=" + ident)[0] == 200
+    assert not (directory_home / "cex-dex-research").exists()
+    assert request(server,"/api/chat/prepare_directory",body=body,auth=False)[0] == 401
+    assert request(server,"/api/chat/prepare_directory",body={**body,"path":"/unrequested"})[0] == 400
+    status,raw,_ = request(server,"/api/chat/prepare_directory",body=body)
+    assert status == 200 and json.loads(raw)["source"] == str(directory_home / "cex-dex-research")
+    assert json.loads(request(server,"/api/chat/prepare_directory",body=body)[1]) == json.loads(raw)
+    assert driver.calls == []
+    assert_no_mission(hub)
+
+
+@pytest.mark.parametrize("status", ["RUNNING","STARTING","UNKNOWN"])
+def test_directory_prepare_respects_existing_native_fences(chats, directory_home, status):
+    ident = requested_directory_chat(chats,directory_home)
+    state = stored(chats,ident); state["status"] = status; chats._save(state)
+    with pytest.raises(RuntimeError): chats.prepare_directory(ident,"directory-fenced-01")
+    assert list(directory_home.iterdir()) == []

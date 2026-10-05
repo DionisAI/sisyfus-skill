@@ -54,7 +54,7 @@ PAGE = r'''<!doctype html>
           <ul id="preflight-requirements"></ul>
           <p class="small muted" id="preflight-note"></p>
           <details id="acceptance-help"><summary>文字验收已经聊好了，为什么还要准备？</summary><p>文字验收说明“做成什么样”；固定检查说明“如何验证通过或失败”。依据上方逐项验收编写校验脚本，把检查、通过/失败条件和执行范围写入工程验收文件，经你审阅后绑定。</p><p>这是工程准备步骤，不是让你重新讲一遍需求。当前聊天尚未接入自动生成这些文件的流程；如果指标还写着“约定阈值”，需先确认具体数值。不要复用其他无关工程的检查来凑开工条件。</p><p>绑定新工程或验收文件会保留聊天记录、撤下旧方案；随后请 Opus 基于新上下文重新核对方案。</p></details>
-          <button class="secondary" id="preflight-settings" type="button">填写工程与验收</button>
+          <div class="flex wrap"><button class="primary" id="prepare-directory" type="button" hidden>按聊天准备目录</button><button class="secondary" id="preflight-settings" type="button">查看工程与验收设置</button></div>
         </section><button class="text-button" id="linked-mission" hidden>查看任务进度 →</button>
           <form class="confirmation" id="chat-confirm" hidden><h3>这次开工的范围</h3><dl id="chat-confirm-context"></dl><button type="button" class="text-button small" id="open-confirm-plan" aria-controls="full-proposal">查看本次确认的完整方案与验收</button><label class="permission"><input type="checkbox" id="chat-permission"><span>我允许这项任务在本机执行<small>本地工作进程将使用当前用户的访问权限，读取或修改工程、运行命令，并可能产生模型调用费用。</small></span></label><p class="small muted">方案仅是草案；最终结果以固定验收、独立审查与集成证据为准。</p><div class="flex wrap"><button class="primary" id="chat-start" type="submit" disabled>确认方案并开工</button><button class="text-button" id="cancel-chat-start" type="button">再想一想</button></div></form>
         </section>
@@ -71,7 +71,7 @@ PAGE = r'''<!doctype html>
 </main>
 </div>
 <button class="backdrop" id="backdrop" aria-label="关闭抽屉" tabindex="-1" hidden></button>
-<aside class="drawer" id="settings" role="dialog" aria-modal="true" aria-labelledby="settings-title" hidden><header class="drawer-header"><h2 id="settings-title">工程与验收</h2><button class="icon-button" id="close-settings" aria-label="关闭工程设置">×</button></header><div class="drawer-body"><p class="drawer-intro" id="settings-intro">先聊想法也可以。开工前，再绑定工程和已经批准的验收文件。</p><section id="reuse-project"><label class="field" for="existing-project">选择已有工程<select id="existing-project"><option value="">选择一个工程与验收方案…</option></select><small>按任务目标选择已批准的工程。不复用旧结果，也不会启动已有任务。</small></label><button class="primary" id="attach-mission" disabled>复用工程与验收</button><p class="small muted" id="attach-state" role="status"></p></section><details class="settings-section" id="manual-context"><summary>手动填写工程路径</summary><form id="context-form"><label class="field" for="source">工程目录<input id="source" type="text" placeholder="/Users/you/projects/my-project" autocomplete="off" spellcheck="false"><small>只绑定本机现存目录；输入路径不会创建目录。新工程先创建目录，再绑定。</small></label><label class="field" for="spec-path">验收文件<input id="spec-path" type="text" placeholder="/Users/you/specs/approved.json" autocomplete="off" spellcheck="false"><small>工程准备阶段产出的已批准验收文件（spec）的绝对路径。聊天中的文字验收不等于固定检查，尚未自动生成此文件。</small></label><div class="form-actions"><button class="primary" type="submit" id="save-context">保存设置</button><span class="small muted" id="context-save-state" role="status"></span></div><p class="small error prose" id="context-error" role="alert" hidden></p></form></details><details class="settings-section"><summary>已绑定的验收条件</summary><div id="context-checks"><p class="small muted">尚未绑定验收文件。</p></div></details><details class="settings-section"><summary>模型与执行说明</summary><div class="stack small muted"><p id="settings-model">尚无运行模型记录。</p><p>默认请求模型：负责人、独立审查使用 claude-opus-5-5；实施使用 gpt-6.1-sol。实际模型以运行回执为准。</p><p>总预算：Unlimited（默认不设总量上限）</p><p>已绑定任务的实际预算以核心记录为准；单次调用超时、并行限制与人工停止仍然生效。</p><p>对话与方案不会派发工作。开工时单独确认本地执行许可。</p><p>收到控制请求、模型返回或单项检查通过，都不等于整项任务已验收。</p><button class="text-button" id="settings-debug" type="button">打开诊断信息</button><a href="/console">旧版开发者控制台 ↗</a></div></details></div></aside>
+<aside class="drawer" id="settings" role="dialog" aria-modal="true" aria-labelledby="settings-title" hidden><header class="drawer-header"><h2 id="settings-title">工程与验收</h2><button class="icon-button" id="close-settings" aria-label="关闭工程设置">×</button></header><div class="drawer-body"><p class="drawer-intro" id="settings-intro">先聊想法也可以。开工前，再绑定工程和已经批准的验收文件。</p><section id="reuse-project"><label class="field" for="existing-project">选择已有工程<select id="existing-project"><option value="">选择一个工程与验收方案…</option></select><small>按任务目标选择已批准的工程。不复用旧结果，也不会启动已有任务。</small></label><button class="primary" id="attach-mission" disabled>复用工程与验收</button><p class="small muted" id="attach-state" role="status"></p></section><details class="settings-section" id="manual-context"><summary>手动填写工程路径</summary><form id="context-form"><label class="field" for="source">工程目录<input id="source" type="text" placeholder="/Users/you/projects/my-project" autocomplete="off" spellcheck="false"><small>也可以直接在聊天里要求创建或设置目录，系统会检查并准备；此处保留手动绑定入口。</small></label><label class="field" for="spec-path">验收文件<input id="spec-path" type="text" placeholder="/Users/you/specs/approved.json" autocomplete="off" spellcheck="false"><small>工程准备阶段产出的已批准验收文件（spec）的绝对路径。聊天中的文字验收不等于固定检查，尚未自动生成此文件。</small></label><div class="form-actions"><button class="primary" type="submit" id="save-context">保存设置</button><span class="small muted" id="context-save-state" role="status"></span></div><p class="small error prose" id="context-error" role="alert" hidden></p></form></details><details class="settings-section"><summary>已绑定的验收条件</summary><div id="context-checks"><p class="small muted">尚未绑定验收文件。</p></div></details><details class="settings-section"><summary>模型与执行说明</summary><div class="stack small muted"><p id="settings-model">尚无运行模型记录。</p><p>默认请求模型：负责人、独立审查使用 claude-opus-5-5；实施使用 gpt-6.1-sol。实际模型以运行回执为准。</p><p>总预算：Unlimited（默认不设总量上限）</p><p>已绑定任务的实际预算以核心记录为准；单次调用超时、并行限制与人工停止仍然生效。</p><p>对话与方案不会派发工作。开工时单独确认本地执行许可。</p><p>收到控制请求、模型返回或单项检查通过，都不等于整项任务已验收。</p><button class="text-button" id="settings-debug" type="button">打开诊断信息</button><a href="/console">旧版开发者控制台 ↗</a></div></details></div></aside>
 <aside class="drawer" id="debug" role="dialog" aria-modal="true" aria-labelledby="debug-title" hidden><header class="drawer-header"><h2 id="debug-title">诊断信息</h2><button class="icon-button" id="close-debug" aria-label="关闭诊断信息">×</button></header><div class="drawer-body"><p class="drawer-intro">只读原始记录。控制 ACK 仅表示请求已接收，验收以核心快照为准。访问令牌不会显示在这里。</p><details class="debug-block"><summary>当前对话 / 核心快照</summary><pre id="debug-state"></pre></details><details class="debug-block"><summary>任务事件</summary><pre id="debug-events"></pre></details><details class="debug-block"><summary>控制请求记录</summary><pre id="debug-controls"></pre></details><details class="debug-block"><summary>连接与请求诊断</summary><pre id="debug-requests"></pre></details><details class="debug-block"><summary>列表读取问题</summary><pre id="debug-issues"></pre></details><a href="/console">打开旧版开发者视图 ↗</a></div></aside>
 <div class="sr-only" role="status" aria-live="polite" id="announcement"></div>
 <script nonce="NONCE">
@@ -310,6 +310,7 @@ function reconcileChat(chat) {
   const key = 'chat:' + chat.id, pending = state.pending.get(key);
   if (!pending) return;
   if (pending.type === 'start' && chat.mission_id) clearPending(key);
+  if (pending.type === 'directory' && chat.directory_preparation?.request_id === pending.request_id && chat.directory_preparation.status !== 'PREPARING') clearPending(key);
   if (pending.type === 'context' && chat.source === pending.source && chat.spec_path === pending.spec_path) clearPending(key);
   if (pending.type === 'attach' && chat.source === pending.source && chat.spec_path && chat.spec_path !== pending.before_spec) clearPending(key);
   if (pending.type === 'message') {
@@ -356,6 +357,11 @@ function canPrepare() {
     !state.chat.mission_id && !state.loading && !state.busy);
 }
 function canChatStart() { return chatReady() && state.connected && !state.loading && !state.busy && !state.pending.has(pendingKey()); }
+function canPrepareDirectory() {
+  return !!(state.kind === 'chat' && state.chat?.directory_request?.status === 'READY' && !state.chat.source &&
+    ['IDLE','ERROR'].includes(state.chat.status) && !state.chat.mission_id && state.connected &&
+    !state.loading && !state.loadError && !state.busy && !state.pending.has(pendingKey()));
+}
 function canSend() {
   return !state.busy && !state.loading && !state.loadError && !state.pending.has(pendingKey()) &&
     !state.pending.has('create') && state.connected && state.kind !== 'mission' &&
@@ -372,6 +378,7 @@ function renderAvailability() {
   $('attach-mission').disabled = $('save-context').disabled || !$('existing-project').value;
   $('existing-project').disabled = $('save-context').disabled;
   $('review-plan').disabled = !canPrepare();
+  $('prepare-directory').disabled = !canPrepareDirectory();
   $('chat-start').disabled = !canChatStart() || !$('chat-permission').checked;
   $('new-chat').disabled = !!state.busy || state.pending.has('create');
   renderControlAvailability();
@@ -392,7 +399,7 @@ function renderChat() {
   const changed = paint('messages', chat.messages, () => chat.messages.map(message => {
     const role = message.role === 'user' ? 'user' : 'assistant';
     const row = node('article', undefined, 'message ' + role);
-    row.append(node('div', role === 'user' ? '你' : '技术负责人', 'message-author'), node('div', message.text || '', 'message-text prose'));
+    row.append(node('div', role === 'user' ? '你' : message.kind === 'directory' ? '工程准备' : '技术负责人', 'message-author'), node('div', message.text || '', 'message-text prose'));
     return row;
   }));
   if (changed) { state.forceScroll = state.forceScroll || wasAtBottom; scrollLatest(); }
@@ -400,7 +407,7 @@ function renderChat() {
   $('waiting').hidden = chat.status !== 'RUNNING' && !(state.busy?.type === 'message' && state.busy.id === chat.id);
   $('waiting-text').textContent = state.busy?.type === 'message' ? '正在发送这条消息…' : '正在思考，回复会出现在这里。无需重复发送。';
   let note = state.chatNotice || missingContextMessage(chat);
-  if (pending) note = '这次' + ({message:'消息',start:'开工',context:'设置保存',attach:'工程复用'}[pending.type] || '操作') + '的结果尚未确认。已暂停新的提交；请查询记录，系统不会自动重发。';
+  if (pending) note = '这次' + ({message:'消息',start:'开工',context:'设置保存',attach:'工程复用',directory:'目录准备'}[pending.type] || '操作') + '的结果尚未确认。已暂停新的提交；请查询记录，系统不会自动重发。';
   else if (chat.status === 'UNKNOWN') note = '上一次调用的结果仍待确认。先查询最新记录，不重复发起调用。';
   else if (chat.status === 'ERROR') note = '这次对话遇到了问题。' + (chat.error ? ' ' + clean(typeof chat.error === 'string' ? chat.error : chat.error.message || '') : '') + ' 你可以先核对记录，再继续讨论。';
   $('chat-note').hidden = !note;
@@ -480,6 +487,7 @@ function renderPreflight(chat) {
     state.pending.has(pendingKey()) ? '上次提交的结果仍待确认；先查询记录，不重复开工。' :
     '这里只检查已绑定的前置条件，不运行测试、不创建目录、不调用 Agent。正式开工时会再次核对验收脚本。';
   $('preflight-settings').hidden = !missing.some(item => item.id === 'source' || item.id === 'acceptance');
+  $('prepare-directory').hidden = chat.directory_request?.status !== 'READY' || !!chat.source;
   $('acceptance-help').hidden = !missing.some(item => item.id === 'acceptance');
 }
 function reviewPlan() {
@@ -866,6 +874,27 @@ function syncSettings(force) {
   renderChecks(missionMode ? checkNamesForMission().map(id => ({id})) : checksForChat(chat));
   renderAvailability();
 }
+async function prepareDirectory() {
+  if (!canPrepareDirectory()) return;
+  const id = state.id, epoch = state.epoch; let uuid;
+  try { uuid = requestId(); } catch (error) { state.chatNotice = error.message; render(); return; }
+  state.busy = {type:'directory',id}; state.version++; renderAvailability();
+  try {
+    const chat = validateChat(await api('/api/chat/prepare_directory',{chat_id:id,request_id:uuid}),id,true);
+    upsertChat(chat); clearPending('chat:' + id);
+    if (state.epoch === epoch && state.id === id) {
+      state.chatNotice = chat.directory_preparation?.detail || '已查询目录准备结果。';
+      applyChat(chat);
+    }
+  } catch (error) {
+    markUncertain('chat:' + id,{type:'directory',request_id:uuid},error);
+    if (state.epoch === epoch) state.chatNotice = clean(error.message);
+    else showGlobal(error.uncertain ? '目录准备结果待确认，请回到原对话查询记录。' : clean(error.message));
+  } finally {
+    state.busy = null; state.version++; render();
+    if (state.kind === 'chat' && state.id === id) await readSelected();
+  }
+}
 async function saveContext(event) {
   event.preventDefault(); if ($('save-context').disabled) return;
   const source = $('source').value.trim(), spec_path = $('spec-path').value.trim();
@@ -1011,6 +1040,7 @@ $('attach-mission').onclick = attachMission;
 $('existing-project').onchange = renderAvailability;
 for (const id of ['source','spec-path']) $(id).addEventListener('input',() => { state.contextDirty = true; $('context-save-state').textContent = '尚未保存'; });
 $('review-plan').onclick = reviewPlan;
+$('prepare-directory').onclick = prepareDirectory;
 $('preflight-settings').onclick = () => {
   openDrawer('settings'); $('manual-context').open = true;
   (state.chat?.source ? $('spec-path') : $('source')).focus({preventScroll:true});

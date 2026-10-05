@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .chat_directory import directory_request, open_parent, paths
 from .claude_code import ClaudeCodeDriver
 from .lead_contracts import load_lead_spec
 from .lead_mission import strict_json
@@ -105,6 +106,11 @@ class ChatSessions:
             except (OSError, ValueError, KeyError, TypeError) as exc:
                 self.issues[path.parent.name] = {'id': path.parent.name, 'error': error(exc)}
                 continue
+            preparation = state.get('directory_preparation') or {}
+            if preparation.get('status') == 'PREPARING':
+                preparation.update(status='UNKNOWN', detail='目录准备结果待核对；保留路径与请求记录，不自动重试。')
+                state.update(status='UNKNOWN', directory_preparation=preparation, error={'type':'DirectoryOutcomeUnknown', 'message':preparation['detail']})
+                self._save(state)
             if state['status'] in {'RUNNING', 'STARTING'}:
                 state.update(status='UNKNOWN', error={'type': 'InterruptedRequest', 'message': '上次请求的结果待核对；已保留记录，当前对话暂停派发。请查看诊断或新建对话。'})
                 self._save(state)
@@ -176,7 +182,7 @@ class ChatSessions:
                         if state.get('proposal') else '先在聊天里形成包含任务与逐项验收的完整方案。')},
             {'id': 'source', 'label': '工程目录', 'ready': bool(state['source']),
              'detail': ('已绑定：' + state['source'] if state['source'] else
-                        '尚未绑定。聊天中的路径不会自动绑定；新项目需先创建目录，再在工程设置里绑定现存目录。')},
+                        '尚未绑定。可以在聊天里明确要求创建或设置目录，控制器会检查并准备；路径有歧义或已存在内容时再确认。')},
             {'id': 'acceptance', 'label': '固定验收检查', 'ready': bool(checks),
              'detail': ('已绑定 %s 项固定检查；开工时再次核对验收文件与脚本。' % len(checks) if checks else
                         '方案已有的文字验收是需求草案；还需落实为带通过/失败条件的固定校验脚本和工程验收文件，审阅后绑定。当前聊天尚未自动生成这些文件。')},
@@ -194,6 +200,15 @@ class ChatSessions:
         value = {k: copy.deepcopy(v) for k, v in state.items() if k not in {'bound_spec', 'requests', 'native_session'}}
         value['approval_hash'] = digest({'source': state['source'], 'spec': state.get('bound_spec'), 'proposal': state.get('proposal')}) if state.get('proposal') else None
         value['readiness'] = self._readiness(state)
+        directory = directory_request(state, Path.home())
+        value['directory_request'] = directory
+        preparation = state.get('directory_preparation') or {}
+        if directory and preparation.get('trigger_message_id') == directory.get('trigger_message_id') and preparation.get('status') in {'NEEDS_CONFIRMATION','ERROR','UNKNOWN'}:
+            directory = {**directory, 'status':preparation['status'], 'detail':preparation['detail']}
+            value['directory_request'] = directory
+            value['readiness']['requirements'][1]['detail'] = preparation['detail']
+        elif directory and directory.get('status') == 'READY':
+            value['readiness']['requirements'][1]['detail'] = '已收到目录准备要求：' + directory['path'] + '。新消息会自动准备；也可直接点击按聊天准备目录。'
         value['checks'] = [{'id': key, 'pass_if': check['contract'].get('pass_if'), 'fail_if': check['contract'].get('fail_if')}
                            for key, check in (state.get('bound_spec') or {}).get('checks', {}).items()]
         return redact(value)
@@ -301,6 +316,88 @@ class ChatSessions:
             raise ValueError('request_id must be 8..100 portable characters')
         return value
 
+    def _prepare_directory(self, state: dict[str, Any], request_id: str, action: dict[str, Any]) -> None:
+        """Reserve -> exclusive mkdir/bind -> durable receipt; no shell/model."""
+        previous = state.get('directory_preparation') or {}
+        if previous.get('status') in {'PREPARING', 'UNKNOWN'}:
+            raise RuntimeError('目录准备结果待核对；先核对记录，不重复创建。')
+        record = {**action, 'request_id':request_id, 'created':False}
+        state['directory_preparation'] = record
+        if action['status'] != 'READY':
+            self._save(state)
+            return
+        target = Path(action['path'])
+        parent_fd = None
+        created = False
+        try:
+            parent_fd = open_parent(target, self.hub.directory)
+            parent_stat = os.fstat(parent_fd)
+            record.update(status='PREPARING', detail='正在按用户已确认的路径准备工程目录。')
+            self._save(state)  # Filesystem action reservation precedes mkdir.
+            if action['operation'] == 'create':
+                try:
+                    os.mkdir(target.name, mode=0o700, dir_fd=parent_fd)
+                    created = True
+                except FileExistsError:
+                    record.update(status='NEEDS_CONFIRMATION', detail='该路径已存在，未覆盖或绑定：' + str(target) + '。如要使用它，请在聊天里说“使用已有工程目录”并给出此路径。')
+                    self._save(state)
+                    return
+            child_fd = os.open(target.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd)
+            try:
+                child_stat = os.fstat(child_fd)
+                durable_flush(child_fd)
+            finally:
+                os.close(child_fd)
+            durable_flush(parent_fd)
+            actual_parent = target.parent.stat()
+            actual_child = target.stat(follow_symlinks=False)
+            if (actual_parent.st_dev, actual_parent.st_ino) != (parent_stat.st_dev, parent_stat.st_ino) or (actual_child.st_dev, actual_child.st_ino) != (child_stat.st_dev, child_stat.st_ino) or target.is_symlink():
+                raise RuntimeError('准备期间目录路径发生变化；保留记录，待核对实际路径。')
+            if state.get('proposal'):
+                hints = paths(str(state['proposal']), Path.home())
+                if not created or hints and target not in hints:
+                    state['proposal'] = None
+            state.update(source=str(target), native_session=None)
+            record.update(status='BOUND', created=created, device=child_stat.st_dev, inode=child_stat.st_ino,
+                          detail=('工程目录已创建并绑定：' if created else '已按明确要求绑定现有工程目录：') + str(target) + '。目录准备未启动 Agent，固定验收仍需单独准备和审阅。')
+            state['messages'].append({'id':'directory-' + request_id, 'role':'assistant', 'kind':'directory', 'text':record['detail'], 'created_at':now()})
+            self._save(state)
+        except (ValueError, FileNotFoundError, NotADirectoryError) as exc:
+            if created:
+                record.update(status='UNKNOWN', detail=str(error(exc)['message']))
+                state.update(status='UNKNOWN', error=error(exc))
+                self._save(state)
+                raise
+            record.update(status='NEEDS_CONFIRMATION', detail=str(error(exc)['message']))
+            self._save(state)
+        except Exception as exc:
+            record.update(status='UNKNOWN' if created else 'ERROR', detail=str(error(exc)['message']))
+            state.update(status='UNKNOWN' if created else 'ERROR', error=error(exc))
+            self._save(state)
+            raise
+        finally:
+            if parent_fd is not None:
+                os.close(parent_fd)
+
+    def prepare_directory(self, ident: str, request_id: str) -> dict[str, Any]:
+        request_id = self._request_id(request_id)
+        with self.lock:
+            if self.closed:
+                raise RuntimeError('conversation service is closing')
+            state = self._read(ident)
+            previous = state['requests'].get(request_id)
+            if previous:
+                if previous.get('kind') != 'directory':
+                    raise ValueError('request_id already belongs to another operation')
+                return self._public(state)
+            self._idle(state)
+            action = directory_request(state, Path.home())
+            if action is None:
+                raise PermissionError('请先在聊天中明确要求创建、使用或设置工程目录。')
+            state['requests'][request_id] = {'kind':'directory', 'instruction_message_id':action.get('instruction_message_id')}
+            self._prepare_directory(state, request_id, action)
+            return self._public(state)
+
     def message(self, ident: str, message: str, request_id: str) -> dict[str, Any]:
         request_id = self._request_id(request_id)
         if not isinstance(message, str) or not 1 <= len(message.strip()) <= 12000:
@@ -319,13 +416,17 @@ class ChatSessions:
             if sum(len(x['text'].encode()) for x in state['messages']) + len(message.encode()) > 120000:
                 raise ValueError('对话已较长，请新建对话以保留清晰的任务上下文')
             state['requests'][request_id] = {'kind': 'message', 'hash': fingerprint}
-            state.update(status='RUNNING', error=None, proposal=None)
+            state.update(status='RUNNING', error=None)
             state['messages'].append({'id': request_id, 'role': 'user', 'text': message, 'created_at': now()})
+            directory = directory_request(state, Path.home())
+            state['proposal'] = None
             if len(self._prompt(state).encode()) > 190000:
                 raise ValueError('对话上下文接近调用上限，请新建对话并附上精简需求')
             if state['title'] == '新对话':
                 state['title'] = message.strip()[:34]
             self._save(state)  # Reservation precedes process dispatch.
+            if directory:
+                self._prepare_directory(state, 'auto:' + request_id, directory)
             thread = threading.Thread(target=self._reply, args=(ident, request_id), name='opus-chat-' + ident, daemon=False)
             self.threads[ident] = thread
             try:
@@ -341,9 +442,10 @@ class ChatSessions:
         base = state.get('bound_spec') or {}
         context = {'source': state['source'], 'approved_objective': base.get('objective'),
                    'constraints': base.get('constraints', []), 'deliverables': base.get('deliverables', []),
-                   'check_names': list(base.get('checks', {})), 'messages': state['messages']}
+                   'check_names': list(base.get('checks', {})), 'directory_preparation': state.get('directory_preparation'),
+                   'messages': state['messages']}
         return '''You are the Chinese-speaking Tech Lead in a conversational project interface.
-Answer in natural concise Chinese. When returning a proposal, reply should be a brief 150-300 Chinese-character summary rather than repeating the full plan. Put architecture, task details and acceptance in proposal. Use plain text paragraphs, without Markdown emphasis markers. Clarify material unknowns; produce an actionable architecture and acceptance outline when enough is known. You have read-only tools; read the selected source as needed, never modify any file or run commands. No model weights are changed. Do not claim implementation, execution or test success. No mission starts from a chat message. Operator confirms execution separately. Only the attached operator-owned checks can be used for execution; never invent shell commands, executable checks, credentials or fake receipts. If checks are missing explain briefly that a fixed acceptance plan must be attached before execution, while still helping plan the project. Preserve ALL attached constraints/deliverables and objective acceptance requirements. Architecture and task outlines are advisory; core Lead later produces the executable DAG.
+Answer in natural concise Chinese. When returning a proposal, reply should be a brief 150-300 Chinese-character summary rather than repeating the full plan. Put architecture, task details and acceptance in proposal. Use plain text paragraphs, without Markdown emphasis markers. Clarify material unknowns; produce an actionable architecture and acceptance outline when enough is known. You have read-only tools; read the selected source as needed, never modify any file or run commands. The controller separately handles explicit user directory requests: directory_preparation is authoritative. When source is bound and preparation says BOUND, state the directory is already prepared; do not ask the user to type it into settings, claim it still needs creation, or repeat obsolete earlier directory limitations. If preparation says NEEDS_CONFIRMATION, ask only the concrete missing path or existing-directory choice in chat. Directory preparation does not start an implementation mission. No model weights are changed. Do not claim implementation, execution or test success. No mission starts from a chat message. Operator confirms execution separately. Only attached operator-approved fixed checks can be used for execution; never invent executable checks or fake receipts. Approval means operator review, not that the user must personally handwrite the check program. You can help specify the checks; distinguish specification, generated artifacts, approval and actual execution. If checks are missing explain briefly that a fixed acceptance plan must be attached before execution, while still helping plan the project. Preserve ALL attached constraints/deliverables and objective acceptance requirements. Architecture and task outlines are advisory; core Lead later produces the executable DAG.
 Return only strict JSON {"reply":"natural Chinese answer","proposal":null OR {"objective":"self-contained precise execution objective retaining approved requirements and all agreed details","architecture":"module design and interfaces","deliverables":["..."],"constraints":["..."],"tasks":[{"title":"...","acceptance":"...","depends_on":["task title"]}]}}. Do not include tools, commands, checks, roles or budgets in the proposal. Use proposal=null when material unknowns remain.\nContext:\n''' + json.dumps(context, ensure_ascii=False)
 
     def _reply(self, ident: str, request_id: str) -> None:

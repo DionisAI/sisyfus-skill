@@ -499,7 +499,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self.boundary():
             return
         try:
-            if self.path not in {"/api/missions", "/api/control", "/api/chats", "/api/chat/context", "/api/chat/message", "/api/chat/start", "/api/chat/attach_mission"}:
+            if self.path not in {"/api/missions", "/api/control", "/api/chats", "/api/chat/context", "/api/chat/message", "/api/chat/start", "/api/chat/attach_mission", "/api/chat/prepare_directory"}:
                 self.fail(ValueError("route not found"), 404)
                 return
             body = self.body()
@@ -511,10 +511,13 @@ class Handler(BaseHTTPRequestHandler):
                 action = self.path.rsplit("/", 1)[1]
                 fields = {"context": {"chat_id", "source", "spec_path"}, "message": {"chat_id", "message", "request_id"},
                           "start": {"chat_id", "allow_local_workers", "request_id", "approval_hash"},
-                          "attach_mission": {"chat_id", "mission_id"}}[action]
+                          "attach_mission": {"chat_id", "mission_id"},
+                          "prepare_directory": {"chat_id", "request_id"}}[action]
                 if set(body) != fields:
                     raise ValueError("invalid conversation fields for " + action)
-                if action == "attach_mission":
+                if action == "prepare_directory":
+                    result = self.server.chats.prepare_directory(body["chat_id"], body["request_id"])
+                elif action == "attach_mission":
                     result = self.server.chats.attach_mission(body["chat_id"], body["mission_id"])
                 elif action == "context":
                     result = self.server.chats.context(body["chat_id"], body["source"], body["spec_path"])
