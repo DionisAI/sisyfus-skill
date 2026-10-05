@@ -356,8 +356,23 @@ class LeadConsole(ThreadingHTTPServer):
             raise ValueError("port must be an integer in [0,65535]")
         self.hub = hub
         self.token = secrets.token_urlsafe(32)
+        self._chats = None
+        self._chat_lock = threading.Lock()
         super().__init__(("127.0.0.1", port), Handler)
         self.origin = f"http://127.0.0.1:{self.server_port}"
+
+    @property
+    def chats(self):
+        from .lead_chat import ChatSessions
+        with self._chat_lock:
+            if self._chats is None:
+                self._chats = ChatSessions(self.hub)
+            return self._chats
+
+    def server_close(self):
+        if self._chats is not None:
+            self._chats.close()
+        super().server_close()
 
     @property
     def url(self) -> str:
@@ -416,12 +431,24 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         route = urlsplit(self.path)
-        if not self.boundary(auth=route.path != "/"):
+        if not self.boundary(auth=route.path not in {"/", "/console"}):
             return
         try:
-            if route.path == "/":
+            if route.path in {"/", "/console"}:
                 nonce = secrets.token_urlsafe(18)
-                self.send(PAGE.replace("NONCE", nonce), html=True, nonce=nonce)
+                if route.path == "/":
+                    from .lead_chat_page import PAGE as CHAT_PAGE
+                    page = CHAT_PAGE
+                else:
+                    page = PAGE
+                self.send(page.replace("NONCE", nonce), html=True, nonce=nonce)
+            elif route.path == "/api/chats":
+                self.send(self.server.chats.inventory())
+            elif route.path == "/api/chat":
+                query = parse_qs(route.query, keep_blank_values=True)
+                if set(query) != {"chat_id"} or len(query["chat_id"]) != 1:
+                    raise ValueError("chat query requires exactly one chat_id")
+                self.send(self.server.chats.get(query["chat_id"][0]))
             elif route.path == "/api/missions":
                 self.send(self.server.hub.inventory())
             elif route.path in {"/api/snapshot", "/api/events"}:
@@ -472,11 +499,31 @@ class Handler(BaseHTTPRequestHandler):
         if not self.boundary():
             return
         try:
-            if self.path not in {"/api/missions", "/api/control"}:
+            if self.path not in {"/api/missions", "/api/control", "/api/chats", "/api/chat/context", "/api/chat/message", "/api/chat/start", "/api/chat/attach_mission"}:
                 self.fail(ValueError("route not found"), 404)
                 return
             body = self.body()
-            if self.path == "/api/missions":
+            if self.path == "/api/chats":
+                if body:
+                    raise ValueError("new conversation requires an empty object")
+                self.send(self.server.chats.create(), 201)
+            elif self.path.startswith("/api/chat/"):
+                action = self.path.rsplit("/", 1)[1]
+                fields = {"context": {"chat_id", "source", "spec_path"}, "message": {"chat_id", "message", "request_id"},
+                          "start": {"chat_id", "allow_local_workers", "request_id", "approval_hash"},
+                          "attach_mission": {"chat_id", "mission_id"}}[action]
+                if set(body) != fields:
+                    raise ValueError("invalid conversation fields for " + action)
+                if action == "attach_mission":
+                    result = self.server.chats.attach_mission(body["chat_id"], body["mission_id"])
+                elif action == "context":
+                    result = self.server.chats.context(body["chat_id"], body["source"], body["spec_path"])
+                elif action == "message":
+                    result = self.server.chats.message(body["chat_id"], body["message"], body["request_id"])
+                else:
+                    result = self.server.chats.start(body["chat_id"], body["allow_local_workers"], body["request_id"], body["approval_hash"])
+                self.send(result, 202 if action in {"message", "start"} else 200)
+            elif self.path == "/api/missions":
                 if self.server.hub.single:
                     raise ValueError("single console is select-only; use hub or CLI new to create")
                 if set(body) != {"spec"} or not isinstance(body["spec"], dict):

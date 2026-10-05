@@ -33,6 +33,13 @@ Opus Lead     Sol tasks      independent Opus review
   revisions, using the existing native driver/continuation/evidence machinery.
 - `lead_learning.py` owns only procedure lineage and evidence-gated promotion;
   it references authoritative mission databases rather than inventing outcomes.
+- `lead_chat.py` stores conversation drafts and read-only native Opus receipts;
+  it never supplies task truth or executable checks. Explicit confirmation binds
+  the approved contract to the existing controller, retaining the approved
+  objective/constraints and adding the accepted conversation plan. Idempotent
+  request IDs and restart UNKNOWN fencing prevent blind resend.
+- `lead_chat_page.py` is the default Chinese chat interface; `/console` retains
+  the developer interface.
 - `lead_console.py` and `lead_cli.py` expose user operations. A web connection or
   successful request is not proof that a model executed or a task passed.
 - Native drivers retain requested and returned execution model identity

@@ -1,6 +1,7 @@
 # Sisyfus Tech Lead development contract
 
-- Work only on the `codex/techlead-rsi` development branch. Preserve the installed
+- Work on dedicated `codex/techlead-*` development branches; use `git switch`
+  before substantial new work. Preserve the installed
   release, the older development checkout, and unrelated user work.
 - Never permanently delete files or directories. All removals use
   `/usr/bin/trash <absolute-path>` without `--`. No destructive Git commands.
@@ -27,3 +28,9 @@
 - Errors must be explicit and traceable without leaking credentials. Keep real
   native runs separate from protocol fixtures and report pending checks honestly.
 - Use retained test artifacts. New tests must not depend on permanent deletion.
+
+- The default local operator UI is a Chinese light conversational interface.
+  See `.impeccable.md` for design context. `/console` retains the developer view.
+  Conversation drafts and native chat receipts are not task truth: execution
+  still requires an operator-confirmed objective and existing immutable checks.
+  Opening pages, attaching context and sending chat messages never dispatch Sol.
