@@ -9,14 +9,16 @@
 [`templates/`](templates/) 是 TaskSpec 与实验的脚手架。`src/` 下的 Python 引擎是
 skill 的确定性后端——agent 通过 `sisyfus` CLI 驱动它,永远不能直接篡改研究状态。
 
-## 当前版本：v0.9.0
+## 当前版本：v0.9.1
 
 本版统一合入自更新、Research OS 和原生 Codex／Claude worker 控制台。
+v0.9.1 让研究工作台与准备页采用和技术负责人对话页一致的暖纸配色，把运行进度放进页头，
+并在研究记录含 NaN 指标时仍能正常显示。
 安装后的同一个 `sisyfus` 命令可使用 `workers`、`os`、`update` 与原有命令。
 运行中的 worker 控制器、未确认回执或无法读取的状态会阻止升级切换。
 
 ```bash
-sisyfus update --version 0.9.0 --yes
+sisyfus update --version 0.9.1 --yes
 sisyfus workers doctor
 sisyfus workers demo --directory /tmp/sisyfus-native-demo-new
 sisyfus workers serve --directory /tmp/sisyfus-native-demo-new/control --open
@@ -25,7 +27,7 @@ sisyfus workers serve --directory /tmp/sisyfus-native-demo-new/control --open
 首次安装或旧版没有 `update` 的用户，请重新运行当前安装器。Demo 是离线协议模拟，
 不是已认证的真实模型调用；多 Agent 研究效果和跨任务 RSI 尚未证实。
 原生 worker 仍为需要明确启用的本地 POSIX 试验功能，不是恶意代码安全沙箱。
-详情见 [v0.9.0 发布说明](RELEASE_NOTES_v0.9.0.md)。
+详情见 [v0.9.1 发布说明](RELEASE_NOTES_v0.9.1.md)。
 
 ## 这个 skill 做什么
 
@@ -87,7 +89,7 @@ Sisyfus 会把 **Engine 与已安装 Skill 一起更新**。版本分别安装�
 ```bash
 sisyfus update --check
 sisyfus update --yes
-sisyfus update --version 0.9.0 --yes
+sisyfus update --version 0.9.1 --yes
 sisyfus update --status
 sisyfus update --rollback
 sisyfus update --enable-auto --mode notify --interval-hours 24 --yes
@@ -125,7 +127,7 @@ Skill:把 `SKILL.md`、`references/`、`templates/` 复制进
 引擎(纯标准库,Python >= 3.11):
 
 ```bash
-python3 -m pip install "sisyfus @ git+https://github.com/DionisAI/sisyfus-skill@v0.9.0"
+python3 -m pip install "sisyfus @ git+https://github.com/DionisAI/sisyfus-skill@v0.9.1"
 ```
 
 `SKILL.md` 自带这项检查,agent 落到干净机器上首次使用时会自行装好引擎。

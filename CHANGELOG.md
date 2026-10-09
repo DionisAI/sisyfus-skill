@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.9.1 — 2026-10-09
+
+- Research Observatory and bootstrap Mission Control adopt the Tech Lead chat palette, fonts, ✳ wordmark and heading weights; the Tech Lead developer view (`/console`) leaves its dark theme for the same palette.
+- Live progress moves from a floating corner card into the top bar as a plain-language status pill, scoped to the page's own run; finished, refuted and exhausted runs read as ended.
+- Pages stay readable when a run records non-finite metrics: browser JSON carries `NaN`/`Infinity` as text, failed loads show an explicit error, and lost connections show "reconnecting".
+- Non-finite progress values no longer stop activity heartbeats; staleness is learned from the observed heartbeat rhythm instead of a fixed 5 s.
+- Small text, graph edges and status colours meet WCAG AA contrast.
+- Also includes the evidence-gated Opus Tech Lead and Sol orchestration, conversational planning UI, read-only preflight, and chat-directed project directory binding committed since v0.9.0.
+
 ## 0.9.0 — 2026-10-04
 
 - Integrates versioned updates (#2), opt-in Research OS (#3), and native-worker Mission Control (#4).

@@ -57,9 +57,12 @@ def test_bootstrap_and_arena_render_the_same_broadcast_shell(tmp_path: Path) -> 
         for marker in SHELL_MARKERS:
             assert marker in document
 
-    assert "--arena:oklch(0.17 0.018 75)" in ARENA_THEME_CSS
-    assert "--radiant:oklch(0.78 0.17 150)" in bootstrap
-    assert "--radiant:oklch(0.78 0.17 150)" in arena
+    # Frozen redesign contract: only the obsolete dark palette is replaced.
+    # Shared shell/projection invariants above are still required.
+    assert ARENA_THEME_ID == "sisyfus-research-workspace-v2"
+    assert "color-scheme: light" in ARENA_THEME_CSS
+    assert ARENA_THEME_CSS in bootstrap
+    assert ARENA_THEME_CSS in arena
 
 
 def test_bootstrap_is_an_arena_preflight_map_not_a_separate_splash(tmp_path: Path) -> None:

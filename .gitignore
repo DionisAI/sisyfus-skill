@@ -21,3 +21,8 @@ polymarket-lab/
 .sisyfus/
 .gstack/
 .playwright-mcp/
+
+# Local Tech Lead execution receipts and development progress are retained but
+# never shipped as source (native sessions may include user/project context).
+.codex-goal-report/
+artifacts/techlead/

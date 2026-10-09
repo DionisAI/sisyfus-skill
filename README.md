@@ -11,14 +11,17 @@ under; [`templates/`](templates/) are the TaskSpec and experiment scaffolds. The
 Python engine in `src/` is the skill's deterministic backend — agents drive it
 through the `sisyfus` CLI and never mutate research state directly.
 
-## Current release: v0.9.0
+## Current release: v0.9.1
 
-Sisyfus now includes the original research skill, versioned updates, opt-in
+Sisyfus includes the original research skill, versioned updates, opt-in
 Research OS and native-worker Mission Control in one package. The independent
 runtime owns execution and evidence; Codex and Claude are optional workers.
+v0.9.1 gives the research Observatory and setup page the same warm-paper look
+as the Tech Lead chat, docks live progress into the page header, and keeps
+pages readable when a run records NaN metrics.
 
 ```bash
-sisyfus update --version 0.9.0 --yes  # existing versioned installs
+sisyfus update --version 0.9.1 --yes  # existing versioned installs
 sisyfus workers doctor
 sisyfus workers demo --directory /tmp/sisyfus-native-demo-new
 sisyfus workers serve --directory /tmp/sisyfus-native-demo-new/control --open
@@ -26,7 +29,7 @@ sisyfus workers serve --directory /tmp/sisyfus-native-demo-new/control --open
 
 The demo is an offline protocol fixture, not a live-model run. Native workers
 are a trusted-local POSIX pilot. See [native worker guide](docs/native-workers.md),
-[Research OS guide](docs/research-os.md), and [release notes](RELEASE_NOTES_v0.9.0.md).
+[Research OS guide](docs/research-os.md), and [release notes](RELEASE_NOTES_v0.9.1.md).
 Installed releases now expose `workers`, `os`, `update` and legacy commands
 through the same CLI. An installation without `update` needs one installer refresh.
 
@@ -117,7 +120,7 @@ switch and the previous release remains available for rollback.
 ```bash
 sisyfus update --check
 sisyfus update --yes
-sisyfus update --version 0.9.0 --yes
+sisyfus update --version 0.9.1 --yes
 sisyfus update --channel beta --yes
 sisyfus update --channel edge --yes
 sisyfus update --status
@@ -168,7 +171,7 @@ or use a skills CLI: `npx skills add github:DionisAI/sisyfus-skill`.
 Engine (pure standard library, Python >= 3.11):
 
 ```bash
-python3 -m pip install "sisyfus @ git+https://github.com/DionisAI/sisyfus-skill@v0.9.0"
+python3 -m pip install "sisyfus @ git+https://github.com/DionisAI/sisyfus-skill@v0.9.1"
 ```
 
 `SKILL.md` performs this check itself, so an agent landing on a clean machine
@@ -251,8 +254,24 @@ the wheel payload and a test fails if the two ever drift.
 
 ## Test
 
+### Opt-in Tech Lead development extension
+
+This checkout adds `sisyfus techlead`: Opus architecture/diagnosis, scoped Codex
+implementation, independent Opus verification, an operational browser console,
+and evidence-gated versioned procedure trials. It leaves the installed release
+and the research observatory unchanged. This is a local development extension,
+not a new upstream release or a claim of improved model weights.
+
+- [中文启动与操作手册](docs/TECHLEAD-QUICKSTART.zh-CN.md)
+- [Runbook and limits](docs/TECHLEAD-RUNBOOK.md)
+- [Required acceptance and observed evidence](docs/TECHLEAD-ACCEPTANCE.md)
+
+For this checkout's retained validation, use `scripts/test_retained.py`; ordinary
+pytest temporary cleanup is incompatible with the active no-permanent-deletion
+policy.
+
 ```bash
-python3 -m pytest -q
+python3 scripts/test_retained.py -q
 ```
 
 ## License

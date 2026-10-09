@@ -7,8 +7,8 @@ import sisyfus
 
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = "0.9.0"
-TAG = "v0.9.0"
+VERSION = "0.9.1"
+TAG = "v0.9.1"
 
 
 def test_release_version_is_consistent() -> None:
@@ -24,7 +24,7 @@ def test_release_install_pins_and_notes_are_current() -> None:
         assert "@v0.7.4" not in text
 
     changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-    assert f"## {VERSION} — 2026-10-04" in changelog
+    assert f"## {VERSION} — 2026-10-09" in changelog
     assert "## Unreleased" not in changelog.split("## 0.7.4", 1)[0]
 
     notes = ROOT / f"RELEASE_NOTES_v{VERSION}.md"

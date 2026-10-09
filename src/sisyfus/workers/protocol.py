@@ -35,7 +35,8 @@ class Request:
     mode: str = "read-only"
     timeout: float = 300
     max_output_bytes: int = 8_000_000
-    max_turns: int = 8
+    # None omits a provider turn cap, not the per-call timeout/output bounds.
+    max_turns: int | None = 8
     session_id: str | None = None
 
     def __post_init__(self) -> None:
@@ -48,10 +49,13 @@ class Request:
         if not Path(self.cwd).is_absolute() or not Path(self.cwd).is_dir():
             raise ValueError("cwd must be an existing absolute directory")
         bounded(self.timeout, .05, 7200, "timeout")
-        if type(self.max_output_bytes) is not int or type(self.max_turns) is not int:
-            raise ValueError("output and turn limits must be integers")
+        if type(self.max_output_bytes) is not int:
+            raise ValueError("output limit must be an integer")
         bounded(self.max_output_bytes, 1024, 32_000_000, "max_output_bytes")
-        bounded(self.max_turns, 1, 100, "max_turns")
+        if self.max_turns is not None:
+            if type(self.max_turns) is not int:
+                raise ValueError("turn limit must be an integer or None")
+            bounded(self.max_turns, 1, 100, "max_turns")
 
 
 @dataclass(frozen=True)
@@ -64,6 +68,11 @@ class Receipt:
     output: str = ""
     usage: Mapping[str, Any] = field(default_factory=dict)
     error: str | None = None
+    # Appended to preserve the existing positional receipt constructor.
+    requested_model: str | None = None
+    # Native execution telemetry only; configuration echoes are not attestation.
+    # None also covers multiple reported execution models, not just missing data.
+    actual_model: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
