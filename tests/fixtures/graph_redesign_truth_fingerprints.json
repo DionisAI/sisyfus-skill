@@ -1,0 +1,49 @@
+{
+  "javascript": {
+    "deriveTimeline": "e9d65bb6cb2bc913ba07b2c92b5f9e1852fa43409a0b9e38e45a8fc424610501",
+    "frameAt": "dc6f9b12eae71a43465fa0fbc617e52d7846cdc0947246c150f16fb14c8d3cf7"
+  },
+  "python": {
+    "src/sisyfus/activity.py": {
+      "ActivityTracker": "a6e85dad53d2a429988d3e4c9853d0557a45a4b4d4bb55678f7a1c518aaafa39",
+      "_ActivityHandler": "e2fb9e0eaaee325cc3b559125b561d9835e20c15f5b56df3bcc79f09d0d05cd8",
+      "_activity_lock": "c752ac21b8a5116c4cdd77d865b9477c6eb4867e79f1068b03d70b3cc57d0cee",
+      "_append_activity_event": "746d9561d4de32eedb6ab6095a851e4ee1aa0af118e3f951edc28bbd75034cb0",
+      "_atomic_write_json": "4bd2d82d1b86516b408b9b816a0b464429f4b9e6751e2b9eb1aec2a72243b6e6",
+      "_default_activity": "1010499c30a36e455a7e11876514e049eb5dba74d2e978f89a8500ff7a46b455",
+      "_elapsed": "30d963ac1d4c531fe5015e3636aca10205b36d5e2431f95dedb234cbe099bcc2",
+      "_finite_or_none": "dbd2fffa55c2475e04224aa6d3e8f902bbb8379670906424b0024dce263a9827",
+      "_new_task_id": "4a886f7c927b64166b74845633e4fcf035d0b2db452f8459145632eae99e165e",
+      "_normalise_progress": "a9b7c3e60f4d73bfe1f73fb860e8429fe48435627294c4d2e427b9f3e46a41c1",
+      "_parse_ts": "ae6ba6807d15604e76d347ec1474ebe1ce6a91c0946e60a6744444f293283329",
+      "_process_lock": "5c3239348c6f16d0f5757239ab9f2e0267b9c6133fed339ef6ab71b1c26d6457",
+      "_read_json": "82e0ca6d19bd711fca7e7726c29d0365ce60b6aed359acf4803228b9fabc97b1",
+      "_read_progress_signal": "9106b84e12ccc384eac1a67039233f0309a30d1b27692ae8c6004e02fcde3869",
+      "_root": "0886393988a709f26ab4551b10ce0aaca1a59fce321a6ca0bc14925113980b02",
+      "activity_dir": "9ad659479a7b11a23ce5bdef23f1d2de309b955070aa4672d7ee6f89776bc76d",
+      "activity_events_path": "4d4fe6f50b2b77b79dd1ff2af11879f036afaa6cf65ff1fec6cb6530c6defdfb",
+      "activity_events_projection_path": "0a4a37c5326073dda61632680baf1de5949f4c92c8af93fa81c4794b9fa2c687",
+      "activity_index_path": "e77e5a1221d112b76e28a33cafc7d78448c14b9d2828b44b04a6b72c27d34e66",
+      "activity_state_path": "54f7f0f6fd28565b29786c243f2c8c17dfe84789b2c972f8f7349132eeff9291",
+      "bind_research": "884c0d080547ed75e928268f836597256d9c653e9945db471d49dd5f2ea6d18b",
+      "ensure_activity": "7db282fc01e290ae54963b3d878b46fad0aa3c4766d396c7d68325162950236a",
+      "progress_signal_path": "fec26c4101ad64f37cdf7365e0d0e5e461007a1466a0636e553500fb787ead38",
+      "read_activity": "de1387d943cd2d3fff9043dbd355c37b97ec36c74073aee0eda2a143cec8cf20",
+      "read_activity_events": "f7cd566ae77a174294ee1f4e96ac6913c21ed5aaf8f0d6c018941cb0bb9d620a",
+      "render_activity_monitor": "a4015f64c6edbf6daf42929fdc9b0b17b7d97344a3caf765892efafeb04114ed",
+      "serve_activity_monitor": "ea1d573c6d2014558bf97d249ae7f153fcf6ea6f9aeb52a631936d6089e08cd3",
+      "start_activity": "69876dda13015884123f97c87e45b020474c980bbb348d37a99586e679f95b4c",
+      "update_activity": "e728ff491193b6f9b36a2f6e3e6800b86e0b6773ba1d834f34c68624ea55cd26",
+      "utc_now": "c92533285d37adab0c2a0a9b0bb61acbeb24b60f5eebe9bacd491eab150add59",
+      "write_activity": "d089a1ebf97e6b85bf28b3b489167c8ffe32e4cb0533928918fc5ddb1e9c2d5e"
+    },
+    "src/sisyfus/research_v2/observatory.py": {
+      "_ObservatoryHandler": "7761adb777e070ae101c2a8d19bf4ae1174a5e726d63e8e0aa79dac07dbd7031",
+      "_finite": "4c5d3811ecf06c7e8018da14e2f9c40aa8d7cda809e85f2d742cc1fd680ddad6",
+      "_json_for_script": "d8ca89aa7b35c3ef0d0fcccd81aa8862b9fc288129a799f4fdbee5444a10eed9",
+      "_render_stable_entry": "5d734af3121fe10f7cecfb9e3cb06113253fa4e8a03a589dee41227e0e930b8e",
+      "render_observatory": "d676cc9e581eb0e53c7bb36c979bd87f560e8d3eab3e4433940ca985cb113914",
+      "serve_observatory": "23cf4fa27885e79e320b6812754c9845f78454f59558d6f914208259ec9b0b50"
+    }
+  }
+}

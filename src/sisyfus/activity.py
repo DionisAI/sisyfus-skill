@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import threading
 import time
@@ -135,11 +136,16 @@ def _new_task_id(title: str, objective: str) -> str:
     return f"task-{digest}"
 
 
+def _finite_or_none(value: Any) -> Any:
+    # activity.json is strict JSON; a NaN progress value must not stop heartbeats.
+    return None if isinstance(value, float) and not math.isfinite(value) else value
+
+
 def _normalise_progress(value: Mapping[str, Any] | None) -> dict[str, Any]:
     raw = dict(value or {})
-    current = raw.get("current")
-    total = raw.get("total")
-    percent = raw.get("percent")
+    current = _finite_or_none(raw.get("current"))
+    total = _finite_or_none(raw.get("total"))
+    percent = _finite_or_none(raw.get("percent"))
     if percent is None and isinstance(current, (int, float)) and isinstance(total, (int, float)) and total:
         percent = (float(current) / float(total)) * 100.0
     if isinstance(percent, (int, float)):
@@ -489,23 +495,29 @@ class ActivityTracker:
 
     def _heartbeat_loop(self) -> None:
         while not self._stop.wait(self.heartbeat_interval):
-            progress, message, detail = _read_progress_signal(self.root)
-            current = read_activity(self.root)
-            write_activity(
-                self.root,
-                research_id=current.get("research_id") or self.research_id,
-                phase=str(current.get("phase") or self.phase),
-                status="RUNNING",
-                operation=str(current.get("operation") or self.operation),
-                message=message or str(current.get("message") or self.message),
-                detail=detail or str(current.get("detail") or self.detail),
-                progress=progress,
-                actor=str(current.get("actor") or self.actor),
-                metadata={**dict(self.metadata), **dict(current.get("metadata") or {})},
-                error=None,
-                heartbeat=True,
-                record_event=bool(progress or message or detail),
-            )
+            try:
+                self._heartbeat_once()
+            except Exception:  # one bad tick must not end the heartbeat; the next tick retries
+                continue
+
+    def _heartbeat_once(self) -> None:
+        progress, message, detail = _read_progress_signal(self.root)
+        current = read_activity(self.root)
+        write_activity(
+            self.root,
+            research_id=current.get("research_id") or self.research_id,
+            phase=str(current.get("phase") or self.phase),
+            status="RUNNING",
+            operation=str(current.get("operation") or self.operation),
+            message=message or str(current.get("message") or self.message),
+            detail=detail or str(current.get("detail") or self.detail),
+            progress=progress,
+            actor=str(current.get("actor") or self.actor),
+            metadata={**dict(self.metadata), **dict(current.get("metadata") or {})},
+            error=None,
+            heartbeat=True,
+            record_event=bool(progress or message or detail),
+        )
 
     def update(
         self,
@@ -611,6 +623,261 @@ class ActivityTracker:
         return False
 
 
+# Plain-language labels shared by the live activity overlay and the bootstrap
+# page. Raw phase/status enums stay in technical details; people read these.
+_ACTIVITY_LABELS_JS = r"""
+const SF_LABELS = {
+ zh: {
+  phase: {IDLE:'空闲', UNKNOWN:'状态未知', INTAKE:'理解任务', CLARIFYING:'澄清需求', INSPECTING:'检查工程',
+   SOURCE_QUALIFICATION:'核验数据源', DISCOVERING:'查找资料', INITIALIZING:'初始化研究', PLANNING:'规划实验',
+   AUTONOMY_PLANNING:'规划实验', VERIFIER_DESIGN:'设计验证', VERIFYING:'判定结果', AUTONOMY_VERIFYING:'判定结果',
+   READY:'准备就绪', AUTONOMY_READY:'等待下一轮', EXECUTING:'执行实验', AUTONOMY_EXECUTING:'执行实验', AUTONOMOUS:'自主运行', COLLECTING:'收集结果',
+   FINALIZING:'整理结论', COMPLETED:'已完成', STOPPED:'已停止', ERROR:'出错'},
+  status: {RUNNING:'运行中', NEEDS_USER:'等你确认', ERROR:'出错了', ATTENTION:'需要关注', COMPLETED:'已完成',
+   READY:'已就绪', IDLE:'空闲', STALE:'久未更新', RECONNECTING:'连接中断', BETWEEN:'等待下一步', OTHER:'另一项研究运行中',
+   WAITING:'等待中', FAILED:'失败', EXHAUSTED:'预算用尽', BLOCKED:'受阻', CANCELLED:'已取消'},
+  elapsed:'已运行', updated:'上次更新', tech:'技术细节', other_note:'这不是本页的研究。', details:'运行详情',
+  operation:'操作', run:'研究', raw_phase:'阶段', raw_status:'状态', detail:'说明', heartbeat:'心跳',
+  ago: s => s < 60 ? `${Math.max(1, Math.round(s))} 秒前` : s < 3600 ? `${Math.round(s / 60)} 分钟前` : `${Math.round(s / 3600)} 小时前`
+ },
+ en: {
+  phase: {IDLE:'Idle', UNKNOWN:'Unknown', INTAKE:'Understanding the task', CLARIFYING:'Clarifying', INSPECTING:'Inspecting the project',
+   SOURCE_QUALIFICATION:'Checking data sources', DISCOVERING:'Gathering material', INITIALIZING:'Setting up the study', PLANNING:'Planning experiments',
+   AUTONOMY_PLANNING:'Planning experiments', VERIFIER_DESIGN:'Designing verification', VERIFYING:'Judging results', AUTONOMY_VERIFYING:'Judging results',
+   READY:'Ready', AUTONOMY_READY:'Ready for next round', EXECUTING:'Experiment', AUTONOMY_EXECUTING:'Experiment', AUTONOMOUS:'Autonomous run', COLLECTING:'Collecting results',
+   FINALIZING:'Writing conclusions', COMPLETED:'Completed', STOPPED:'Stopped', ERROR:'Error'},
+  status: {RUNNING:'Running', NEEDS_USER:'Needs you', ERROR:'Error', ATTENTION:'Needs attention', COMPLETED:'Completed',
+   READY:'Ready', IDLE:'Idle', STALE:'No recent update', RECONNECTING:'Reconnecting', BETWEEN:'Waiting for next step', OTHER:'Another study is running',
+   WAITING:'Waiting', FAILED:'Failed', EXHAUSTED:'Budget exhausted', BLOCKED:'Blocked', CANCELLED:'Cancelled'},
+  elapsed:'Running for', updated:'Last update', tech:'Technical details', other_note:'This is not the study on this page.', details:'Run details',
+  operation:'Operation', run:'Run', raw_phase:'Phase', raw_status:'Status', detail:'Detail', heartbeat:'Heartbeat',
+  ago: s => s < 60 ? `${Math.max(1, Math.round(s))}s ago` : s < 3600 ? `${Math.round(s / 60)} min ago` : `${Math.round(s / 3600)} h ago`
+ }
+};
+function sfLang() { return String(document.documentElement.lang || '').toLowerCase().startsWith('en') ? 'en' : 'zh'; }
+function sfL() { return SF_LABELS[sfLang()]; }
+function sfPhase(p) { p = String(p || 'IDLE').toUpperCase(); return sfL().phase[p] || p.toLowerCase().replace(/_/g, ' '); }
+function sfStatus(s) { s = String(s || 'IDLE').toUpperCase(); return sfL().status[s] || s.toLowerCase().replace(/_/g, ' '); }
+function sfClock(seconds) {
+  seconds = Math.max(0, Math.floor(Number(seconds) || 0));
+  const h = Math.floor(seconds / 3600), m = Math.floor((seconds % 3600) / 60), s = seconds % 60, two = n => String(n).padStart(2, '0');
+  return h ? `${two(h)}:${two(m)}:${two(s)}` : `${two(m)}:${two(s)}`;
+}
+function sfAge(ts) { const t = Date.parse(ts || ''); return Number.isFinite(t) ? Math.max(0, (Date.now() - t) / 1000) : null; }
+/* "34/40 folds · 85%" from the progress protocol; null when nothing is measured. */
+function sfProgress(p) {
+  p = p || {};
+  const cur = Number(p.current), tot = Number(p.total), raw = Number(p.percent);
+  const hasCount = p.total != null && Number.isFinite(tot) && tot > 0 && Number.isFinite(cur);
+  const pct = p.percent != null && Number.isFinite(raw) ? raw : hasCount ? cur / tot * 100 : null;
+  if (pct == null) return null;
+  const bounded = Math.max(0, Math.min(100, pct));
+  const count = hasCount ? `${cur}/${tot}${p.label ? ' ' + p.label : ''}` : '';
+  return { pct: bounded, text: count ? `${count} · ${Math.round(bounded)}%` : `${Math.round(bounded)}%`, count };
+}
+/* Heartbeat cadence is learned, not assumed. One-shot RUNNING records (for
+   example an external command) never beat, so they read "last update N ago"
+   and only read "no recent update" after an hour without any change. */
+function sfBeats() {
+  let key = null, last = null, beats = 0, gap = 1;
+  return {
+    observe(A) {
+      const k = [A.task_id, A.research_id, A.operation, A.operation_started_at].join('|');
+      if (k !== key) { key = k; last = A.heartbeat_at; beats = 0; gap = 1; return; }
+      if (A.heartbeat_at && A.heartbeat_at !== last) {
+        const dt = (Date.parse(A.heartbeat_at) - Date.parse(last)) / 1000;
+        if (Number.isFinite(dt) && dt > 0) gap = beats ? Math.min(gap, dt) : Math.min(120, dt);
+        last = A.heartbeat_at; beats += 1;
+      }
+    },
+    stale(A) {
+      const age = sfAge(A.heartbeat_at);
+      const limit = beats >= 2 ? Math.max(5, gap * 4) : 3600;  /* never-beating records: 1 h ceiling */
+      return String(A.status || '').toUpperCase() === 'RUNNING' && age != null && age > limit;
+    }
+  };
+}
+"""
+
+# Live activity, docked into the shared top bar next to the status chip. It is
+# scoped to the page's own run: another run's activity in the same project is
+# shown as such, never as this page's progress. Technical fields live in a
+# closed disclosure; colours come from the theme's status tones.
+_OVERLAY_TEMPLATE = r"""
+<style id="sf-activity-style">
+#sf-live-hud { position:relative; flex:0 1 auto; min-width:0; font-family:var(--font-sans); }
+#sf-live-hud:not(.sf-docked) { position:fixed; right:16px; bottom:16px; z-index:50; }
+#sf-live-hud .sf-toggle { --tone:var(--muted); --tone-bg:var(--surface); --tone-dot:var(--open);
+  display:inline-flex; align-items:center; gap:7px; max-width:min(320px,62vw); height:30px; padding:0 10px 0 12px;
+  border:1px solid var(--line); border-radius:999px; background:var(--tone-bg); color:var(--tone);
+  font-size:12.5px; line-height:1; white-space:nowrap; }
+#sf-live-hud .sf-toggle:hover { border-color:var(--line-strong); }
+#sf-live-hud .sf-dot { width:7px; height:7px; border-radius:50%; flex:0 0 auto; background:var(--tone-dot); }
+#sf-live-hud .sf-label { min-width:0; overflow:hidden; text-overflow:ellipsis; }
+#sf-live-hud .sf-chev { flex:0 0 auto; font-size:10px; color:var(--faint); transition:transform .2s var(--ease-out); }
+#sf-live-hud:not(.sf-collapsed) .sf-chev { transform:rotate(180deg); }
+#sf-live-hud.sf-tone-run .sf-toggle { --tone:var(--accent-ink); --tone-bg:var(--accent-soft); --tone-dot:var(--accent); border-color:var(--accent-line); }
+#sf-live-hud.sf-tone-warn .sf-toggle { --tone:var(--warn); --tone-bg:var(--warn-soft); --tone-dot:var(--warn); border-color:transparent; }
+#sf-live-hud.sf-tone-bad .sf-toggle { --tone:var(--bad); --tone-bg:var(--bad-soft); --tone-dot:var(--bad); border-color:transparent; }
+#sf-live-hud.sf-tone-muted .sf-toggle { --tone:var(--muted); --tone-bg:var(--surface); --tone-dot:var(--void); }
+#sf-live-hud .sf-activity-body { position:absolute; top:calc(100% + 8px); right:0; z-index:60;
+  width:min(340px,calc(100vw - 32px)); padding:12px 14px; background:var(--surface); color:var(--ink-2);
+  border:1px solid var(--line); border-radius:var(--radius); box-shadow:var(--shadow-soft);
+  font-size:13px; line-height:1.6; text-align:left; white-space:normal; }
+#sf-live-hud.sf-collapsed .sf-activity-body { display:none; }
+#sf-live-hud .sf-task { color:var(--ink); font-weight:600; overflow-wrap:anywhere;
+  display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }
+#sf-live-hud .sf-message { margin-top:4px; color:var(--ink-2); overflow-wrap:anywhere; }
+#sf-live-hud .sf-message:empty,#sf-live-hud .sf-error:empty,#sf-live-hud .sf-count:empty { display:none; }
+#sf-live-hud .sf-progress { height:3px; margin-top:10px; border-radius:2px; background:var(--sunk); overflow:hidden; }
+#sf-live-hud .sf-progress i { display:block; height:100%; width:0; background:var(--accent); transition:width .35s var(--ease-out); }
+#sf-live-hud .sf-count { margin-top:4px; font-size:12px; color:var(--muted); font-variant-numeric:tabular-nums; }
+#sf-live-hud .sf-meta { margin-top:6px; font-size:12px; color:var(--muted); font-variant-numeric:tabular-nums; }
+#sf-live-hud .sf-error { margin-top:8px; padding:6px 8px; border-radius:6px; background:var(--bad-soft); color:var(--bad);
+  font-size:12.5px; overflow-wrap:anywhere; }
+#sf-live-hud .sf-tech { margin-top:10px; border-top:1px solid var(--line); padding-top:6px; font-size:12px; color:var(--muted); }
+#sf-live-hud .sf-tech summary { cursor:pointer; color:var(--muted); }
+#sf-live-hud .sf-tech dl { display:grid; grid-template-columns:auto 1fr; gap:2px 10px; margin:6px 0 0; }
+#sf-live-hud .sf-tech dt { color:var(--muted); }
+#sf-live-hud .sf-tech dd { margin:0; font-family:var(--font-mono); font-size:11.5px; color:var(--ink-2); overflow-wrap:anywhere; }
+#sf-live-hud .sf-sr { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); white-space:nowrap; }
+@media (max-width:540px) {
+  .topbar .top-actions { flex-wrap:wrap; }
+  #sf-live-hud .sf-toggle { max-width:calc(100vw - 32px); }
+  #sf-live-hud .sf-activity-body { right:auto; left:0; }
+}
+@media (prefers-reduced-motion:reduce) { #sf-live-hud .sf-progress i,#sf-live-hud .sf-chev { transition:none; } }
+</style>
+<aside id="sf-live-hud" class="sf-collapsed sf-tone-muted" data-status="IDLE" data-sisyfus-panel="LIVE MISSION" aria-label="运行状态 / Activity" hidden>
+  <button class="sf-toggle" type="button" aria-expanded="false" aria-controls="sf-act-body"><span class="sf-dot" aria-hidden="true"></span><span class="sf-label" id="sf-act-status"></span><span class="sf-chev" aria-hidden="true">▾</span></button>
+  <span class="sf-sr" id="sf-act-announce" aria-live="polite"></span>
+  <div class="sf-activity-body" id="sf-act-body" role="group">
+    <div class="sf-task" id="sf-act-title"></div>
+    <div class="sf-message" id="sf-act-message"></div>
+    <div class="sf-progress" id="sf-act-bar" hidden><i id="sf-act-progress"></i></div>
+    <div class="sf-count" id="sf-act-count"></div>
+    <div class="sf-meta" id="sf-act-meta"></div>
+    <div class="sf-error" id="sf-act-error"></div>
+    <details class="sf-tech"><summary id="sf-act-tech-label"></summary><dl id="sf-act-tech"></dl></details>
+  </div>
+</aside>
+<script id="sf-activity-script">
+(() => {
+  let A = __SF_ACTIVITY__;
+  let misses = 0;
+  const $ = id => document.getElementById(id);
+  __SF_LABELS__
+  const beats = sfBeats();
+  const live = location.protocol === 'http:' || location.protocol === 'https:';
+  const hud = $('sf-live-hud'), toggle = hud && hud.querySelector('.sf-toggle');
+  if (!hud || !toggle) return;
+  const slot = document.querySelector('.topbar .top-actions');
+  if (slot) { slot.insertBefore(hud, slot.firstChild); hud.classList.add('sf-docked'); }
+  const put = (id, value) => { const el = $(id); value = String(value ?? ''); if (el && el.textContent !== value) el.textContent = value; };
+  /* The page's own run, read from the Observatory's globals when they exist.
+     Guarded: before boot or after a failed boot they may be unavailable. */
+  function pageRun() {
+    try {
+      if (typeof S === 'object' && S && S.research_id) {
+        let final = false;
+        try { final = typeof isFinalStatus === 'function' && isFinalStatus(String(S.run_status || '')); } catch (_) {}
+        return { id: String(S.research_id), final };
+      }
+    } catch (_) {}
+    const data = document.getElementById('sisyfus-data');
+    const match = data && /"research_id":\s*"([^"]+)"/.exec(data.textContent || '');
+    return match ? { id: match[1], final: false } : null;
+  }
+  /* What the chip should say, or null to stay out of the way. */
+  function view() {
+    if (!live) return null;
+    const status = String(A.status || 'IDLE').toUpperCase(), page = pageRun();
+    /* start_activity keeps the previous research_id, so a new study's intake
+       record can carry this page's id; bootstrap records are never this run's. */
+    const mine = !page || (A.research_id === page.id && (A.metadata || {}).monitor_mode !== 'bootstrap');
+    const running = status === 'RUNNING';
+    if (!mine) return running && (sfAge(A.heartbeat_at) ?? 1e9) < 3600 ? { key:'OTHER', tone:'muted', other:true } : null;
+    if (status === 'ERROR' || status === 'ATTENTION') return { key:status, tone:'bad' };
+    if (page && page.final) return null;  /* the status chip already says the study ended */
+    if (misses >= 3) return page ? null : { key:'RECONNECTING', tone:'warn' };  /* the page's status chip reports connectivity */
+    if (running) return beats.stale(A) ? { key:'STALE', tone:'warn' } : { key:'RUNNING', tone:'run' };
+    if (status === 'NEEDS_USER') return { key:'NEEDS_USER', tone:'warn' };
+    if (status === 'FAILED') return { key:status, tone:'bad' };
+    if (['EXHAUSTED', 'BLOCKED', 'CANCELLED'].includes(status)) return { key:status, tone:'warn' };
+    return page ? { key:'BETWEEN', tone:'muted' } : { key:status, tone:'muted' };
+  }
+  let announced = '';
+  function render() {
+    const v = view();
+    hud.hidden = !v;
+    if (!v) return;
+    const L = sfL(), p = sfProgress(A.progress);
+    const label = v.key === 'RUNNING' ? [sfStatus('RUNNING'), sfPhase(A.phase), p && p.count].filter(Boolean).join(' · ') : sfStatus(v.key);
+    hud.dataset.status = String(A.status || 'IDLE').toUpperCase();
+    for (const tone of ['run', 'warn', 'bad', 'muted']) hud.classList.toggle('sf-tone-' + tone, v.tone === tone);
+    put('sf-act-status', label);
+    if (announced !== v.key) { announced = v.key; put('sf-act-announce', sfStatus(v.key)); }
+    toggle.setAttribute('aria-label', `${label} · ${L.details}`);
+    put('sf-act-title', v.other ? (A.title || sfStatus('OTHER')) : sfPhase(A.phase));
+    put('sf-act-message', v.other ? L.other_note : (A.message || ''));
+    $('sf-act-bar').hidden = v.other || !p;
+    $('sf-act-progress').style.width = p ? `${p.pct}%` : '0%';
+    put('sf-act-count', v.other || !p ? '' : p.text);
+    const started = Date.parse(A.operation_started_at || '');
+    const elapsed = v.key === 'RUNNING' && Number.isFinite(started) ? (Date.now() - started) / 1000 : Number(A.elapsed_seconds || 0);
+    const age = sfAge(A.heartbeat_at);
+    put('sf-act-meta', [`${L.elapsed} ${sfClock(elapsed)}`, age == null ? '' : `${L.updated} ${L.ago(age)}`].filter(Boolean).join(' · '));
+    put('sf-act-error', v.other ? '' : (A.error || ''));
+    put('sf-act-tech-label', L.tech);
+    const rows = [[L.raw_status, A.status], [L.raw_phase, A.phase], [L.operation, A.operation], [L.run, A.research_id || A.task_id],
+      [L.detail, A.detail], [L.heartbeat, A.heartbeat_at]].filter(r => r[1]);
+    const sig = rows.map(r => r.join('=')).join('\n');
+    const tech = $('sf-act-tech');
+    if (tech.dataset.sig !== sig) {
+      tech.dataset.sig = sig;
+      tech.replaceChildren(...rows.flatMap(([k, val]) => {
+        const dt = document.createElement('dt'), dd = document.createElement('dd');
+        dt.textContent = k; dd.textContent = String(val); return [dt, dd];
+      }));
+    }
+  }
+  async function pollActivity() {
+    if (document.hidden) return;
+    try {
+      const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 5000);
+      try {
+        const response = await fetch(`activity.json?ts=${Date.now()}`, {cache:'no-store', signal:ctl.signal});
+        if (!response.ok) throw new Error(String(response.status));
+        A = await response.json();
+      } finally { clearTimeout(timer); }
+      misses = 0; beats.observe(A); render();
+    } catch (_) { misses += 1; render(); }
+  }
+  function setOpen(open) {
+    hud.classList.toggle('sf-collapsed', !open);
+    toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
+  toggle.addEventListener('click', () => setOpen(hud.classList.contains('sf-collapsed')));
+  document.addEventListener('keydown', event => {
+    if (event.key !== 'Escape' || hud.classList.contains('sf-collapsed')) return;
+    const inside = hud.contains(document.activeElement);
+    setOpen(false);
+    if (inside) { toggle.focus(); event.stopPropagation(); }  /* don't also close the inspector */
+  });
+  hud.addEventListener('focusout', event => { if (event.relatedTarget && !hud.contains(event.relatedTarget)) setOpen(false); });
+  document.addEventListener('click', event => { if (!hud.contains(event.target)) setOpen(false); });
+  beats.observe(A);
+  render();
+  setInterval(render, 1000);
+  if (live) {
+    pollActivity(); setInterval(pollActivity, 700);
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) pollActivity(); });
+  }
+})();
+</script>
+""".replace("__SF_LABELS__", _ACTIVITY_LABELS_JS.strip())
+
+
 def activity_overlay_html(initial: Mapping[str, Any]) -> str:
     payload = json.dumps(
         dict(initial),
@@ -618,103 +885,7 @@ def activity_overlay_html(initial: Mapping[str, Any]) -> str:
         sort_keys=True,
         default=str,
     ).replace("</", "<\\/")
-    return f"""
-<style id="sf-activity-style">
-#sf-live-hud {{
-  position:fixed; left:14px; bottom:14px; z-index:2147483000;
-  width:min(430px,calc(100vw - 28px)); color:var(--ink,#f4f0e6);
-  background:linear-gradient(180deg,var(--panel,rgba(35,31,26,.97)),var(--arena-deep,rgba(19,18,17,.97)));
-  border:1px solid var(--line,rgba(224,177,75,.45)); border-top:3px solid var(--gold,#dcae4b);
-  box-shadow:var(--shadow-deep,0 18px 60px rgba(0,0,0,.55)); font-family:var(--font-mono,ui-monospace,Menlo,Consolas,monospace);
-  backdrop-filter:blur(14px); transition:opacity .2s,transform .2s;
-}}
-#sf-live-hud.sf-collapsed .sf-activity-body {{ display:none; }}
-#sf-live-hud .sf-activity-head {{ display:flex; align-items:center; gap:9px; padding:8px 10px;
-  border-bottom:1px solid var(--line,rgba(255,255,255,.09)); background:linear-gradient(180deg,oklch(0.24 0.025 80),oklch(0.18 0.02 78)); font-size:10px; letter-spacing:.14em; font-weight:900; }}
-#sf-live-hud .sf-dot {{ width:9px;height:9px;border-radius:50%;background:#67d58c;
-  box-shadow:0 0 12px #67d58c;animation:sf-pulse 1.5s ease-in-out infinite; }}
-#sf-live-hud[data-status="ERROR"] .sf-dot,#sf-live-hud[data-status="ATTENTION"] .sf-dot {{ background:#ec6a5f;box-shadow:0 0 12px #ec6a5f; }}
-#sf-live-hud[data-status="COMPLETED"] .sf-dot,#sf-live-hud[data-status="READY"] .sf-dot,#sf-live-hud[data-status="NEEDS_USER"] .sf-dot {{ background:#e0b14b;box-shadow:0 0 12px #e0b14b;animation:none; }}
-#sf-live-hud.sf-stale .sf-dot {{ background:#8e8797;box-shadow:none;animation:none; }}
-@keyframes sf-pulse {{50%{{opacity:.35}}}}
-#sf-live-hud .sf-toggle {{ margin-left:auto;border:0;background:transparent;color:#aaa;cursor:pointer;font:inherit; }}
-#sf-live-hud .sf-activity-body {{ padding:10px 12px 11px; }}
-#sf-live-hud .sf-task {{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
-  font-weight:800;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis; }}
-#sf-live-hud .sf-phase-row {{ display:flex;align-items:baseline;gap:8px;margin-top:7px; }}
-#sf-live-hud .sf-phase {{ color:var(--gold,#e0b14b);font-weight:900;font-size:13px;letter-spacing:.08em; }}
-#sf-live-hud .sf-status {{ margin-left:auto;color:#a9a39a;font-size:10px; }}
-#sf-live-hud .sf-operation {{ color:#ddd4c5;font-size:11px;margin-top:5px; }}
-#sf-live-hud .sf-message {{ color:#aaa39a;font:11px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin-top:4px; }}
-#sf-live-hud .sf-progress {{ height:8px;background:oklch(0.13 0.01 75);border:1px solid var(--line,rgba(255,255,255,.1));margin-top:9px;overflow:hidden; }}
-#sf-live-hud .sf-progress i {{ display:block;height:100%;width:0;background:linear-gradient(90deg,var(--radiant,#67d58c),var(--gold,#e0b14b));transition:width .35s; }}
-#sf-live-hud .sf-meta {{ display:flex;gap:10px;flex-wrap:wrap;color:#817b73;font-size:9px;margin-top:7px; }}
-#sf-live-hud .sf-detail {{ color:#77716a;font-size:9px;margin-top:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis; }}
-@media (max-width:700px) {{ #sf-live-hud {{ left:8px;bottom:8px;width:calc(100vw - 16px); }} }}
-</style>
-<aside id="sf-live-hud" data-status="IDLE" aria-live="polite">
-  <div class="sf-activity-head"><span class="sf-dot"></span><span>LIVE MISSION</span><button class="sf-toggle" type="button">−</button></div>
-  <div class="sf-activity-body">
-    <div class="sf-task" id="sf-act-title">Awaiting mission</div>
-    <div class="sf-phase-row"><span class="sf-phase" id="sf-act-phase">IDLE</span><span class="sf-status" id="sf-act-status">IDLE</span></div>
-    <div class="sf-operation" id="sf-act-operation">monitor.bootstrap</div>
-    <div class="sf-message" id="sf-act-message">Mission monitor is online.</div>
-    <div class="sf-progress"><i id="sf-act-progress"></i></div>
-    <div class="sf-meta"><span id="sf-act-elapsed">00:00</span><span id="sf-act-heartbeat">heartbeat —</span><span id="sf-act-research"></span></div>
-    <div class="sf-detail" id="sf-act-detail"></div>
-  </div>
-</aside>
-<script id="sf-activity-script">
-(() => {{
-  let A = {payload};
-  let misses = 0;
-  const $ = id => document.getElementById(id);
-  const fmt = seconds => {{
-    seconds = Math.max(0, Math.floor(Number(seconds) || 0));
-    const h = Math.floor(seconds / 3600), m = Math.floor((seconds % 3600) / 60), s = seconds % 60;
-    return h ? `${{String(h).padStart(2,'0')}}:${{String(m).padStart(2,'0')}}:${{String(s).padStart(2,'0')}}`
-             : `${{String(m).padStart(2,'0')}}:${{String(s).padStart(2,'0')}}`;
-  }};
-  const age = ts => ts ? Math.max(0,(Date.now() - Date.parse(ts))/1000) : 9999;
-  function render() {{
-    const hud = $('sf-live-hud'); if (!hud) return;
-    const status = String(A.status || 'IDLE').toUpperCase();
-    hud.dataset.status = status;
-    const stale = status === 'RUNNING' && age(A.heartbeat_at) > 5;
-    hud.classList.toggle('sf-stale', stale || misses >= 3);
-    $('sf-act-title').textContent = A.title || 'Sisyfus mission';
-    $('sf-act-phase').textContent = String(A.phase || 'IDLE').toUpperCase();
-    $('sf-act-status').textContent = stale ? 'STALE' : (misses >= 3 ? 'RECONNECTING' : status);
-    $('sf-act-operation').textContent = A.operation || '—';
-    $('sf-act-message').textContent = A.message || '';
-    $('sf-act-detail').textContent = A.error || A.detail || '';
-    const p = A.progress || {{}};
-    $('sf-act-progress').style.width = p.percent == null ? (status === 'RUNNING' ? '12%' : '0%') : `${{Math.max(0,Math.min(100,Number(p.percent)))}}%`;
-    const base = A.operation_started_at ? Math.max(0,(Date.now()-Date.parse(A.operation_started_at))/1000) : Number(A.elapsed_seconds || 0);
-    $('sf-act-elapsed').textContent = `elapsed ${{fmt(base)}}`;
-    $('sf-act-heartbeat').textContent = `heartbeat ${{Math.round(age(A.heartbeat_at))}}s`;
-    $('sf-act-research').textContent = A.research_id ? `run ${{A.research_id}}` : '';
-  }}
-  async function pollActivity() {{
-    try {{
-      const response = await fetch(`activity.json?ts=${{Date.now()}}`, {{cache:'no-store'}});
-      if (!response.ok) throw new Error(String(response.status));
-      A = await response.json(); misses = 0; render();
-    }} catch (_) {{ misses += 1; render(); }}
-  }}
-  const toggle = document.querySelector('#sf-live-hud .sf-toggle');
-  if (toggle) toggle.addEventListener('click', () => {{
-    const hud = $('sf-live-hud'); hud.classList.toggle('sf-collapsed');
-    toggle.textContent = hud.classList.contains('sf-collapsed') ? '+' : '−';
-  }});
-  render();
-  setInterval(render, 500);
-  if (location.protocol === 'http:' || location.protocol === 'https:') {{
-    pollActivity(); setInterval(pollActivity, 700);
-  }}
-}})();
-</script>
-"""
+    return _OVERLAY_TEMPLATE.replace("__SF_ACTIVITY__", payload)
 
 
 _BOOTSTRAP_TEMPLATE = r"""<!doctype html>
@@ -722,230 +893,152 @@ _BOOTSTRAP_TEMPLATE = r"""<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Sisyfus Research Observatory · Arena</title>
+<meta name="sisyfus-legacy-title" content="SISYFUS · MISSION CONTROL" />
+<meta name="sisyfus-legacy-shell" content="Sisyfus Research Observatory · Arena" />
+<title>Sisyfus 研究工作台</title>
 <style>
 __SISYFUS_THEME__
 
-/* The bootstrap page intentionally uses the exact broadcast shell of the
-   post-TaskSpec Observatory. Only the data model changes during handoff. */
-.topbar { display:flex; align-items:stretch; gap:0; border-bottom:2px solid var(--line);
-  background:linear-gradient(180deg,oklch(0.24 0.025 80),oklch(0.18 0.02 78)); }
-.scorebox { display:flex; align-items:center; gap:14px; padding:10px 22px; }
-.score { font-size:44px; font-weight:900; line-height:1; letter-spacing:-.03em;
-  font-variant-numeric:tabular-nums; }
-.score.radiant { color:var(--radiant); } .score.amber { color:var(--amber); }
-.score-label { font-size:10px; color:var(--muted); }
-.vs { align-self:center; font-size:13px; color:var(--muted); font-weight:900; padding:0 4px; }
-.matchinfo { flex:1; min-width:0; padding:9px 18px; border-left:1px solid var(--line); }
-.matchinfo h1 { margin:0; font-size:14px; font-weight:700; line-height:1.35; white-space:nowrap;
-  overflow:hidden; text-overflow:ellipsis; }
-.matchinfo .sub { font-size:11px; color:var(--muted); margin-top:4px; display:flex;
-  gap:14px; flex-wrap:wrap; }
-.bars { width:280px; padding:10px 18px; border-left:1px solid var(--line);
-  display:grid; gap:7px; align-content:center; }
-.bar { position:relative; height:14px; background:oklch(0.13 0.01 75);
-  border:1px solid var(--line); overflow:hidden; }
-.bar > i { position:absolute; inset:0; transform-origin:left;
-  transition:transform .5s var(--ease-out); }
-.bar.hp > i { background:linear-gradient(90deg,var(--hp),oklch(0.72 0.17 55)); }
-.bar.mana > i { background:var(--mana); }
-.bar b { position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
-  font-size:9px; letter-spacing:.12em; color:oklch(0.98 0 0 / .92);
-  mix-blend-mode:plus-lighter; }
-.livechip { display:flex; align-items:center; gap:8px; padding:0 20px;
-  border-left:1px solid var(--line); font-size:11px; font-weight:900;
-  letter-spacing:.14em; white-space:nowrap; }
-.livechip .dot { width:9px; height:9px; border-radius:50%; background:var(--radiant);
-  box-shadow:0 0 10px var(--radiant); animation:pulse 1.8s ease-in-out infinite; }
-.livechip.waiting .dot { background:var(--amber); box-shadow:0 0 10px var(--amber); animation:none; }
-.livechip.stale .dot { background:var(--ghost); box-shadow:none; animation:none; }
-.livechip.ended .dot { background:var(--muted); box-shadow:none; animation:none; }
-@keyframes pulse { 50% { opacity:.4 } }
-.lang-btn { font:inherit; font-weight:900; font-size:11px; letter-spacing:.1em;
-  border:none; border-left:1px solid var(--line); background:transparent;
-  color:var(--muted); padding:0 18px; cursor:pointer; }
-.lang-btn:hover { color:var(--gold); }
+/* The bootstrap page uses the same light workspace shell as the post-TaskSpec
+   Observatory (topbar/stage/deck/caster/tabs come from the shared theme). Only
+   the data model changes during handoff: six preparation steps instead of the
+   Claim graph. Everything below is page-local layout for those steps. */
+.graph-head { display:flex; align-items:flex-end; justify-content:space-between; flex-wrap:wrap;
+  gap:8px 16px; padding:16px 24px 8px; }
+.graph-title { margin:0; font-family:var(--font-serif); font-size:16px; font-weight:500; color:var(--ink); }
+.graph-sub { margin-top:2px; font-size:12.5px; color:var(--muted); }
+.preflight-map { flex:1 1 auto; min-height:0; overflow-x:auto; overscroll-behavior-x:contain; padding:0 12px; }
+#arena { display:block; width:100%; min-width:680px; height:auto; max-height:calc(var(--stage-height) - 190px);
+  background:transparent; }
+.edge { stroke:var(--edge); stroke-width:2; fill:none; marker-end:url(#preArrow); }
+.edge.done { stroke:var(--ok); }
+.edge.hot { stroke:var(--accent); stroke-dasharray:6 5; }
+#preArrow path { fill:var(--edge-strong); }
+.gate-node .halo { fill:none; stroke:none; }
+.gate-node .core { fill:var(--surface); stroke:var(--line-strong); stroke-width:1.5; }
+.gate-node .gate-index { fill:var(--muted); font:600 13px var(--font-mono); }
+.gate-node .gate-title { fill:var(--ink); font:600 18px var(--font-sans); text-anchor:middle; }
+.gate-node .gate-state { fill:var(--muted); font:600 13px var(--font-sans); text-anchor:middle; }
+.gate-node.done .core { fill:var(--ok-soft); stroke:var(--ok); }
+.gate-node.done .gate-state { fill:var(--ok); }
+.gate-node.active .core { fill:var(--accent-soft); stroke:var(--accent); stroke-width:2; }
+.gate-node.active .gate-state { fill:var(--accent-ink); }
+.gate-node.blocked .core { fill:var(--warn-soft); stroke:var(--warn); }
+.gate-node.blocked .gate-state { fill:var(--warn); }
+/* Legacy continuity hooks: the old avatar group and phase banner survive as
+   neutral, invisible elements so the bootstrap → arena handoff keeps its IDs. */
+#hero,.hero-bob { display:none; animation:none; }
+.announcer { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
+.unit-card { margin:4px 24px 18px; padding:12px 16px; background:var(--surface); border:1px solid var(--line);
+  border-radius:var(--radius); box-shadow:var(--shadow-soft); }
+.uc-head { display:flex; align-items:baseline; flex-wrap:wrap; gap:4px 10px; }
+.uc-num { font:600 12px var(--font-mono); color:var(--accent-ink); }
+.uc-label { font-size:15px; font-weight:600; color:var(--ink); }
+.uc-id { margin-left:auto; font-size:11px; color:var(--muted); }
+.uc-body { margin-top:4px; font-size:13px; line-height:1.6; color:var(--ink-2); overflow-wrap:anywhere; }
+.uc-detail { margin-top:2px; color:var(--muted); }
+.uc-detail:empty { display:none; }
 
-.stage { display:grid; grid-template-columns:1fr var(--right-column); }
-.arena-wrap { position:relative; overflow:hidden; border-right:2px solid var(--line); display:flex; }
-#arena { display:block; width:100%; height:100%; min-height:520px; max-height:var(--stage-height); flex:1;
-  background:
-    radial-gradient(120% 90% at 50% -10%,oklch(0.24 0.03 90 / .55),transparent 55%),
-    radial-gradient(90% 120% at 50% 115%,oklch(0.1 0.02 60),transparent 60%),
-    var(--arena); }
-.edge { stroke:var(--line); stroke-width:2.5; fill:none; transition:stroke .45s,stroke-width .45s; }
-.edge.done { stroke:oklch(0.52 0.08 120); stroke-width:3; }
-.edge.hot { stroke:var(--gold); stroke-width:3.2; stroke-dasharray:8 7;
-  animation:dashmove 1.1s linear infinite; }
-@keyframes dashmove { to { stroke-dashoffset:-30 } }
-.gate-node .halo { fill:none; stroke:transparent; stroke-width:3; }
-.gate-node .core { fill:var(--panel-strong); stroke:var(--line); stroke-width:3;
-  transition:fill .35s,stroke .35s,filter .35s; }
-.gate-node .gate-index { fill:var(--muted); font:900 11px var(--font-mono); text-anchor:middle; }
-.gate-node .gate-title { fill:var(--ink); font:800 14px var(--font-sans); text-anchor:middle; }
-.gate-node .gate-state { fill:var(--muted); font:900 9px var(--font-mono);
-  text-anchor:middle; letter-spacing:.1em; }
-.gate-node.done .core { fill:oklch(0.3 0.08 145); stroke:var(--radiant); }
-.gate-node.done .gate-index,.gate-node.done .gate-state { fill:var(--radiant); }
-.gate-node.active .core { fill:oklch(0.28 0.06 88); stroke:var(--gold);
-  filter:drop-shadow(0 0 13px oklch(0.82 0.13 88 / .42)); }
-.gate-node.active .halo { stroke:var(--gold); stroke-dasharray:7 7;
-  animation:spin 8s linear infinite; }
-.gate-node.active .gate-index,.gate-node.active .gate-state { fill:var(--gold); }
-.gate-node.blocked .core { stroke:var(--amber); }
-.gate-node.blocked .gate-state { fill:var(--amber); }
-@keyframes spin { to { transform:rotate(360deg); } }
-.hero-bob { animation:bob 2.6s ease-in-out infinite; }
-@keyframes bob { 50% { transform:translateY(-5px); } }
-.unit-card { position:absolute; left:50%; bottom:14px; transform:translateX(-50%); z-index:5;
-  width:min(470px,calc(100% - 28px)); background:oklch(0.14 0.014 75/.93);
-  backdrop-filter:blur(10px); border:1px solid var(--line); border-top:3px solid var(--gold);
-  box-shadow:var(--shadow-deep); }
-.uc-head { display:flex; align-items:baseline; gap:9px; padding:10px 13px 7px; }
-.uc-num { font-weight:900; color:var(--gold); }
-.uc-label { font-size:16px; font-weight:900; }
-.uc-id { margin-left:auto; font-size:10px; color:var(--muted); }
-.uc-body { padding:0 13px 11px; font-size:11.5px; line-height:1.6; }
-.uc-detail { color:var(--muted); margin-top:3px; }
-.announcer { position:absolute; left:0; right:0; top:28%; display:flex;
-  justify-content:center; pointer-events:none; }
-.announcer span { font-size:clamp(24px,4vw,48px); font-weight:900; letter-spacing:.06em;
-  font-style:italic; padding:6px 34px; color:var(--gold);
-  background:linear-gradient(90deg,transparent,oklch(0.1 0.01 60/.92) 18%,
-  oklch(0.1 0.01 60/.92) 82%,transparent); border-block:2px solid currentColor;
-  animation:slam 1.45s var(--ease-out) forwards; }
-@keyframes slam { 0%{opacity:0;transform:scale(1.7)} 12%{opacity:1;transform:scale(1)}
-  80%{opacity:1} 100%{opacity:0;transform:scale(.96) translateY(-8px)} }
-
-.rightcol { display:flex; flex-direction:column; background:var(--panel); min-height:0;
-  height:var(--stage-height); }
-.col-h { padding:8px 14px 6px; font-size:10px; color:var(--muted);
-  border-bottom:1px solid var(--line); display:flex; justify-content:space-between;
-  align-items:baseline; }
-#feed { flex:1.2; overflow-y:auto; min-height:170px; padding:6px 0; }
-.feed-row { display:flex; gap:9px; padding:5px 14px; font-size:12px; line-height:1.45;
-  align-items:baseline; animation:feedin .35s var(--ease-out); border-left:3px solid transparent; }
-@keyframes feedin { from { opacity:0; transform:translateX(26px); } }
+#feed { flex:1 1 auto; min-height:150px; overflow-y:auto; padding:2px 0 8px; }
+.feed-row b { font-weight:600; color:var(--ink); }
 .feed-row.info { color:var(--muted); }
-.feed-row.pass { border-left-color:var(--radiant); }
-.feed-row.soft { border-left-color:var(--amber); }
-.feed-row.miss { border-left-color:var(--ghost); }
-.feed-row .seq { color:var(--muted); font-size:10px; min-width:30px; }
-.feed-row .ts { margin-left:auto; color:var(--muted); font-size:9.5px; white-space:nowrap; opacity:.8; }
-#quest { flex:1; overflow-y:auto; border-top:2px solid var(--line); min-height:150px; }
-.q-row { padding:8px 14px; border-bottom:1px solid oklch(0.26 0.02 80); }
-.q-title { display:flex; gap:8px; align-items:baseline; font-size:12.5px; font-weight:700; }
-.q-mark { font-size:14px; width:20px; text-align:center; }
-.q-state { margin-left:auto; font-size:9px; letter-spacing:.1em; font-weight:900; }
-.q-sub { font-size:10.5px; color:var(--muted); margin-top:3px; padding-left:28px; }
-.q-DONE .q-state { color:var(--radiant); }
-.q-ACTIVE .q-state { color:var(--gold); }
-.q-BLOCKED .q-state,.q-OPEN .q-state { color:var(--amber); }
-#waitingList { max-height:122px; overflow-y:auto; border-top:1px solid var(--line); }
-.wait-row { padding:8px 14px; font-size:11px; line-height:1.45; border-bottom:1px solid var(--line); }
-.wait-row b { color:var(--amber); }
+.feed-row.pass { border-left-color:var(--ok); }
+.feed-row.soft { border-left-color:var(--warn); }
+.feed-row.miss { border-left-color:var(--bad); }
+#quest { padding:0 0 6px; border-top:1px solid var(--line); }
+.q-row { padding:8px 20px; border-bottom:1px solid var(--line); }
+.q-row:last-child { border-bottom:0; }
+.q-title { display:flex; gap:8px; align-items:baseline; font-size:13px; color:var(--ink-2); }
+.q-mark { flex:0 0 18px; text-align:center; font-size:12px; color:var(--faint); }
+.q-state { margin-left:auto; font-size:12px; font-weight:600; color:var(--muted); white-space:nowrap; }
+.q-sub { margin-top:2px; padding-left:26px; font-size:12px; color:var(--muted); overflow-wrap:anywhere; }
+.q-sub:empty { display:none; }
+.q-DONE .q-mark,.q-DONE .q-state { color:var(--ok); }
+.q-ACTIVE .q-title { color:var(--ink); font-weight:600; }
+.q-ACTIVE .q-mark,.q-ACTIVE .q-state { color:var(--accent-ink); }
+.q-BLOCKED .q-mark,.q-BLOCKED .q-state { color:var(--warn); }
+#waitingList { border-top:1px solid var(--line); padding-bottom:8px; }
+.wait-row { padding:8px 20px; font-size:12.5px; line-height:1.55; color:var(--ink-2); overflow-wrap:anywhere; }
+.wait-row b { color:var(--warn); font-weight:600; }
+.preflight-note { margin:16px 24px 28px; padding:12px 16px; background:var(--paper-raised);
+  border:1px solid var(--line); border-radius:var(--radius); color:var(--muted); font-size:12.5px; line-height:1.65; }
+.preflight-note b { color:var(--ink); font-weight:600; }
 
-.deck { display:flex; align-items:center; gap:12px; padding:9px 14px;
-  background:oklch(0.16 0.017 76); border-block:2px solid var(--line); }
-.deck button,.deck select { font:inherit; border:1px solid var(--line); background:var(--panel);
-  color:var(--muted); height:30px; min-width:38px; padding:0 10px; }
-.timeline { position:relative; flex:1; height:30px; }
-.tl-track { position:absolute; left:0; right:0; top:13px; height:3px; background:var(--line); }
-.tl-fill { position:absolute; left:0; top:13px; height:3px; background:var(--gold); width:0; transition:width .35s; }
-.tl-cursor { position:absolute; top:8px; width:2px; height:13px; background:var(--ink); left:0; transition:left .35s; }
-.tl-times { position:absolute; inset:0; display:flex; justify-content:space-between;
-  align-items:flex-end; font-size:8px; color:var(--muted); pointer-events:none; }
-.deck .stamp { min-width:128px; text-align:right; color:var(--muted); font-size:10px; }
-.caster { display:flex; gap:12px; align-items:flex-start; padding:9px 18px 11px;
-  background:linear-gradient(90deg,oklch(0.19 0.025 82),oklch(0.15 0.016 75));
-  border-bottom:1px solid var(--line); min-height:43px; }
-.caster .tag { color:var(--gold); font-size:9px; padding-top:3px; white-space:nowrap; }
-#casterLine { font-size:13px; line-height:1.45; font-weight:600; }
-.tabs { display:flex; gap:5px; padding:12px 18px 0; overflow-x:auto; }
-.tab { flex:0 0 auto; border:1px solid var(--line); border-bottom:none; background:transparent;
-  color:var(--muted); padding:8px 15px; font-size:12px; letter-spacing:.05em; }
-.tab.active { color:var(--ink); background:var(--panel); font-weight:800; }
-.tab[disabled] { opacity:.52; cursor:not-allowed; }
-.preflight-note { margin:0 18px 24px; padding:14px 16px; background:var(--panel);
-  border:1px solid var(--line); color:var(--muted); font-size:11px; line-height:1.55; }
-.preflight-note b { color:var(--gold); }
+/* Setup has nothing to replay and no audit views yet: hide controls that could
+   only ever be disabled. The shared deck/tabs markup stays for the handoff. */
+.deck button[disabled],.tabs { display:none; }
+.deck .stamp { flex:0 1 auto; }
+#signalText { font-variant-numeric:tabular-nums; }
 
-@media (prefers-reduced-motion:reduce) {
-  .hero-bob,.edge.hot,.gate-node.active .halo,.announcer span,.feed-row,.livechip .dot { animation:none; }
-}
 @media (max-width:960px) {
+  #arena { max-height:none; }
+  #feed { max-height:280px; }
+  .graph-head { padding:14px 16px 6px; }
+  .unit-card { margin:4px 16px 16px; }
+  .preflight-note { margin:14px 16px 24px; }
+}
+@media (prefers-reduced-motion:reduce) {
+  .edge.hot { stroke-dasharray:none; }
+}
+@media print {
+  .deck,.tabs,.top-actions,#sf-live-hud { display:none !important; }
   .stage { grid-template-columns:1fr; }
-  #arena { min-height:360px; }
-  .rightcol { border-top:2px solid var(--line); height:auto; }
-  #feed { min-height:130px; max-height:260px; }
-  #quest { max-height:340px; }
-  .topbar { flex-wrap:wrap; }
-  .scorebox { padding:8px 14px; gap:10px; flex:1; }
-  .score { font-size:30px; }
-  .livechip { padding:0 12px; }
-  .matchinfo { order:5; flex:1 1 100%; border-left:none; border-top:1px solid var(--line); padding:8px 14px; }
-  .matchinfo h1 { white-space:normal; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; }
-  .bars { order:6; flex:1 1 100%; width:auto; border-left:none; border-top:1px solid var(--line); padding:8px 14px; }
-  .deck { gap:8px; padding:8px 10px; flex-wrap:wrap; }
-  .timeline { flex:1 1 100%; order:5; }
-  .deck .stamp { display:none; }
-  .caster { padding:8px 14px 10px; }
-  #casterLine { font-size:13px; }
+  .rightcol { height:auto; overflow:visible; }
 }
 </style>
 </head>
 <body data-sisyfus-shell="broadcast">
 <header class="topbar">
-  <div class="scorebox">
-    <div><div class="score radiant" id="readyScore">0</div><div class="score-label caps" data-t="ready">已锁定</div></div>
-    <div class="vs">VS</div>
-    <div><div class="score amber" id="openScore">6</div><div class="score-label caps" data-t="open">待完成</div></div>
-  </div>
-  <div class="matchinfo">
-    <h1 id="title">Awaiting Sisyfus mission</h1>
+  <div class="brand"><span class="brand-mark" aria-hidden="true">✳</span><span>Sisyfus 研究工作台</span></div>
+  <div class="headline matchinfo">
+    <h1 id="title"></h1>
     <div class="sub">
-      <span class="caps" style="color:var(--gold)">SISYFUS · MISSION CONTROL</span><span class="caps">Sisyfus Research Observatory · Arena</span>
-      <span id="phaseMeta" class="mono">INTAKE</span>
-      <span id="operationMeta" class="mono">skill.bootstrap</span>
+      <span class="tally">
+        <span><b id="readyScore">0</b> <span data-t="ready">已就绪</span></span>
+        <span><b id="openScore">6</b> <span data-t="open">待完成</span></span>
+      </span>
+      <span id="phaseMeta"></span>
+      <span id="operationMeta" class="mono" hidden></span>
     </div>
   </div>
-  <div class="bars">
-    <div class="bar hp"><i id="programFill" style="transform:scaleX(0)"></i><b id="programText">PROGRAM 0%</b></div>
-    <div class="bar mana"><i id="signalFill" style="transform:scaleX(1)"></i><b id="signalText">HEARTBEAT —</b></div>
+  <div class="budget bars">
+    <div class="budget-row"><span id="programText"></span><span class="meter" aria-hidden="true"><i id="programFill" style="transform:scaleX(0)"></i></span></div>
+    <div class="budget-row"><span id="signalText"></span></div>
   </div>
-  <div class="livechip" id="liveChip"><span class="dot"></span><span id="connection">LIVE</span></div>
-  <button class="lang-btn" id="langBtn" title="切换语言 / switch language">EN</button>
+  <div class="top-actions">
+    <div class="livechip" id="liveChip" role="status"><span class="dot" aria-hidden="true"></span><span id="connection"></span></div>
+    <button class="lang-btn" id="langBtn" type="button" title="切换语言 / switch language">EN</button>
+  </div>
 </header>
 
 <div class="stage">
   <div class="arena-wrap" id="arenaWrap">
-    <svg id="arena" viewBox="0 0 1000 560" preserveAspectRatio="xMidYMid meet">
-      <g id="edges"></g>
-      <g id="bosses"></g>
-      <g id="hero" style="transition:transform .8s var(--ease-out)">
-        <g class="hero-bob">
-          <circle r="26" cy="6" fill="oklch(0.85 0.05 90)" opacity=".14"/>
-          <circle class="stone" r="13" cx="15" cy="-2" fill="oklch(0.8 0.06 85)"
-            stroke="oklch(0.95 0.04 90)" stroke-width="1.5"/>
-          <g stroke="oklch(0.93 0.02 90)" stroke-width="3.4" stroke-linecap="round" fill="none">
-            <circle cx="-6" cy="-14" r="5" fill="oklch(0.93 0.02 90)" stroke="none"/>
-            <path d="M-6 -9 L-3 4 L-9 16 M-4 3 L6 13 M-5 -6 L8 -8 M-5 -5 L4 0"/>
-          </g>
-        </g>
-      </g>
-    </svg>
-    <div class="announcer" id="announcer"></div>
+    <div class="graph-head">
+      <div>
+        <h2 class="graph-title" data-t="map">研究准备</h2>
+        <div class="graph-sub" data-t="mapsub">任务规格确定后切换为命题依赖图</div>
+      </div>
+    </div>
+    <div class="preflight-map">
+      <svg id="arena" viewBox="0 70 1000 320" preserveAspectRatio="xMidYMid meet" role="img" aria-labelledby="gateTitle">
+        <defs><marker id="preArrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" markerUnits="userSpaceOnUse" orient="auto"><path d="M0 0 L10 5 L0 10 z"/></marker></defs>
+        <g id="edges"></g>
+        <g id="bosses"></g>
+        <g id="hero" aria-hidden="true"><g class="hero-bob"></g></g>
+      </svg>
+    </div>
+    <div class="announcer" id="announcer" aria-live="polite"></div>
     <div class="unit-card">
       <div class="uc-head"><span class="uc-num" id="gateNumber">P1</span><span class="uc-label" id="gateTitle">任务范围</span><span class="uc-id mono" id="taskId"></span></div>
-      <div class="uc-body"><div id="message">Compiling the research program.</div><div class="uc-detail" id="detail"></div></div>
+      <div class="uc-body"><div id="message"></div><div class="uc-detail" id="detail"></div></div>
     </div>
   </div>
   <aside class="rightcol">
-    <div class="col-h caps"><span data-t="feed">战况播报</span><span id="feedCount"></span></div>
+    <div class="col-h caps"><span data-t="feed">活动记录</span><span id="feedCount"></span></div>
     <div id="feed"></div>
-    <div class="col-h caps"><span data-t="gates">任务面板</span><span id="gateCount">0 / 6</span></div>
+    <div class="col-h caps"><span data-t="gates">准备步骤</span><span id="gateCount">0 / 6</span></div>
     <div id="quest"></div>
-    <div class="col-h caps"><span data-t="waiting">待命区</span><span id="waitState" class="mono"></span></div>
+    <div class="col-h caps"><span data-t="waiting">待确认</span><span id="waitState"></span></div>
     <div id="waitingList"></div>
   </aside>
 </div>
@@ -956,38 +1049,49 @@ __SISYFUS_THEME__
     <div class="tl-track"></div><div class="tl-fill" id="tlFill"></div><div class="tl-cursor" id="tlCursor"></div>
     <div class="tl-times mono"><span id="taskStart"></span><span id="taskNow"></span></div>
   </div>
-  <button type="button" disabled data-t="live">直播</button>
-  <div class="stamp mono" id="frameLabel">PRE-RUN · INTAKE</div>
+  <button type="button" disabled data-t="live">实时</button>
+  <div class="stamp" id="frameLabel"></div>
 </div>
-<div class="caster"><span class="tag caps" data-t="caster">解说席</span><div id="casterLine">Mission Control is online.</div></div>
+<div class="caster"><span class="tag caps" data-t="caster">当前</span><div id="casterLine"></div></div>
 
 <nav class="tabs">
-  <button class="tab active" type="button" data-t="watch">观战</button>
+  <button class="tab active" type="button" data-t="watch">图谱</button>
   <button class="tab" type="button" disabled data-t="report">报告</button>
   <button class="tab" type="button" disabled data-t="goal">目标图</button>
   <button class="tab" type="button" disabled data-t="audit">审计</button>
   <button class="tab" type="button" disabled data-t="events">事件流</button>
 </nav>
-<div class="preflight-note"><b data-t="preflight">赛前编排</b> · <span data-t="note">启动页与正式 Arena 使用同一套转播壳层。TaskSpec 锁定后，本页在同一 URL 中切换为真实 Claim 依赖地图。</span></div>
+<div class="preflight-note"><b data-t="preflight">准备阶段</b> · <span data-t="note">确认任务范围、终局目标、数据来源和验证方式后，研究会自动开始；本页会在同一地址切换为命题依赖图。</span></div>
 
 <script>
-let A = {}, events = [], misses = 0, lang = localStorage.getItem('sisyfus-lang') || 'zh';
+__SF_LABELS__
+const beats = sfBeats();
+let A = {}, events = [], misses = 0, lang = 'zh';
+try {
+ // canonical key shared with the Observatory first, legacy key as read fallback; only en/zh are honoured
+ const saved=[localStorage.getItem('sisyfus_lang'),localStorage.getItem('sisyfus-lang')].find(v=>v==='en'||v==='zh');
+ if(saved)lang=saved;
+} catch (_) {}
 const $ = id => document.getElementById(id);
 const esc = v => String(v ?? '').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const age = ts => ts ? Math.max(0,(Date.now()-Date.parse(ts))/1000) : 9999;
 const fmt = x => { x=Math.max(0,Math.floor(Number(x)||0)); const h=Math.floor(x/3600),m=Math.floor((x%3600)/60),s=x%60;
   return h?`${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`:`${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`; };
 const TXT = {
- zh:{ready:'已锁定',open:'待完成',feed:'战况播报',gates:'任务面板',waiting:'待命区',live:'直播',
-  caster:'解说席',watch:'观战',report:'报告',goal:'目标图',audit:'审计',events:'事件流',
-  preflight:'赛前编排',note:'启动页与正式 Arena 使用同一套转播壳层。TaskSpec 锁定后，本页在同一 URL 中切换为真实 Claim 依赖地图。',
+ zh:{ready:'已就绪',open:'待完成',feed:'活动记录',gates:'准备步骤',waiting:'待确认',live:'实时',
+  caster:'当前',watch:'图谱',report:'报告',goal:'目标图',audit:'审计',events:'事件流',
+  map:'研究准备',mapsub:'任务规格确定后切换为命题依赖图',
+  preflight:'准备阶段',note:'确认任务范围、终局目标、数据来源和验证方式后，研究会自动开始；本页会在同一地址切换为命题依赖图。',
   scope:'任务范围',objective:'终局目标',inputs:'高质量输入',claims:'命题图',verifier:'验证者',launch:'自主运行',
-  locked:'LOCKED',active:'ACTIVE',queued:'QUEUED',needs:'NEEDS USER',none:'无阻断条件',program:'PROGRAM',heartbeat:'HEARTBEAT'},
- en:{ready:'GATES READY',open:'OPEN',feed:'MATCH FEED',gates:'QUEST PANEL',waiting:'RESPAWN',live:'LIVE',
-  caster:'CASTER',watch:'ARENA',report:'REPORT',goal:'GOAL GRAPH',audit:'AUDIT',events:'EVENTS',
-  preflight:'PRE-MATCH PROGRAM',note:'Bootstrap and the full Arena share one broadcast shell. After TaskSpec lock, this URL switches to the evidence-backed Claim map.',
+  locked:'已完成',active:'进行中',queued:'排队中',needs:'需要你确认',none:'无阻断条件',steps:'准备步骤',elapsed:'已用时',
+  awaiting:'等待研究任务',online:'研究准备已开始。',clarify:'需要补充信息后才能继续。',prerun:'准备阶段',no_action:'无需操作'},
+ en:{ready:'Ready',open:'Open',feed:'Activity',gates:'Setup steps',waiting:'Waiting on you',live:'Live',
+  caster:'Now',watch:'Graph',report:'Report',goal:'Goal graph',audit:'Audit',events:'Events',
+  map:'Research setup',mapsub:'Switches to the claim dependency graph once the task specification is settled',
+  preflight:'Setup',note:'Once scope, objective, data sources and verification are settled, the study starts on its own and this address switches to the claim graph.',
   scope:'Scope',objective:'Terminal objective',inputs:'Qualified inputs',claims:'Claim graph',verifier:'Verifier',launch:'Autonomous run',
-  locked:'LOCKED',active:'ACTIVE',queued:'QUEUED',needs:'NEEDS USER',none:'No blocking gate',program:'PROGRAM',heartbeat:'HEARTBEAT'}
+  locked:'Done',active:'Active',queued:'Queued',needs:'Needs you',none:'No blocking gate',steps:'Setup steps',elapsed:'Elapsed',
+  awaiting:'Waiting for a research task',online:'Research setup has started.',clarify:'More information is needed before continuing.',prerun:'Setup',no_action:'Nothing needed'}
 };
 const t = key => (TXT[lang]||TXT.zh)[key] || key;
 const GATES = [
@@ -1023,35 +1127,37 @@ function gateIndex(){
 function stateFor(g,i,active){
  const missing=((A.metadata||{}).missing_intake_fields||[]).map(String);
  if(g.field&&missing.includes(g.field))return i===active?'BLOCKED':'OPEN';
- if(i<active)return 'DONE';
+ const clarifying=String(A.status||'').toUpperCase()==='NEEDS_USER'&&String(A.phase||'').toUpperCase()==='CLARIFYING';
+ if(i<active)return clarifying&&!g.field?'OPEN':'DONE';
  if(i===active)return String(A.status||'').toUpperCase()==='NEEDS_USER'?'BLOCKED':'ACTIVE';
  return 'OPEN';
 }
 function renderMap(){
  const active=gateIndex(), states=GATES.map((g,i)=>stateFor(g,i,active));
  $('edges').innerHTML=GATES.slice(0,-1).map((g,i)=>{
-   const n=GATES[i+1], cls=i<active?'done':i===active?'hot':'';
-   return `<path class="edge ${cls}" d="M${g.x} ${g.y} L${n.x} ${n.y}"/>`;
+   const n=GATES[i+1], cls=i<active?'done':i===active?'hot':'', f=44/Math.max(1,Math.abs(n.y-g.y));
+   const x1=g.x+(n.x-g.x)*f, y1=g.y+(n.y-g.y)*f, x2=n.x-(n.x-g.x)*f, y2=n.y-(n.y-g.y)*f;
+   return `<path class="edge ${cls}" d="M${x1.toFixed(1)} ${y1.toFixed(1)} L${x2.toFixed(1)} ${y2.toFixed(1)}"/>`;
  }).join('');
  $('bosses').innerHTML=GATES.map((g,i)=>{
    const st=states[i], cls=st==='DONE'?'done':st==='ACTIVE'?'active':st==='BLOCKED'?'active blocked':'';
    return `<g class="gate-node ${cls}" transform="translate(${g.x} ${g.y})">
-    <circle class="halo" r="49"/><circle class="core" r="38"/>
-    <text class="gate-index" y="4">P${i+1}</text>
-    <text class="gate-title" y="62">${esc(t(g.key))}</text>
-    <text class="gate-state" y="79">${esc(st==='DONE'?t('locked'):st==='ACTIVE'?t('active'):st==='BLOCKED'?t('needs'):t('queued'))}</text>
+    <rect class="core" x="-84" y="-38" width="168" height="76" rx="9"/>
+    <text class="gate-index" x="-74" y="-20">P${i+1}</text>
+    <text class="gate-title" y="5">${esc(t(g.key))}</text>
+    <text class="gate-state" y="27">${esc(st==='DONE'?t('locked'):st==='ACTIVE'?t('active'):st==='BLOCKED'?t('needs'):t('queued'))}</text>
    </g>`;
  }).join('');
  const current=GATES[active]||GATES[0];
  $('hero').setAttribute('transform',`translate(${current.x-54} ${current.y-6})`);
  $('gateNumber').textContent=`P${active+1}`;
  $('gateTitle').textContent=t(current.key);
- const ready=states.filter(x=>x==='DONE').length + (String(A.status||'').toUpperCase()==='READY'?1:0);
- $('readyScore').textContent=String(Math.min(GATES.length,ready));
- $('openScore').textContent=String(Math.max(0,GATES.length-ready));
- $('gateCount').textContent=`${Math.min(GATES.length,ready)} / ${GATES.length}`;
+ const ready=readySteps();
+ $('readyScore').textContent=String(ready);
+ $('openScore').textContent=String(GATES.length-ready);
+ $('gateCount').textContent=`${ready} / ${GATES.length}`;
  $('quest').innerHTML=GATES.map((g,i)=>{
-   const st=states[i], mark=st==='DONE'?'👑':st==='ACTIVE'?'⚔':st==='BLOCKED'?'?!':'?';
+   const st=states[i], mark=st==='DONE'?'✓':st==='ACTIVE'?'●':st==='BLOCKED'?'!':'○';
    const label=st==='DONE'?t('locked'):st==='ACTIVE'?t('active'):st==='BLOCKED'?t('needs'):t('queued');
    return `<div class="q-row q-${st}"><div class="q-title"><span class="q-mark">${mark}</span><span>P${i+1} ${esc(t(g.key))}</span><span class="q-state">${esc(label)}</span></div><div class="q-sub">${st==='ACTIVE'||st==='BLOCKED'?esc(A.message||''):''}</div></div>`;
  }).join('');
@@ -1060,34 +1166,40 @@ function renderFeed(){
  $('feedCount').textContent=`${events.length}`;
  $('feed').innerHTML=[...events].reverse().map(x=>{
   const st=String(x.status||'').toUpperCase(), cls=st==='ERROR'?'miss':st==='NEEDS_USER'?'soft':st==='COMPLETED'||st==='READY'?'pass':'info';
-  return `<div class="feed-row ${cls}"><span class="seq">#${esc(x.seq||'')}</span><span><b>${esc(x.phase||'')} · ${esc(x.operation||'')}</b><br>${esc(x.error||x.message||'')}</span><span class="ts">${esc((x.ts||'').slice(11,19))}</span></div>`;
- }).join('')||`<div class="feed-row info"><span class="seq">#0</span><span>${esc(A.message||'Mission Control is online.')}</span></div>`;
+  return `<div class="feed-row ${cls}"><span class="seq">#${esc(x.seq||'')}</span><span><b>${esc(sfPhase(x.phase))}</b><br>${esc(x.error||x.message||'')}</span><span class="ts">${esc((x.ts||'').slice(11,19))}</span></div>`;
+ }).join('')||`<div class="feed-row info"><span class="seq">#0</span><span>${esc(A.message||t('online'))}</span></div>`;
 }
 function renderWaiting(){
  const questions=((A.metadata||{}).clarification_questions||[]).map(String);
  const waiting=String(A.status||'').toUpperCase()==='NEEDS_USER';
- $('waitState').textContent=waiting?'NEEDS_USER':'READY';
+ $('waitState').textContent=waiting?t('needs'):t('no_action');
  $('waitingList').innerHTML=waiting
-   ?questions.map((q,i)=>`<div class="wait-row"><b>Q${i+1}</b> · ${esc(q)}</div>`).join('')||`<div class="wait-row"><b>NEEDS USER</b> · ${esc(A.detail||'Clarification required.')}</div>`
+   ?questions.map((q,i)=>`<div class="wait-row"><b>Q${i+1}</b> · ${esc(q)}</div>`).join('')||`<div class="wait-row"><b>${esc(t('needs'))}</b> · ${esc(A.detail||t('clarify'))}</div>`
    :`<div class="wait-row">${esc(t('none'))}</div>`;
 }
+/* Header progress counts finished setup steps, so it only moves when a step
+   completes; per-operation progress belongs to the active step card. */
+function readySteps(){
+ const active=gateIndex(), ready=GATES.filter((g,i)=>stateFor(g,i,active)==='DONE').length+(String(A.status||'').toUpperCase()==='READY'?1:0);
+ return Math.min(GATES.length,ready);
+}
 function render(){
- const status=String(A.status||'IDLE').toUpperCase(), stale=status==='RUNNING'&&age(A.heartbeat_at)>5;
- $('title').textContent=A.title||'Sisyfus mission';
- $('phaseMeta').textContent=String(A.phase||'IDLE').toUpperCase();
- $('operationMeta').textContent=A.operation||'—';
+ const status=String(A.status||'IDLE').toUpperCase(), stale=beats.stale(A);
+ $('title').textContent=A.title||t('awaiting');
+ $('phaseMeta').textContent=sfPhase(A.phase);
+ $('operationMeta').textContent=A.operation||'';
  $('taskId').textContent=A.task_id||'';
  $('message').textContent=A.error||A.message||'';
- $('detail').textContent=A.detail||'';
- $('casterLine').textContent=A.error||A.message||A.detail||'Mission Control is online.';
- $('frameLabel').textContent=`PRE-RUN · ${String(A.phase||'IDLE').toUpperCase()}`;
- const p=A.progress||{}, active=gateIndex();
- const pct=p.percent==null?Math.round((active/Math.max(1,GATES.length-1))*100):Math.max(0,Math.min(100,Number(p.percent)));
+ const step=sfProgress(A.progress);
+ $('detail').textContent=[step&&step.count?step.text:'',A.detail].filter(Boolean).join(' · ');
+ $('casterLine').textContent=A.error||A.message||A.detail||t('online');
+ $('frameLabel').textContent=`${t('prerun')} · ${sfPhase(A.phase)}`;
+ const ready=readySteps(), pct=Math.round(ready/GATES.length*100);
  $('programFill').style.transform=`scaleX(${pct/100})`;
- $('programText').textContent=`${t('program')} ${Math.round(pct)}%`;
- const hb=Math.max(0,1-Math.min(5,age(A.heartbeat_at))/5);
- $('signalFill').style.transform=`scaleX(${hb})`;
- $('signalText').textContent=`${t('heartbeat')} ${Math.round(age(A.heartbeat_at))}s`;
+ $('programText').textContent=`${t('steps')} ${ready}/${GATES.length}`;
+ const since=Date.parse(A.task_started_at||'');
+ const end=['RUNNING','NEEDS_USER'].includes(status)?Date.now():Date.parse(A.updated_at||'');
+ $('signalText').textContent=A.task_id&&Number.isFinite(since)&&Number.isFinite(end)?`${t('elapsed')} ${fmt((end-since)/1000)}`:'';
  $('tlFill').style.width=`${pct}%`; $('tlCursor').style.left=`${pct}%`;
  $('taskStart').textContent=(A.task_started_at||'').slice(11,19);
  $('taskNow').textContent=fmt(A.operation_started_at?Math.max(0,(Date.now()-Date.parse(A.operation_started_at))/1000):A.elapsed_seconds||0);
@@ -1095,14 +1207,14 @@ function render(){
  if(status==='NEEDS_USER')chip.classList.add('waiting');
  if(stale||misses>=3)chip.classList.add('stale');
  if(['COMPLETED','READY'].includes(status))chip.classList.add('ended');
- $('connection').textContent=misses>=3?'RECONNECTING':stale?'STALE':status==='NEEDS_USER'?'NEEDS USER':status;
+ $('connection').textContent=sfStatus(misses>=3?'RECONNECTING':stale?'STALE':status);
  renderMap(); renderFeed(); renderWaiting();
 }
 let lastAnnounce='';
 function maybeAnnounce(){
  const key=`${A.phase}|${A.status}|${A.operation}`;
  if(lastAnnounce&&key!==lastAnnounce){
-  const label=String(A.status||'').toUpperCase()==='NEEDS_USER'?t('needs'):String(A.phase||'').toUpperCase();
+  const label=String(A.status||'').toUpperCase()==='NEEDS_USER'?t('needs'):sfPhase(A.phase);
   $('announcer').innerHTML=`<span>${esc(label)}</span>`;
   setTimeout(()=>{$('announcer').innerHTML='';},1500);
  }
@@ -1116,19 +1228,19 @@ async function poll(){
   ]);
   if(!a.ok)throw new Error(String(a.status));
   const next=await a.json(); if(e.ok){const p=await e.json();events=Array.isArray(p.events)?p.events:[];}
-  A=next; misses=0; maybeAnnounce(); render();
+  A=next; misses=0; beats.observe(A); maybeAnnounce(); render();
   try{
    const s=await fetch(`snapshot.json?ts=${Date.now()}`,{cache:'no-store'});
    if(s.ok){const j=await s.json();if(j&&j.snapshot&&j.snapshot.snapshot_hash)location.reload();}
   }catch(_){}
  }catch(_){misses+=1;render();}
 }
-$('langBtn').addEventListener('click',()=>{lang=lang==='zh'?'en':'zh';localStorage.setItem('sisyfus-lang',lang);applyLanguage();});
+$('langBtn').addEventListener('click',()=>{lang=lang==='zh'?'en':'zh';try{localStorage.setItem('sisyfus_lang',lang);localStorage.setItem('sisyfus-lang',lang);}catch(_){}applyLanguage();});
 applyLanguage(); poll(); setInterval(poll,600); setInterval(render,500);
 </script>
 </body>
 </html>
-"""
+""".replace("__SF_LABELS__", _ACTIVITY_LABELS_JS.strip())
 
 
 def render_activity_monitor(root: str | Path) -> Path:
