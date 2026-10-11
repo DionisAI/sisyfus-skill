@@ -118,7 +118,8 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, str(candidate))
 
 def scratch():
-    return pathlib.Path(tempfile.mkdtemp(prefix="sisyfus-procedure-check-", dir=os.environ.get("TMPDIR", "/private/tmp")))
+    # tempfile honours TMPDIR and falls back to the platform temp dir (/tmp on Linux CI; /private/tmp is macOS-only).
+    return pathlib.Path(tempfile.mkdtemp(prefix="sisyfus-procedure-check-"))
 
 def project_scope(test):
     test.assertEqual((candidate / "README.md").read_text(), README)
