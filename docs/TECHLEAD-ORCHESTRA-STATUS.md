@@ -241,3 +241,9 @@
 - 先冻结新测试 `tests/workers/test_node_agent_deadline_race.py`（1ca421cb）：延迟 watchdog 使 socket 必然先到期；RED 为 `'timed out'`，最小修复（node_agent 2f0abd23，新增 `except TimeoutError` 转换为聚合截止错误）后 GREEN，3/3。
 - network_profile 由随机 12–14 失败变为固定 1 失败；节点集合 122→110 失败（修复 13、新增 0 其他失败），相邻 node_agent 使用者 100 passed。
 - 唯一新增失败为冻结范围锁 `test_static_constructor_cli_and_only_duration_change`（要求 `_call` 与固定 baseline 仅差 duration 一行）。用户已确认保留修复：该范围锁就此修复视为被取代，测试原样保留、不修改、不 skip。
+
+## 用户决定：放置恢复测试读取修正（2026-10-11）
+
+- 根因：`tests/workers/test_node_placement_recovery.py` 第65、109行从 `MissionHub.snapshot()` 信封顶层读取 `['phase']`；信封自 HEAD 起即为 `{id, snapshot, controller, controls}`，`phase` 位于 `['snapshot']`。两项测试因此在该行 KeyError，其后的归档与 driver 请求断言从未执行；属测试读取错误，非源码问题。
+- 用户批准修改该冻结测试：仅两行改为 `['snapshot']['phase']`，其余字节不变；文件 fa12ef4f → 171ab539。原哈希仍被 222 项既有记录固定，这些记录指修改前版本，原失败记录保留。
+- 修改后同文件 12 passed，3/3；此前未执行的归档与 driver 请求断言首次运行并通过。无源码修改，无其他测试导入该文件。
