@@ -108,6 +108,6 @@ jobs:
           fi
           (cd dist && sha256sum -c "sisyfus-$VERSION.tar.gz.sha256")
           gh release create "$TAG" dist/* --target "$GITHUB_SHA" \
-            --title "Sisyfus $TAG — unified Research OS and Mission Control" \
+            --title "Sisyfus $TAG" \
             --notes-file "RELEASE_NOTES_$TAG.md" --latest
           gh release view "$TAG" --json tagName,isDraft,isPrerelease,targetCommitish,url

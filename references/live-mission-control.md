@@ -67,10 +67,10 @@ The agent asks only for unresolved high-impact choices, reuses information
 already supplied, offers concrete options when useful, and does not repeatedly
 question the user about reversible implementation details.
 
-## Unified broadcast shell
+## Unified research shell
 
 The bootstrap Mission Control is not a separate splash application. It uses the
-same `sisyfus-arena-broadcast-v1` visual system and the same structural shell as
+same `sisyfus-research-workspace-v2` visual system and the same structural shell as
 the post-TaskSpec Observatory:
 
 ```text
@@ -84,14 +84,17 @@ detail tabs
 
 Before Claims exist, the map renders the intake gates — Scope, Objective,
 Inputs, Claims, Verifier, and Autonomous Run — using the same nodes, dependency
-edges, hero, status colors, and unit card used by the real Claim map. Handoff
+edges, status colors, and unit card used by the real Claim map. Its header counts
+finished setup steps (for example `准备步骤 2/6`); per-operation progress appears
+on the active step card. Handoff
 changes the projection and enables the full tabs; it does not replace the page
 with a visually unrelated application.
 
 Palette and typography tokens live in `sisyfus.ui_theme` and are injected into
-both documents. Structural tests require both rendered pages to declare the
-same theme ID and broadcast-shell markers, preventing the two surfaces from
-drifting apart again.
+both documents. Their values follow the Tech Lead chat page, so research and chat
+read as one light, warm-paper product. Structural tests require both rendered
+pages to declare the same theme ID and shell markers, preventing the two surfaces
+from drifting apart again.
 
 ## Live activity state
 
@@ -121,6 +124,14 @@ The Arena and bootstrap monitor poll the activity projection independently from
 the research snapshot. A long backtest therefore remains visibly alive even
 when no verifier event has yet been committed.
 
+In the Observatory, live activity is a pill in the top bar next to the status
+chip, with a plain-language details popover (raw phase, operation and run IDs
+stay in a closed technical section). It describes only the page's own run:
+activity from another study in the same project reads "another study is
+running", and finished runs show no live pill. "No recent update" is shown only
+after the page has observed the heartbeat rhythm and it stops, or after an hour
+for records that never send heartbeats.
+
 ## Child-process progress protocol
 
 Command experiments receive:
@@ -141,7 +152,8 @@ A backtest or other long-running program may atomically replace that file with:
 }
 ```
 
-It may alternatively provide an explicit `percent`.
+It may alternatively provide an explicit `percent`. Non-finite numbers (`NaN`,
+`Infinity`) are ignored rather than stopping the heartbeat.
 
 The activity heartbeat consumes the file and projects it into the page. This
 file is telemetry only: it cannot change Claim truth or issue a verifier

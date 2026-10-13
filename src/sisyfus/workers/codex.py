@@ -8,7 +8,14 @@ from .transport import Process, ProtocolError, probe
 
 
 class CodexDriver:
-    """Codex app-server over stdio; native requests never grant elevated authority."""
+    """Codex app-server over stdio; native requests never grant elevated authority.
+
+    The current app-server protocol returns configured model selection, not a
+    per-generation model attestation. Even a reroute describes routing, not all
+    inference in this turn. Retain native events but leave actual_model null.
+    Never promote thread/start or turn/start model echoes into runtime identity.
+    max_turns is not an app-server parameter: this adapter starts one native turn.
+    """
     name = "codex"
     controls = ("interrupt", "steer")
 
@@ -19,8 +26,7 @@ class CodexDriver:
         return {**probe(self.command), "driver": self.name, "controls": self.controls}
 
     def run(self, request: Request, emit: EventSink, controls: ControlSource = lambda: []) -> Receipt:
-        proc = Process([*self.command, "app-server"], cwd=request.cwd, env=environment(self.env_names),
-                       timeout=request.timeout, max_bytes=request.max_output_bytes)
+        proc = None
         thread_id = turn_id = None
         output: dict[str, str] = {}
         terminal: dict[str, Any] | None = None
@@ -28,6 +34,12 @@ class CodexDriver:
         serial = 0
         control_ids: dict[int, str] = {}
         control_sent: set[str] = set()
+
+        def receipt(status: str, **kwargs: Any) -> Receipt:
+            emit("model_identity", {"requested_model": request.model, "actual_model": None,
+                                   "telemetry": "missing"})
+            return Receipt(status, session_id=thread_id, turn_id=turn_id, usage=usage,
+                           requested_model=request.model, actual_model=None, **kwargs)
 
         def on_message(message: dict[str, Any]) -> None:
             nonlocal terminal, usage
@@ -85,6 +97,8 @@ class CodexDriver:
                 on_message(message)
 
         try:
+            proc = Process([*self.command, "app-server"], cwd=request.cwd, env=environment(self.env_names),
+                           timeout=request.timeout, max_bytes=request.max_output_bytes)
             emit("process_started", {"pid": proc.process.pid, "driver": self.name})
             rpc("initialize", {"clientInfo": {"name": "sisyfus", "version": __version__}})
             proc.send({"method": "initialized", "params": {}})
@@ -127,11 +141,12 @@ class CodexDriver:
                     on_message(message)
             status = {"completed": "COMPLETED", "failed": "ERROR", "interrupted": "INTERRUPTED"}.get(
                 terminal.get("status"), "UNKNOWN")
-            return Receipt(status, thread_id, turn_id, None, "\n".join(output.values()), usage,
-                           str(terminal["error"]) if terminal.get("error") else None)
+            return receipt(status, output="\n".join(output.values()),
+                           error=str(terminal["error"]) if terminal.get("error") else None)
         except (OSError, ValueError, KeyError, ProtocolError, EOFError, TimeoutError) as exc:
             # A missing terminal response never authorizes resending turn/start.
-            return Receipt("UNKNOWN", thread_id, turn_id, proc.process.poll(),
+            return receipt("UNKNOWN", exit_code=proc.process.poll() if proc else None,
                            error=f"{type(exc).__name__}: {exc}")
         finally:
-            proc.close()
+            if proc:
+                proc.close()

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import json
+import math
 import threading
 import webbrowser
 from functools import partial
@@ -20,590 +21,635 @@ from ..activity import (
 from .workspace import ResearchWorkspace, atomic_write_json
 
 
+def _finite(value: Any) -> Any:
+    """Browser JSON has no NaN/Infinity: keep such metrics readable as text."""
+    if isinstance(value, float) and not math.isfinite(value):
+        return "NaN" if value != value else ("Infinity" if value > 0 else "-Infinity")
+    if isinstance(value, dict):
+        return {key: _finite(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_finite(item) for item in value]
+    return value
+
+
 def _json_for_script(value: Any) -> str:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str).replace("</", "<\\/")
+    return json.dumps(
+        _finite(value), ensure_ascii=False, sort_keys=True, default=str, allow_nan=False
+    ).replace("</", "<\\/")
 
 
-# Esports-broadcast Observatory ("Arena"): claims are bosses on a dependency map,
-# the agent is the hero, verdicts land as hits/counter-kills, budget drains as HP.
-# Every visual is a projection of persisted facts; replay frames are deterministic
-# re-reductions of the event prefix — spectacle, never invention.
+# Research workspace Observatory: a quiet, light workbench whose centre is the
+# claim dependency graph (layered DAG, rectangular claim cards, text statuses),
+# with a contextual inspector and a calm event rail. Every visual is a
+# projection of persisted facts; replay frames are deterministic re-reductions
+# of the event prefix — presentation only, never invention.
 _TEMPLATE = """<!doctype html>
 <html lang="zh-CN" data-sisyfus-theme="__SISYFUS_THEME_ID__">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Sisyfus Arena · __TOPIC__</title>
+<meta name="sisyfus-legacy-shell" content="Sisyfus Research Observatory · Arena" />
+<meta name="sisyfus-legacy-title" content="Sisyfus Arena" />
+<title>__TOPIC__ · Sisyfus 研究工作台</title>
 <style>
 __SISYFUS_THEME__
 
-/* ---------- broadcast top bar ---------- */
-.topbar { display:flex; align-items:stretch; gap:0; border-bottom:2px solid var(--line);
-  background:linear-gradient(180deg, oklch(0.24 0.025 80), oklch(0.18 0.02 78)); }
-.scorebox { display:flex; align-items:center; gap:14px; padding:10px 22px; }
-.score { font-size:44px; font-weight:900; line-height:1; letter-spacing:-.03em; font-variant-numeric:tabular-nums; }
-.score.radiant { color:var(--radiant); } .score.dire { color:var(--dire); }
-.score-label { font-size:10px; color:var(--muted); }
-.vs { align-self:center; font-size:13px; color:var(--muted); font-weight:900; padding:0 4px; }
-.matchinfo { flex:1; min-width:0; padding:9px 18px; border-left:1px solid var(--line); }
-.matchinfo h1 { margin:0; font-size:14px; font-weight:700; line-height:1.35; white-space:nowrap;
-  overflow:hidden; text-overflow:ellipsis; }
-.matchinfo .sub { font-size:11px; color:var(--muted); margin-top:4px; display:flex; gap:14px; flex-wrap:wrap; }
-.bars { width:280px; padding:10px 18px; border-left:1px solid var(--line); display:grid; gap:7px; align-content:center; }
-.bar { position:relative; height:14px; background:oklch(0.13 0.01 75); border:1px solid var(--line); overflow:hidden; }
-.bar > i { position:absolute; inset:0; transform-origin:left; transition:transform .5s cubic-bezier(.16,1,.3,1); }
-.bar.hp > i { background:linear-gradient(90deg, var(--hp), oklch(0.72 0.17 55)); }
-.bar.mana > i { background:var(--mana); }
-.bar b { position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
-  font-size:9px; letter-spacing:.12em; color:oklch(0.98 0 0 / .92); mix-blend-mode:plus-lighter; }
-.livechip { display:flex; align-items:center; gap:8px; padding:0 20px; border-left:1px solid var(--line);
-  font-size:11px; font-weight:900; letter-spacing:.14em; white-space:nowrap; }
-.livechip .dot { width:9px; height:9px; border-radius:50%; background:var(--dire); box-shadow:0 0 10px var(--dire);
-  animation:pulse 1.8s ease-in-out infinite; }
-.livechip.replaying .dot { background:var(--gold); box-shadow:0 0 10px var(--gold); }
-.livechip.ended .dot { background:var(--muted); box-shadow:none; animation:none; }
-@keyframes pulse { 50% { opacity:.4 } }
-.lang-btn { font:inherit; font-weight:900; font-size:11px; letter-spacing:.1em; border:none; border-left:1px solid var(--line);
-  background:transparent; color:var(--muted); padding:0 18px; cursor:pointer; }
-.lang-btn:hover { color:var(--gold); }
+/* ---------- header ---------- */
+.tally { display:inline-flex; flex-wrap:wrap; gap:2px 12px; }
+#runState:empty { display:none; }
 
-/* ---------- stage: arena + right column ---------- */
-.stage { display:grid; grid-template-columns:1fr var(--right-column); }
-.arena-wrap { position:relative; overflow:hidden; border-right:2px solid var(--line); }
-.arena-wrap { display:flex; }
-#arena { display:block; width:100%; height:100%; min-height:520px; max-height:var(--stage-height); flex:1;
-  background:
-    radial-gradient(120% 90% at 50% -10%, oklch(0.24 0.03 90 / .55), transparent 55%),
-    radial-gradient(90% 120% at 50% 115%, oklch(0.1 0.02 60), transparent 60%),
-    var(--arena); }
-.shake { animation:shake .5s linear; }
-@keyframes shake { 10%{transform:translate(-7px,3px)} 30%{transform:translate(6px,-4px)}
-  50%{transform:translate(-5px,-3px)} 70%{transform:translate(4px,3px)} 90%{transform:translate(-2px,1px)} }
+/* ---------- graph workspace ---------- */
+.arena-wrap { min-height:var(--stage-height); }
+.graph-head { display:flex; align-items:center; flex-wrap:wrap; gap:10px 16px; padding:12px 20px 11px;
+  border-bottom:1px solid var(--line); background:var(--paper); }
+.graph-heading { flex:1 1 220px; min-width:0; }
+.graph-title { margin:0; font:500 15px/1.4 var(--font-serif); color:var(--ink); }
+.graph-sub { margin-top:1px; font-size:12.5px; color:var(--muted); }
+.graph-tools { display:flex; align-items:center; flex-wrap:wrap; gap:4px; }
+.tool { height:30px; min-width:32px; padding:0 9px; border:1px solid var(--line); border-radius:8px;
+  background:var(--surface); color:var(--ink-2); font-size:13px; line-height:1; }
+.tool:hover { border-color:var(--line-strong); background:var(--surface-hover); color:var(--ink); }
+.tool.summary { margin-right:8px; color:var(--accent-ink); border-color:var(--accent-line); background:var(--accent-soft); }
+.zoom-read { min-width:46px; text-align:center; font-size:12px; color:var(--muted); font-variant-numeric:tabular-nums; }
+.graph-note { display:grid; gap:4px; padding:9px 20px 10px; font-size:13px; line-height:1.65; color:var(--ink-2);
+  background:var(--paper-raised); border-bottom:1px solid var(--line); }
+.graph-note p { margin:0; }
+.graph-note .unc-label { margin-right:6px; font-weight:600; color:var(--warn); }
+.chip-btn { display:inline-flex; align-items:center; gap:6px; max-width:100%; margin:2px 6px 2px 0; padding:2px 4px 2px 9px;
+  border:1px solid var(--line); border-radius:999px; background:var(--surface); color:var(--ink-2);
+  font-size:12.5px; line-height:1.5; text-align:left; }
+.chip-btn:hover { border-color:var(--line-strong); color:var(--ink); }
+.chip-btn .mono { color:var(--muted); }
+.chip-btn .status,.chip-btn .tag { height:19px; font-size:11.5px; }
+.graph-viewport { position:relative; flex:1 1 0; min-height:300px; overflow:auto; cursor:grab;
+  background-color:var(--paper);
+  background-image:radial-gradient(circle, var(--line) 1px, transparent 1.3px); background-size:22px 22px; }
+.graph-viewport.panning { cursor:grabbing; user-select:none; }
+.graph-viewport:focus-visible { outline-offset:-3px; }
+.graph-canvas { display:flex; min-width:100%; min-height:100%; }
+#arena { display:block; flex:0 0 auto; margin:auto; overflow:visible; }
+.graph-empty { position:absolute; inset:0; display:grid; place-items:center; padding:24px;
+  color:var(--muted); font-size:14px; text-align:center; }
+.graph-empty.error { color:var(--bad); line-height:1.7; }
+.graph-legend { display:flex; flex-wrap:wrap; align-items:center; gap:6px 16px; padding:8px 20px 10px;
+  font-size:12px; color:var(--muted); border-top:1px solid var(--line); background:var(--paper); }
+.graph-legend .lg { display:inline-flex; flex-wrap:wrap; align-items:center; gap:5px; }
+.graph-legend .status { height:20px; font-size:11.5px; }
+.endboard { display:none !important; }
 
-.boss-name { font-size:15px; font-weight:800; fill:var(--ink); }
-.boss-num { font-size:11px; font-weight:900; fill:oklch(0.14 0.015 75); }
-#bosses g.claim-node { cursor:pointer; }
-#bosses g.selected .sel-ring { display:block; }
-.sel-ring { display:none; }
-.hero-bob { animation:bob 2.6s ease-in-out infinite; }
-@keyframes bob { 50% { transform:translateY(-5px) } }
+/* edges: direction = prerequisite → dependent claim */
+.edge { fill:none; stroke:var(--edge); stroke-width:1.5; marker-end:url(#arrowHead); transition:opacity .2s, stroke .2s; }
+.edge.lit { stroke:var(--edge-strong); }
+.edge.hot { stroke:var(--accent); stroke-width:1.8; stroke-dasharray:6 5; marker-end:url(#arrowHeadAccent); }
+.edge.focus { stroke:var(--accent); stroke-width:2.2; stroke-dasharray:none; marker-end:url(#arrowHeadAccent); }
+.edge.dim { opacity:.25; }
+#arrowHead path { fill:var(--edge-strong); }
+#arrowHeadAccent path { fill:var(--accent); }
 
-/* hover tip + unit card */
-.tip { position:absolute; z-index:6; pointer-events:none; max-width:300px; background:oklch(0.13 0.012 75/.96);
-  border:1px solid var(--gold); padding:9px 12px; font-size:11.5px; line-height:1.55; display:none; }
-.tip b { color:var(--gold); }
-.unit-card { position:absolute; left:50%; bottom:14px; transform:translateX(-50%); z-index:5;
-  width:min(430px, calc(100% - 28px)); background:oklch(0.14 0.014 75/.93); backdrop-filter:blur(10px);
-  border:1px solid var(--line); border-top:3px solid var(--gold); display:none; box-shadow:0 18px 50px oklch(0 0 0/.55); }
-.unit-card.on { display:block; animation:ucin .32s cubic-bezier(.16,1,.3,1); }
-@keyframes ucin { from { opacity:0; transform:translate(-50%,12px) } }
-.uc-head { display:flex; align-items:baseline; gap:9px; padding:10px 13px 7px; }
-.uc-num { font-weight:900; color:var(--gold); }
-.uc-label { font-size:16px; font-weight:900; }
-.uc-id { font-size:10px; color:var(--muted); }
-.uc-close { margin-left:auto; cursor:pointer; color:var(--muted); font-size:14px; padding:0 3px; background:none; border:none; font:inherit; }
-.uc-body { padding:0 13px 11px; font-size:11.5px; line-height:1.6; max-height:34vh; overflow-y:auto; }
-.uc-sec { margin-top:8px; padding-top:7px; border-top:1px solid oklch(0.24 0.02 80); }
-.uc-sec .k { font-size:9px; letter-spacing:.12em; color:var(--muted); text-transform:uppercase; font-weight:800; }
-.uc-exp { display:flex; gap:8px; justify-content:space-between; font-size:11px; margin-top:4px; }
-.edge { stroke:var(--line); stroke-width:2.5; fill:none; transition:stroke .45s, stroke-width .45s; }
-.edge.lit { stroke:oklch(0.52 0.08 120); stroke-width:3; }
-.edge.hot { stroke:var(--gold); stroke-width:3.2; stroke-dasharray:8 7; animation:dashmove 1.1s linear infinite; }
-@keyframes dashmove { to { stroke-dashoffset:-30 } }
+/* claim cards */
+.claim-node { cursor:pointer; outline:none; }
+.claim-node .node-shadow { fill:rgba(71,54,34,.06); }
+.claim-node .node-box { fill:var(--surface); stroke:var(--line-strong); stroke-width:1; transition:stroke .15s; }
+.claim-node:hover .node-box { stroke:var(--edge-strong); }
+.claim-node .node-stripe { fill:var(--open); }
+.claim-node .node-idx { font:600 11.5px var(--font-mono); fill:var(--muted); }
+.claim-node .node-label { font:600 14px var(--font-sans); fill:var(--ink); }
+.claim-node .node-stmt { font:400 12.5px var(--font-sans); fill:var(--muted); }
+.claim-node .node-meta { font:400 12px var(--font-sans); fill:var(--muted); }
+.claim-node .node-meta .warn { fill:var(--warn); font-weight:600; }
+.claim-node .pill-bg { fill:var(--open-soft); }
+.claim-node .pill-text { font:600 11.5px var(--font-sans); fill:var(--open); }
+.claim-node.st-SUPPORTED .node-stripe,.claim-node.st-SUPPORTED .pill-text { fill:var(--ok); }
+.claim-node.st-SUPPORTED .pill-bg { fill:var(--ok-soft); }
+.claim-node.st-SUPPORTED .node-box { stroke:var(--ok-line); }
+.claim-node.st-REFUTED .node-stripe,.claim-node.st-REFUTED .pill-text { fill:var(--bad); }
+.claim-node.st-REFUTED .pill-bg { fill:var(--bad-soft); }
+.claim-node.st-REFUTED .node-box { stroke:var(--bad-line); }
+.claim-node.st-INCONCLUSIVE .node-stripe,.claim-node.st-INCONCLUSIVE .pill-text { fill:var(--warn); }
+.claim-node.st-INCONCLUSIVE .pill-bg { fill:var(--warn-soft); }
+.claim-node.st-INCONCLUSIVE .node-box { stroke:var(--warn-line); }
+.claim-node.st-INVALIDATED .node-stripe,.claim-node.st-INVALIDATED .pill-text { fill:var(--void); }
+.claim-node.st-INVALIDATED .pill-bg { fill:var(--void-soft); }
+.claim-node.st-INVALIDATED .node-box { fill:#faf9fb; }
+.claim-node.st-INVALIDATED .node-label { fill:var(--ink-2); }
+.claim-node.optional .node-box { stroke-dasharray:5 4; }
+.claim-node.untouched .node-box { fill:var(--paper-raised); }
+.claim-node .node-ring { fill:none; stroke:transparent; stroke-width:1.5; }
+.claim-node.target .node-ring { stroke:var(--accent); stroke-dasharray:4 4; }
+.claim-node .target-tag { font:600 11.5px var(--font-sans); fill:var(--accent-ink); }
+.claim-node.selected .node-box { stroke:var(--accent); stroke-width:2; }
+.claim-node .node-focus { fill:none; stroke:transparent; stroke-width:2.5; }
+.claim-node:focus-visible .node-focus { stroke:var(--focus); }
 
-/* floating combat text */
-.fx-layer { position:absolute; inset:0; pointer-events:none; overflow:hidden; }
-.dmg { position:absolute; transform:translate(-50%,-50%); font-weight:900; white-space:nowrap;
-  animation:dmg 1.5s cubic-bezier(.2,.9,.3,1) forwards; text-shadow:0 2px 14px oklch(0 0 0/.8); }
-@keyframes dmg { 0%{opacity:0; transform:translate(-50%,-30%) scale(.4)}
-  14%{opacity:1; transform:translate(-50%,-70%) scale(1.25)}
-  30%{transform:translate(-50%,-90%) scale(1)}
-  100%{opacity:0; transform:translate(-50%,-190%) scale(.92)} }
-.dmg.pass { color:var(--radiant); font-size:30px; }
-.dmg.fail { color:var(--dire); font-size:34px; }
-.dmg.miss { color:var(--ghost); font-size:20px; }
-.dmg.soft { color:var(--amber); font-size:20px; }
-.dmg.loot { color:var(--gold); font-size:22px; }
-
-/* announcer slam */
-.announcer { position:absolute; left:0; right:0; top:34%; display:flex; justify-content:center; pointer-events:none; }
-.announcer span { font-size:clamp(30px,5vw,58px); font-weight:900; letter-spacing:.06em; font-style:italic;
-  padding:6px 34px; color:var(--ink); background:linear-gradient(90deg, transparent, oklch(0.1 0.01 60/.92) 18%, oklch(0.1 0.01 60/.92) 82%, transparent);
-  border-block:2px solid currentColor; animation:slam 1.6s cubic-bezier(.16,1,.3,1) forwards; }
-.announcer .radiant { color:var(--radiant); } .announcer .dire { color:var(--dire); }
-.announcer .gold { color:var(--gold); } .announcer .ghost { color:var(--ghost); }
-@keyframes slam { 0%{opacity:0; transform:scale(2.1)} 12%{opacity:1; transform:scale(1)}
-  80%{opacity:1} 100%{opacity:0; transform:scale(.96) translateY(-8px)} }
-
-.combo { position:absolute; right:16px; top:14px; font-size:15px; font-weight:900; color:var(--gold);
-  letter-spacing:.1em; opacity:0; transition:opacity .3s; }
-.combo.on { opacity:1; }
-
-/* budget drain floaters (anchored inside .bar) */
-.bar-fx { position:absolute; right:5px; top:-2px; z-index:2; font-size:11px; font-weight:900; pointer-events:none;
-  animation:barfx 1.1s ease-out forwards; text-shadow:0 1px 6px oklch(0 0 0/.8); }
-.bar-fx.down { color:oklch(0.85 0.13 30); }
-@keyframes barfx { 12% { opacity:1; transform:translateY(0) } 100% { opacity:0; transform:translateY(-13px) } }
-
-/* right column: kill feed + quest log */
-.rightcol { display:flex; flex-direction:column; background:var(--panel); min-height:0; height:var(--stage-height); }
-.col-h { padding:8px 14px 6px; font-size:10px; color:var(--muted); border-bottom:1px solid var(--line);
-  display:flex; justify-content:space-between; align-items:baseline; }
-#feed { flex:1.2; overflow-y:auto; min-height:170px; padding:6px 0; }
-.feed-row { display:flex; gap:9px; padding:5px 14px; font-size:12px; line-height:1.45; align-items:baseline;
-  animation:feedin .35s cubic-bezier(.16,1,.3,1); }
-@keyframes feedin { from{opacity:0; transform:translateX(26px)} }
+/* ---------- side column: inspector, claims, waits, event rail ---------- */
+.inspector { padding:16px 20px 18px; border-bottom:1px solid var(--line); }
+.inspector.on { background:var(--surface); }
+.insp-kicker { margin:0 0 6px; font-size:12px; font-weight:600; color:var(--muted); }
+.insp-empty { margin:0; font-size:13px; line-height:1.7; color:var(--muted); }
+.insp-head { display:flex; align-items:flex-start; gap:10px; }
+.insp-idx { flex:0 0 auto; margin-top:5px; font-size:12px; color:var(--muted); }
+.insp-title { flex:1; min-width:0; margin:0; font:500 17px/1.5 var(--font-serif); color:var(--ink); overflow-wrap:anywhere; }
+.insp-close { flex:0 0 auto; width:30px; height:30px; border:1px solid transparent; border-radius:7px;
+  background:transparent; color:var(--muted); font-size:14px; }
+.insp-close:hover { border-color:var(--line); color:var(--ink); }
+.insp-tags { display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin-top:10px; }
+.tag { display:inline-flex; align-items:center; height:22px; padding:0 8px; border:1px solid var(--line); border-radius:999px;
+  background:var(--surface); color:var(--ink-2); font-size:12px; white-space:nowrap; }
+.tag.dashed { border-style:dashed; }
+.tag.crit { color:var(--bad); border-color:#e8c4ba; }
+.tag.warn { color:var(--warn); border-color:#e8d4a4; background:var(--warn-soft); }
+.insp-why { display:grid; gap:4px; margin:12px 0 0; padding:10px 12px; list-style:none; border:1px solid var(--line);
+  border-radius:8px; background:var(--paper-raised); font-size:13px; line-height:1.7; color:var(--ink-2); }
+.insp-sec { margin-top:16px; }
+.insp-sec h3 { display:flex; align-items:baseline; gap:6px; margin:0 0 6px; font-size:12px; font-weight:600; color:var(--muted); }
+.insp-sec h3 .n { font-weight:400; color:var(--muted); }
+.insp-text { margin:0; font-size:14px; line-height:1.8; color:var(--ink); overflow-wrap:anywhere; }
+.insp-conc { margin:0; padding-left:10px; border-left:2px solid var(--accent); font-size:14px; line-height:1.75; color:var(--ink); overflow-wrap:anywhere; }
+.insp-id { margin-top:6px; font-size:11.5px; color:var(--muted); overflow-wrap:anywhere; }
+.insp-list { display:grid; gap:6px; margin:0; padding:0; list-style:none; }
+.insp-list li { padding:8px 10px; border:1px solid var(--line); border-radius:8px; background:var(--surface); font-size:13px; line-height:1.6; }
+.insp-row { display:flex; align-items:flex-start; justify-content:space-between; gap:8px; }
+.insp-row > span:first-child { min-width:0; overflow-wrap:anywhere; }
+.insp-sub { margin-top:3px; font-size:12px; color:var(--muted); overflow-wrap:anywhere; }
+.insp-note { margin:14px 0 0; font-size:12.5px; color:var(--warn); }
+.insp-more { margin-top:4px; font-size:12px; color:var(--muted); }
+#quest { display:grid; gap:2px; padding:0 10px 8px; }
+.q-row { display:grid; gap:3px; width:100%; padding:9px 10px; border:1px solid transparent; border-radius:8px;
+  background:transparent; color:var(--ink); text-align:left; }
+.q-row:hover { border-color:var(--line); background:var(--surface); }
+.q-row.selected { border-color:var(--accent); background:var(--surface); }
+.q-top { display:flex; align-items:center; gap:8px; min-width:0; }
+.q-idx { flex:0 0 auto; font-size:11.5px; color:var(--muted); }
+.q-label { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13.5px; font-weight:600; }
+.q-sub { display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; overflow-wrap:anywhere;
+  font-size:12.5px; line-height:1.65; color:var(--muted); }
+.q-tags { display:flex; flex-wrap:wrap; gap:6px; }
+.q-tags .tag { height:20px; font-size:11.5px; }
+#waitingList { padding-bottom:6px; }
+#feed { padding:0 0 16px; }
 .feed-row[data-seq] { cursor:pointer; }
-.feed-row[data-seq]:hover { background:oklch(0.25 0.022 80); }
-.feed-row .seq { color:var(--muted); font-size:10px; min-width:30px; }
-.feed-row .ts { margin-left:auto; color:var(--muted); font-size:9.5px; white-space:nowrap; opacity:.8; }
-.feed-row.pass { border-left:3px solid var(--radiant); } .feed-row.fail { border-left:3px solid var(--dire); }
-.feed-row.loot { border-left:3px solid var(--gold); } .feed-row.miss { border-left:3px solid var(--ghost); }
-.feed-row.info { border-left:3px solid transparent; color:var(--muted); }
-#quest { flex:1; overflow-y:auto; border-top:2px solid var(--line); min-height:150px; }
-.q-row { padding:8px 14px; border-bottom:1px solid oklch(0.26 0.02 80); }
-.q-row .q-title { display:flex; gap:8px; align-items:baseline; font-size:12.5px; font-weight:700; }
-.q-mark { font-size:14px; width:20px; text-align:center; }
-.q-row .q-state { margin-left:auto; font-size:9px; letter-spacing:.1em; font-weight:900; }
-.q-row .q-sub { font-size:10.5px; color:var(--muted); margin-top:3px; padding-left:28px; }
-.q-SUPPORTED .q-state { color:var(--radiant); } .q-REFUTED .q-state { color:var(--dire); }
-.q-OPEN .q-state,.q-INCONCLUSIVE .q-state { color:var(--amber); } .q-INVALIDATED .q-state { color:var(--ghost); }
+.feed-row[data-seq]:hover { background:var(--surface); }
+.feed-row .glyph { flex:0 0 12px; text-align:center; color:var(--faint); }
+.feed-row .feed-text { min-width:0; overflow-wrap:anywhere; }
+.feed-row.pass { border-left-color:var(--ok); } .feed-row.pass .glyph { color:var(--ok); }
+.feed-row.fail { border-left-color:var(--bad); } .feed-row.fail .glyph { color:var(--bad); }
+.feed-row.miss { border-left-color:var(--void); } .feed-row.miss .glyph { color:var(--void); }
+.feed-row.soft { border-left-color:var(--warn); } .feed-row.soft .glyph { color:var(--warn); }
+.feed-row.loot { border-left-color:var(--accent); } .feed-row.loot .glyph { color:var(--accent); }
+.feed-row.info { border-left-color:transparent; }
 
-/* ---------- timeline (replay deck) ---------- */
-.deck { display:flex; align-items:center; gap:14px; padding:10px 18px; background:oklch(0.15 0.015 75);
-  border-block:2px solid var(--line); }
-.deck button { font:inherit; font-weight:900; border:1px solid var(--line); background:var(--panel); color:var(--ink);
-  padding:7px 13px; cursor:pointer; letter-spacing:.06em; }
-.deck button.active { background:var(--gold); color:oklch(0.16 0.02 80); border-color:var(--gold); }
-.deck select { font:inherit; background:var(--panel); color:var(--ink); border:1px solid var(--line); padding:6px 8px; }
-.timeline { position:relative; flex:1; height:46px; }
+/* ---------- replay deck ---------- */
 .timeline input[type=range] { position:absolute; inset:0; width:100%; margin:0; opacity:0; cursor:pointer; z-index:3; }
-.tl-track { position:absolute; left:0; right:0; top:15px; height:5px; background:oklch(0.28 0.02 80); }
-.tl-fill { position:absolute; left:0; top:15px; height:5px; background:var(--gold); }
-.tl-cursor { position:absolute; top:7.5px; width:20px; height:20px; border-radius:50%; background:var(--gold);
-  border:2.5px solid oklch(0.16 0.02 80); box-shadow:0 0 0 2.5px oklch(0.82 0.13 88/.4), 0 2px 9px oklch(0 0 0/.65);
-  transform:translateX(-50%); z-index:2; pointer-events:none; }
-.tl-mark { position:absolute; top:11px; width:7px; height:13px; transform:translateX(-50%) skewX(-14deg); z-index:1; }
-.tl-mark.pass { background:var(--radiant); } .tl-mark.fail { background:var(--dire); height:17px; top:9px; }
-.tl-mark.miss { background:var(--ghost); } .tl-mark.soft { background:var(--amber); }
-.tl-mark.loot { background:var(--gold); } .tl-mark.flag { background:var(--ink); }
-.tl-times { position:absolute; left:0; right:0; top:33px; display:flex; justify-content:space-between;
-  font-size:9px; color:var(--muted); pointer-events:none; letter-spacing:.04em; }
-.deck .stamp { min-width:250px; text-align:right; font-size:11px; color:var(--muted); }
+.timeline:focus-within .tl-cursor { box-shadow:0 0 0 3px var(--accent-soft), 0 0 0 5px var(--focus); }
+.tl-mark { position:absolute; top:9px; width:2px; height:10px; border-radius:1px; transform:translateX(-50%);
+  background:var(--line-strong); z-index:1; }
+.tl-mark.pass { background:var(--ok); } .tl-mark.fail { background:var(--bad); top:8px; height:12px; }
+.tl-mark.miss { background:var(--void); } .tl-mark.soft { background:var(--warn); }
+.tl-mark.loot { background:var(--accent); } .tl-mark.flag { background:var(--ink); top:7px; height:14px; }
 
-/* caster bar */
-.caster { display:flex; gap:12px; align-items:baseline; padding:10px 20px 12px; background:oklch(0.15 0.015 75); }
-.caster .tag { font-size:10px; color:var(--gold); white-space:nowrap; }
-#casterLine { font-size:14.5px; font-weight:600; line-height:1.5; }
-
-/* ---------- detail tabs (audit layer, unchanged honesty) ---------- */
-.tabs { position:sticky; top:0; z-index:20; display:flex; gap:6px; padding:14px 18px 0;
-  background:var(--arena-deep); overflow-x:auto; scrollbar-width:none; }
-.tabs::-webkit-scrollbar { display:none; }
-.tab { flex:0 0 auto; font:inherit; border:1px solid var(--line); border-bottom:none; background:transparent;
-  color:var(--muted); padding:8px 15px; cursor:pointer; font-size:12px; letter-spacing:.05em; }
-.tab:hover { color:var(--ink); }
-.tab.active { color:var(--ink); background:var(--panel); font-weight:800; }
-.view { display:none; padding:16px 18px 28px; } .view.active { display:block; }
-.grid { display:grid; grid-template-columns:repeat(12,1fr); gap:14px; }
-.card { background:var(--panel); border:1px solid var(--line); }
-.card-pad { padding:15px; }
+/* ---------- detail tabs (audit layer) ---------- */
+.view { display:none; padding:20px 24px 32px; } .view.active { display:block; }
+.grid { display:grid; grid-template-columns:repeat(12,minmax(0,1fr)); gap:16px; max-width:1240px; }
+.card { background:var(--surface); border:1px solid var(--line); border-radius:var(--radius); }
+.card-pad { padding:18px 20px; }
 .span-4{grid-column:span 4} .span-8{grid-column:span 8} .span-12{grid-column:span 12}
-.section-title { display:flex; justify-content:space-between; align-items:baseline; margin-bottom:10px; }
-.section-title h2 { margin:0; font-size:13px; letter-spacing:.08em; text-transform:uppercase; }
-.badge { font-size:10px; color:var(--muted); border:1px solid var(--line); padding:3px 8px; }
+.section-title { display:flex; justify-content:space-between; align-items:baseline; gap:10px; margin-bottom:12px; }
+.section-title h2 { margin:0; font:500 15px/1.4 var(--font-serif); color:var(--ink); }
+.badge { display:inline-flex; align-items:center; gap:6px; padding:2px 9px; border:1px solid var(--line); border-radius:999px;
+  font-size:12px; color:var(--muted); }
 .list { display:grid; gap:8px; }
-.item { border:1px solid var(--line); background:oklch(0.18 0.018 78); padding:10px 12px; }
-.item-head { display:flex; gap:10px; justify-content:space-between; align-items:flex-start; }
-.item-title { font-weight:700; font-size:13px; }
-.item-meta { font-size:10.5px; color:var(--muted); margin-top:4px; }
-.tiny { font-size:11px; color:var(--muted); }
-.status { font-size:9px; font-weight:900; letter-spacing:.1em; padding:3px 7px; border:1px solid currentColor; white-space:nowrap; }
-.PASS,.SUPPORTED,.SOLVED,.ACTIVE{color:var(--radiant)} .FAIL,.REFUTED,.FAILED{color:var(--dire)}
-.INCONCLUSIVE,.OPEN,.BLOCKED,.EXHAUSTED,.BUDGET_EXHAUSTED,.WAITING,.CONTESTED{color:var(--amber)}
-.INVALID,.INVALIDATED,.ERROR{color:var(--ghost)}
-table { width:100%; border-collapse:collapse; font-size:11.5px; }
-th,td { text-align:left; padding:8px 9px; border-bottom:1px solid var(--line); vertical-align:top; }
-th { color:var(--muted); font-weight:700; position:sticky; top:0; background:var(--panel); }
+.item { padding:11px 13px; border:1px solid var(--line); border-radius:8px; background:var(--paper-raised); }
+.item-head { display:flex; justify-content:space-between; align-items:flex-start; gap:10px; }
+.item-head > div { min-width:0; }
+.item-title { font-size:13.5px; font-weight:600; overflow-wrap:anywhere; }
+.item-meta { margin-top:3px; font-size:12px; color:var(--muted); overflow-wrap:anywhere; }
+.tiny { font-size:12px; color:var(--muted); }
+table { width:100%; border-collapse:collapse; font-size:12.5px; }
+th,td { padding:8px 10px; text-align:left; vertical-align:top; border-bottom:1px solid var(--line); }
+th { position:sticky; top:0; background:var(--surface); color:var(--muted); font-weight:600; }
 .table-wrap { overflow:auto; max-height:560px; }
-.goal-tree{display:grid;gap:8px} .goal-node{border-left:3px solid var(--line);padding:8px 11px;background:oklch(0.18 0.018 78)}
-.goal-node.pass{border-color:var(--radiant)} .goal-node.fail{border-color:var(--dire)} .goal-node.open{border-color:var(--amber)}
+.goal-tree { display:grid; gap:8px; }
+.goal-node { padding:9px 12px; border:1px solid var(--line); border-left:3px solid var(--line-strong); border-radius:8px; background:var(--paper-raised); }
+.goal-node.pass { border-left-color:var(--ok); } .goal-node.fail { border-left-color:var(--bad); } .goal-node.open { border-left-color:var(--warn); }
 .indent-1{margin-left:22px} .indent-2{margin-left:44px} .indent-3{margin-left:66px}
-.event-row{display:grid;grid-template-columns:52px 165px 110px 1fr;gap:10px;padding:8px 0;border-bottom:1px solid var(--line)}
-.event-data{white-space:pre-wrap;word-break:break-word;color:var(--muted)}
-.empty{padding:22px;text-align:center;color:var(--muted);border:1px dashed var(--line)}
-.footer{color:var(--muted);font-size:10.5px;padding:8px 18px 20px}
-
-/* evidence: inline metrics + artifact links */
-.ev-metrics { display:flex; flex-wrap:wrap; gap:5px 8px; margin-top:7px; }
-.ev-metrics .m { font-family:ui-monospace,Menlo,Consolas,monospace; font-size:10.5px; color:var(--ink);
-  background:oklch(0.15 0.012 75); border:1px solid var(--line); padding:2px 7px; }
-.ev-art { margin-top:6px; font-size:10.5px; color:var(--muted); }
-.ev-art a { color:var(--gold); text-decoration:none; border-bottom:1px dotted var(--gold); }
-.ev-art a:hover { filter:brightness(1.15); }
-
-/* event stream: collapsible rows + filters */
-.ev-filter { display:flex; gap:10px; margin-bottom:10px; flex-wrap:wrap; }
-.ev-filter select,.ev-filter input { font:inherit; font-size:12px; background:oklch(0.18 0.018 78);
-  color:var(--ink); border:1px solid var(--line); padding:6px 9px; }
+.event-row { display:grid; grid-template-columns:52px 165px 110px 1fr; gap:10px; padding:8px 0; border-bottom:1px solid var(--line); }
+.event-data { white-space:pre-wrap; word-break:break-word; color:var(--muted); }
+.empty { padding:24px; text-align:center; color:var(--muted); border:1px dashed var(--line-strong); border-radius:8px; }
+.footer { max-width:1100px; padding:10px 24px 22px; font-size:12px; line-height:1.75; color:var(--muted); }
+.ev-metrics { display:flex; flex-wrap:wrap; gap:5px 6px; margin-top:7px; }
+.ev-metrics .m { padding:1px 7px; border:1px solid var(--line); border-radius:6px; background:var(--paper-raised);
+  font-family:var(--font-mono); font-size:11.5px; color:var(--ink-2); overflow-wrap:anywhere; }
+.ev-art { margin-top:6px; font-size:12px; color:var(--muted); overflow-wrap:anywhere; }
+.ev-art a { color:var(--accent); }
+.ev-filter { display:flex; flex-wrap:wrap; gap:10px; margin-bottom:10px; }
+.ev-filter select,.ev-filter input { padding:6px 10px; border:1px solid var(--line); border-radius:8px; background:var(--surface);
+  color:var(--ink); font-size:13px; }
 .ev-filter input { flex:1; min-width:180px; }
 .ev-details { border-bottom:1px solid var(--line); }
-.ev-details summary { display:grid; grid-template-columns:48px 200px 110px 1fr; gap:10px; padding:7px 6px;
-  cursor:pointer; list-style:none; align-items:baseline; }
+.ev-details summary { display:grid; grid-template-columns:52px 210px 130px 1fr; gap:10px; align-items:baseline;
+  padding:8px 6px; list-style:none; cursor:pointer; }
 .ev-details summary::-webkit-details-marker { display:none; }
-.ev-details summary:hover,.ev-details[open] summary { background:oklch(0.18 0.018 78); }
-.ev-type { font-weight:800; font-size:11px; }
-.ev-type.pass{color:var(--radiant)} .ev-type.fail{color:var(--dire)} .ev-type.loot{color:var(--gold)}
-.ev-type.miss{color:var(--ghost)} .ev-type.soft{color:var(--amber)} .ev-type.info{color:var(--ink)}
-.ev-sum { color:var(--muted); font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.ev-json { white-space:pre-wrap; word-break:break-word; color:var(--muted); font-size:10.5px;
-  padding:8px 12px 12px 64px; margin:0; }
+.ev-details summary:hover,.ev-details[open] summary { background:var(--paper-raised); }
+.ev-type { font-size:12px; font-weight:600; overflow-wrap:anywhere; }
+.ev-type.pass{color:var(--ok)} .ev-type.fail{color:var(--bad)} .ev-type.loot{color:var(--accent-ink)}
+.ev-type.miss{color:var(--void)} .ev-type.soft{color:var(--warn)} .ev-type.info{color:var(--ink-2)}
+.ev-sum { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12.5px; color:var(--muted); }
+.ev-json { margin:0; padding:8px 12px 12px 68px; white-space:pre-wrap; word-break:break-word; font-size:11.5px; color:var(--ink-2); }
 
-/* conclusion one-liners */
-.uc-conc { color:var(--gold); font-weight:700; font-size:12.5px; line-height:1.5; margin-bottom:4px; }
-.q-row .q-sub.q-conc { color:oklch(0.78 0.06 90); }
-
-/* ---------- final report (conclusion-first, printable) ---------- */
-.rpt { display:grid; gap:14px; max-width:980px; margin:0 auto; }
-.rpt-topic { font-size:13px; color:var(--muted); margin-top:6px; line-height:1.6; }
-.rpt-take { margin:0 0 14px; padding-left:20px; display:grid; gap:7px; font-size:13px; line-height:1.55; }
-.rpt-take li::marker { content:'💰 '; }
-.rpt-claims { display:grid; gap:6px; }
-.rpt-claim { display:flex; gap:9px; align-items:baseline; border:1px solid var(--line);
-  background:oklch(0.18 0.018 78); padding:9px 12px; }
-.rpt-claim .rpt-conc { color:var(--muted); font-size:11.5px; line-height:1.5; }
-.rpt-claim .st { margin-left:auto; flex:0 0 auto; }
-.rpt-cblock { border:1px solid var(--line); background:oklch(0.18 0.018 78); padding:12px 14px; margin-bottom:10px; }
-.rpt-chead { display:flex; gap:9px; align-items:baseline; font-size:13.5px; }
+/* ---------- report (conclusion-first, printable) ---------- */
+.rpt { display:grid; gap:16px; max-width:880px; margin:0 auto; }
+.rpt-kicker { font-size:12px; color:var(--muted); }
+.rpt-title { margin:4px 0 2px; font:400 26px/1.35 var(--font-serif); color:var(--ink); }
+.rpt-topic { font-size:14px; line-height:1.75; color:var(--ink-2); overflow-wrap:anywhere; }
+.rpt-note { margin:10px 0 0; font-size:13px; line-height:1.7; color:var(--muted); }
+.rpt-answer { margin-top:14px; padding:12px 16px; border-left:3px solid var(--accent); background:var(--paper-raised);
+  font-size:15px; line-height:1.8; overflow-wrap:anywhere; }
+.rpt-facts { display:flex; flex-wrap:wrap; gap:4px 18px; margin-top:14px; font-size:12.5px; color:var(--muted); }
+.rpt-facts b { color:var(--ink); font-weight:600; font-variant-numeric:tabular-nums; }
+.rpt-claims { display:grid; gap:8px; }
+.rpt-claim { display:grid; grid-template-columns:auto minmax(0,1fr) auto; gap:4px 10px; align-items:baseline;
+  padding:10px 12px; border:1px solid var(--line); border-radius:8px; background:var(--paper-raised); }
+.rpt-claim .rpt-conc { grid-column:2 / -1; font-size:13px; line-height:1.7; color:var(--muted); overflow-wrap:anywhere; }
+.rpt-mark { color:var(--muted); font-size:12px; }
+.rpt-cblock { margin-bottom:10px; padding:12px 14px; border:1px solid var(--line); border-radius:8px; background:var(--paper-raised); }
+.rpt-chead { display:flex; flex-wrap:wrap; align-items:baseline; gap:8px; font-size:14px; }
 .rpt-chead .status { margin-left:auto; }
-.rpt-stmt { color:var(--muted); font-size:11.5px; margin:5px 0 9px; line-height:1.55; }
-.rpt-conc-line { color:var(--gold); font-weight:700; font-size:12.5px; line-height:1.5; margin:2px 0 8px; }
-.rpt-ev { border-top:1px solid oklch(0.24 0.02 80); padding:7px 0; display:flex; gap:10px;
-  align-items:baseline; flex-wrap:wrap; }
+.rpt-stmt { margin:6px 0 9px; font-size:13px; line-height:1.75; color:var(--muted); overflow-wrap:anywhere; }
+.rpt-conc-line { margin:4px 0 8px; font-size:13.5px; line-height:1.7; color:var(--ink); }
+.rpt-ev { display:flex; flex-wrap:wrap; align-items:baseline; gap:8px 10px; padding:8px 0; border-top:1px solid var(--line); }
 .rpt-ev .ev-metrics,.rpt-ev .ev-art { margin-top:0; }
-.rpt-answer { font-size:15px; line-height:1.65; font-weight:600; margin-top:12px; padding:11px 14px;
-  border-left:3px solid var(--gold); background:oklch(0.19 0.02 80); }
 .rpt-do { counter-reset:step; display:grid; gap:8px; }
-.rpt-step { position:relative; border:1px solid var(--line); border-left:3px solid var(--radiant);
-  background:oklch(0.18 0.018 78); padding:10px 13px 10px 42px; font-size:13px; line-height:1.55; }
-.rpt-step::before { counter-increment:step; content:counter(step); position:absolute; left:14px; top:10px;
-  font-weight:900; color:var(--radiant); }
-.rpt-dont .rpt-step { border-left-color:var(--dire); padding-left:38px; }
-.rpt-dont .rpt-step::before { content:'✕'; color:var(--dire); }
+.rpt-step { position:relative; padding:10px 13px 10px 40px; border:1px solid var(--line); border-radius:8px;
+  background:var(--paper-raised); font-size:13.5px; line-height:1.7; overflow-wrap:anywhere; }
+.rpt-step::before { counter-increment:step; content:counter(step); position:absolute; left:15px; top:10px;
+  font-weight:600; color:var(--ok); }
+.rpt-dont .rpt-step::before { content:'✕'; color:var(--bad); }
 .rpt-fold > summary { cursor:pointer; list-style:none; }
 .rpt-fold > summary::-webkit-details-marker { display:none; }
-.rpt-fold > summary::after { content:'＋'; color:var(--muted); font-weight:900; }
-.rpt-fold[open] > summary::after { content:'－'; }
-.rpt-fold[open] > summary { margin-bottom:10px; }
+.rpt-fold > summary::after { content:'展开'; font-size:12px; color:var(--muted); }
+.rpt-fold[open] > summary::after { content:'收起'; }
+.rpt-fold[open] > summary { margin-bottom:12px; }
+html[lang="en"] .rpt-fold > summary::after { content:'Show'; }
+html[lang="en"] .rpt-fold[open] > summary::after { content:'Hide'; }
 
-/* ---------- end-game scoreboard ---------- */
-.endboard { position:absolute; inset:0; z-index:8; display:none; align-items:center; justify-content:center;
-  background:oklch(0.1 0.012 70/.8); backdrop-filter:blur(7px); }
-.endboard.on { display:flex; animation:ebfade .35s ease-out; }
-@keyframes ebfade { from { opacity:0 } }
-.eb-panel { width:min(620px,92%); max-height:94%; overflow-y:auto; padding:24px 28px 20px;
-  background:linear-gradient(180deg, oklch(0.2 0.02 80), oklch(0.15 0.015 75));
-  border:1px solid var(--line); border-top:4px solid var(--gold); box-shadow:0 30px 90px oklch(0 0 0/.65);
-  animation:ebup .5s cubic-bezier(.16,1,.3,1); }
-@keyframes ebup { from { opacity:0; transform:translateY(26px) scale(.97) } }
-.eb-kicker { font-size:10px; letter-spacing:.3em; color:var(--muted); font-weight:800; text-transform:uppercase; }
-.eb-title { font-size:clamp(30px,4.6vw,46px); font-weight:900; font-style:italic; letter-spacing:.04em;
-  line-height:1.05; margin:8px 0 2px; }
-.eb-title.radiant { color:var(--radiant); } .eb-title.dire { color:var(--dire); } .eb-title.gold { color:var(--gold); }
-.eb-sub { font-size:11.5px; color:var(--muted); margin-bottom:14px; overflow:hidden;
-  display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; }
-.eb-score { display:flex; align-items:baseline; gap:12px; margin:6px 0 18px; }
-.eb-score .n { font-size:40px; font-weight:900; font-variant-numeric:tabular-nums; line-height:1; }
-.eb-score .n.radiant{color:var(--radiant)} .eb-score .n.dire{color:var(--dire)}
-.eb-score .lbl { font-size:9px; color:var(--muted); letter-spacing:.14em; text-transform:uppercase; font-weight:800; }
-.eb-score .vs2 { color:var(--muted); font-weight:900; font-size:13px; }
-.eb-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:8px; margin-bottom:16px; }
-.eb-stat { border:1px solid var(--line); background:oklch(0.17 0.015 78); padding:8px 11px; }
-.eb-stat .k { font-size:9px; letter-spacing:.13em; color:var(--muted); text-transform:uppercase; font-weight:800; }
-.eb-stat .v { font-size:16px; font-weight:800; margin-top:3px; font-variant-numeric:tabular-nums; }
-.eb-claims { display:grid; gap:5px; margin-bottom:18px; }
-.eb-claim { display:flex; gap:8px; align-items:baseline; font-size:11.5px; }
-.eb-claim .eb-cn { color:var(--gold); font-weight:900; min-width:14px; }
-.eb-claim .st { margin-left:auto; }
-.eb-actions { display:flex; gap:10px; flex-wrap:wrap; }
-.eb-actions button { font:inherit; font-weight:900; letter-spacing:.08em; padding:9px 16px; cursor:pointer;
-  border:1px solid var(--line); background:var(--panel); color:var(--ink); }
-.eb-actions button.primary { background:var(--gold); color:oklch(0.16 0.02 80); border-color:var(--gold); }
-.eb-actions button:hover { filter:brightness(1.12); }
-.endboard-btn { position:absolute; right:14px; bottom:14px; z-index:7; display:none; font:inherit; font-weight:900;
-  font-size:11px; letter-spacing:.12em; padding:8px 14px; cursor:pointer; border:1px solid var(--gold);
-  background:oklch(0.14 0.014 75/.92); color:var(--gold); }
-.endboard-btn.on { display:block; animation:ebfade .3s; }
-.endboard-btn:hover { background:var(--gold); color:oklch(0.16 0.02 80); }
-
-@media (prefers-reduced-motion: reduce) { .shake,.announcer span,.dmg,.feed-row,.hero-bob,.bar-fx,
-  .endboard.on,.eb-panel,.unit-card.on,.edge.hot{animation:none} .livechip .dot{animation:none} }
-@media (max-width: 960px) {
-  .stage{grid-template-columns:1fr}
-  #arena{min-height:320px}
-  .rightcol{border-top:2px solid var(--line); height:auto}
-  #feed{min-height:130px; max-height:300px} #quest{max-height:340px}
-  .topbar{flex-wrap:wrap}
-  .scorebox{padding:8px 14px; gap:10px; flex:1}
-  .score{font-size:30px}
-  .livechip{padding:0 12px; border-left:1px solid var(--line)}
-  .matchinfo{order:5; flex:1 1 100%; border-left:none; border-top:1px solid var(--line); padding:8px 14px}
-  .matchinfo h1{white-space:normal; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical}
-  .bars{order:6; flex:1 1 100%; width:auto; border-left:none; border-top:1px solid var(--line); padding:8px 14px}
-  .deck{gap:8px; padding:8px 10px; flex-wrap:wrap}
-  .timeline{flex:1 1 100%; order:5}
-  .deck .stamp{display:none}
-  .span-4,.span-8{grid-column:span 12}
-  .ev-details summary{grid-template-columns:44px 1fr}
-  .ev-sum{grid-column:2} .ev-json{padding-left:12px}
-  .eb-panel{padding:18px 16px}
-  .caster{padding:8px 14px 10px} #casterLine{font-size:13px}
+@media (max-width:960px) {
+  .arena-wrap { min-height:0; }
+  .graph-viewport { flex:none; height:min(64vh, 560px); min-height:320px; }
+  .graph-head { padding:10px 14px; }
+  .graph-note,.graph-legend { padding-left:14px; padding-right:14px; }
+  .inspector { padding:14px 16px 16px; }
+  .col-h { padding-left:16px; padding-right:16px; }
+  .view { padding:14px 12px 26px; }
+  .span-4,.span-8 { grid-column:span 12; }
+  .ev-details summary { grid-template-columns:44px 1fr; }
+  .ev-sum { grid-column:2; }
+  .ev-json { padding-left:12px; }
+  .footer { padding:10px 16px 20px; }
+}
+@media (max-width:540px) {
+  .graph-tools { width:100%; }
+  .tool.summary { margin-right:auto; }
+  .rpt-title { font-size:22px; }
+}
+@media (prefers-reduced-motion:reduce) {
+  .edge,.claim-node .node-box,.meter > i { transition:none; }
 }
 @media print {
-  .topbar,.stage,.deck,.caster,.tabs,.footer { display:none !important; }
+  .topbar,.stage,.deck,.caster,.tabs,.footer,#sf-live-hud { display:none !important; }
   .view { display:none !important; padding:0; }
   #view-report { display:block !important; }
-  body { background:#fff; color:#16130e; }
-  .card,.rpt-claim,.rpt-cblock { background:#fff; border-color:#d8d2c4; }
-  .eb-stat { background:#f5f2ea; border-color:#d8d2c4; }
-  .eb-stat .v { color:#16130e; }
-  .rpt-topic,.rpt-claim .rpt-conc,.rpt-stmt,.tiny,.item-meta,.badge,.rpt-take,.empty { color:#55503f; }
-  .rpt-answer { background:#f5f2ea; color:#16130e; }
-  .rpt-step { background:#fff; }
-  .rpt-conc-line,.uc-conc { color:#8a6a12; }
-  .eb-title.radiant { color:#1c7a46; } .eb-title.dire { color:#b03a2a; } .eb-title.gold { color:#8a6a12; }
-  .ev-metrics .m { background:#f5f2ea; color:#16130e; border-color:#d8d2c4; }
-  .ev-art a { color:#8a6a12; }
+  html,body { background:#fff; }
+  .card,.rpt-claim,.rpt-cblock,.rpt-step,.item { background:#fff; border-color:#d8d2c4; }
+  .rpt-answer { background:#f7f4ee; }
+  .rpt-fold > summary::after { content:''; }
 }
+
+/* Reader prose is editorial; machine records stay in disclosures. */
+.reader-report { max-width:70ch; margin:12px auto 36px; padding:clamp(12px,3vw,32px); line-height:1.85; overflow-wrap:anywhere; }
+.reader-report:lang(zh) { max-width:42em; }
+.reader-report h1 { font-size:clamp(24px,3vw,34px); line-height:1.4; margin:12px 0 24px; }
+.reader-question { font-weight:600; color:var(--muted); }
+.reader-answer { font-size:1.12em; border-left:3px solid var(--accent); padding-left:18px; }
+.reader-note,.reader-original { color:var(--muted); font-size:.92em; }
+.reader-section { margin-top:36px; }
+.reader-section h2 { font-size:1.3em; line-height:1.5; margin-bottom:16px; }
+.reader-section h3 { font-size:1.06em; }
+.reader-process { padding-left:24px; }
+.reader-process li { margin-bottom:24px; padding-left:6px; }
+.reader-process p { margin:8px 0; }
+.reader-table-wrap { overflow-x:auto; max-width:100%; margin:20px 0; }
+.reader-table-wrap table { width:100%; min-width:420px; border-collapse:collapse; font-size:.94em; }
+.reader-table-wrap th,.reader-table-wrap td { padding:12px; text-align:left; border-bottom:1px solid var(--line); vertical-align:top; }
+.reader-technical summary,#reportAuditSummary > summary { cursor:pointer; padding:12px 0; font-weight:600; }
+@media print { .reader-report { max-width:none; padding:0; color:#222; } .reader-table-wrap { overflow:visible; } .reader-table-wrap table { min-width:0; } .reader-section h2 { break-after:avoid; } .reader-table-wrap tr { break-inside:avoid; } }
 </style>
 </head>
 <body data-sisyfus-shell="broadcast">
 <header class="topbar">
-  <div class="scorebox">
-    <div><div class="score radiant" id="scoreV">0</div><div class="score-label caps" data-i18n="verified">已验证</div></div>
-    <div class="vs">VS</div>
-    <div><div class="score dire" id="scoreR">0</div><div class="score-label caps" data-i18n="refuted">已证伪</div></div>
-  </div>
-  <div class="matchinfo">
+  <div class="brand"><span class="brand-mark" aria-hidden="true">✳</span><span data-i18n="brand">Sisyfus 研究工作台</span></div>
+  <div class="headline matchinfo">
     <h1 id="topic"></h1>
     <div class="sub">
-      <span class="caps" style="color:var(--gold)">Sisyfus Research Observatory · Arena</span>
-      <span id="matchMeta" class="mono"></span>
+      <span id="runState" class="status"></span>
+      <span class="tally">
+        <span><b id="scoreV">0</b> <span data-i18n="verified">已支持</span></span>
+        <span><b id="scoreR">0</b> <span data-i18n="refuted">已证伪</span></span>
+        <span><b id="scoreU">0</b> <span data-i18n="inconclusive_n">未定</span></span>
+        <span><b id="scoreO">0</b> <span data-i18n="open_n">待研究</span></span>
+        <span id="scoreXWrap" hidden><b id="scoreX">0</b> <span data-i18n="invalidated_n">已失效</span></span>
+      </span>
+      <span id="matchMeta"></span>
       <span id="lootMeta"></span>
     </div>
   </div>
-  <div class="bars">
-    <div class="bar hp"><i id="hpFill"></i><b id="hpText"></b></div>
-    <div class="bar mana"><i id="manaFill"></i><b id="manaText"></b></div>
+  <div class="budget bars">
+    <div class="budget-row"><span id="hpText"></span><span class="meter" aria-hidden="true"><i id="hpFill"></i></span></div>
+    <div class="budget-row"><span id="manaText"></span><span class="meter" aria-hidden="true"><i id="manaFill"></i></span></div>
   </div>
-  <div class="livechip" id="liveChip"><span class="dot"></span><span id="liveText">LIVE</span></div>
-  <button class="lang-btn" id="langBtn" title="切换语言 / switch language">EN</button>
+  <div class="top-actions">
+    <div class="livechip" id="liveChip" role="status"><span class="dot" aria-hidden="true"></span><span id="liveText"></span></div>
+    <button class="lang-btn" id="langBtn" type="button" title="切换语言 / switch language">EN</button>
+  </div>
 </header>
 
 <div class="stage">
   <div class="arena-wrap" id="arenaWrap">
-    <svg id="arena" viewBox="0 0 1000 560" preserveAspectRatio="xMidYMid meet">
-      <g id="edges"></g>
-      <g id="bosses"></g>
-      <g id="hero" style="transition:transform .8s cubic-bezier(.16,1,.3,1)">
-       <g class="hero-bob">
-        <circle r="26" cy="6" fill="oklch(0.85 0.05 90)" opacity="0.14"/>
-        <circle class="stone" r="13" cx="15" cy="-2" fill="oklch(0.8 0.06 85)" stroke="oklch(0.95 0.04 90)" stroke-width="1.5"/>
-        <g stroke="oklch(0.93 0.02 90)" stroke-width="3.4" stroke-linecap="round" fill="none">
-          <circle cx="-6" cy="-14" r="5" fill="oklch(0.93 0.02 90)" stroke="none"/>
-          <path d="M-6 -9 L-3 4 L-9 16 M-4 3 L6 13 M-5 -6 L8 -8 M-5 -5 L4 0"/>
-        </g>
-       </g>
-      </g>
-    </svg>
-    <div class="fx-layer" id="fxLayer"></div>
-    <div class="announcer" id="announcer"></div>
-    <div class="combo" id="combo"></div>
-    <div class="tip" id="tip"></div>
-    <div class="unit-card" id="unitCard"></div>
-    <div class="endboard" id="endboard"></div>
-    <button class="endboard-btn" id="endboardBtn" type="button"></button>
+    <div class="graph-head">
+      <div class="graph-heading">
+        <h2 class="graph-title" data-i18n="graph_title">命题依赖图</h2>
+        <div class="graph-sub" id="graphSub"></div>
+      </div>
+      <div class="graph-tools" role="toolbar" id="graphTools">
+        <button class="tool summary" id="endboardBtn" type="button" hidden></button>
+        <button class="tool" id="graphZoomOut" type="button" data-i18n-aria="zoom_out">−</button>
+        <span class="zoom-read" id="zoomRead" aria-live="polite">100%</span>
+        <button class="tool" id="graphZoomIn" type="button" data-i18n-aria="zoom_in">+</button>
+        <button class="tool" id="graphFit" type="button" data-i18n="fit" data-i18n-aria="fit_aria">适配</button>
+        <button class="tool" id="graphReset" type="button" data-i18n="reset" data-i18n-aria="reset_aria">重置</button>
+      </div>
+    </div>
+    <div class="graph-note" id="uncertainNote" hidden></div>
+    <div class="graph-viewport" id="graphViewport" tabindex="0" data-i18n-aria="viewport_aria">
+      <div class="graph-canvas">
+        <svg id="arena" xmlns="http://www.w3.org/2000/svg" width="320" height="200" viewBox="0 0 320 200" role="group">
+          <defs>
+            <marker id="arrowHead" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" markerUnits="userSpaceOnUse" orient="auto"><path d="M0 0 L10 5 L0 10 z"/></marker>
+            <marker id="arrowHeadAccent" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto"><path d="M0 0 L10 5 L0 10 z"/></marker>
+          </defs>
+          <g id="edges"></g>
+          <g id="bosses"></g>
+        </svg>
+      </div>
+      <div class="graph-empty" id="graphEmpty" hidden></div>
+    </div>
+    <div class="graph-legend" id="graphLegend"></div>
+    <div class="endboard" id="endboard" hidden></div>
   </div>
   <aside class="rightcol">
-    <div class="col-h caps"><span data-i18n="killfeed">战况播报</span><span id="feedCount"></span></div>
-    <div id="feed"></div>
-    <div class="col-h caps"><span data-i18n="claims_panel">任务面板</span><span id="questCount"></span></div>
+    <section class="inspector" id="unitCard"></section>
+    <div class="col-h"><span data-i18n="claims_panel">命题</span><span id="questCount"></span></div>
     <div id="quest"></div>
-    <div class="col-h caps" id="respawnSec"><span data-i18n="respawn">待命区</span><span id="nextWake" class="mono"></span></div>
-    <div id="waitingList" style="max-height:110px;overflow-y:auto"></div>
+    <div class="col-h" id="respawnSec"><span data-i18n="respawn">等待中的实验</span><span id="nextWake" class="mono"></span></div>
+    <div id="waitingList"></div>
+    <div class="col-h"><span data-i18n="killfeed">事件</span><span id="feedCount"></span></div>
+    <div id="feed"></div>
   </aside>
 </div>
 
 <div class="deck">
-  <button id="playBtn" title="播放整场">▶</button>
+  <button id="playBtn" type="button" data-i18n-aria="play">▶</button>
   <div class="timeline" id="timelineBox">
     <div class="tl-track"></div><div class="tl-fill" id="tlFill"></div>
     <div id="tlMarks"></div><div class="tl-cursor" id="tlCursor"></div>
     <div class="tl-times mono"><span id="tlStart"></span><span id="tlEnd"></span></div>
-    <input type="range" id="replaySlider" min="0" max="0" value="0" step="1" aria-label="replay timeline"/>
+    <input type="range" id="replaySlider" min="0" max="0" value="0" step="1" aria-label="replay timeline" data-i18n-aria="replay_aria"/>
   </div>
-  <select id="speedSel"><option value="0.5">0.5×</option><option value="1">1×</option><option value="2" selected>2×</option><option value="4">4×</option></select>
-  <button id="liveBtn" data-i18n="live_btn">直播</button>
+  <select id="speedSel" data-i18n-aria="speed"><option value="0.5">0.5×</option><option value="1">1×</option><option value="2" selected>2×</option><option value="4">4×</option></select>
+  <button id="liveBtn" type="button" data-i18n="live_btn">最新</button>
   <div class="stamp mono" id="frameLabel"></div>
 </div>
-<div class="caster"><span class="tag caps" data-i18n="caster">解说席</span><div id="casterLine"></div></div>
+<div class="caster"><span class="tag" data-i18n="caster">最新动态</span><div id="casterLine"></div></div>
 
 <nav class="tabs">
-  <button class="tab active" data-view="none" data-i18n="tab_arena">观战</button>
-  <button class="tab" data-view="report" data-i18n="tab_report">报告</button>
-  <button class="tab" data-view="goals" data-i18n="tab_goals">目标图</button>
-  <button class="tab" data-view="execution" data-i18n="tab_execution">执行图</button>
-  <button class="tab" data-view="audit" data-i18n="tab_audit">审计</button>
-  <button class="tab" data-view="events" data-i18n="tab_events">事件流</button>
+  <button class="tab active" type="button" data-view="none" data-i18n="tab_arena">图谱</button>
+  <button class="tab" type="button" data-view="report" data-i18n="tab_report">报告</button>
+  <button class="tab" type="button" data-view="goals" data-i18n="tab_goals">目标图</button>
+  <button class="tab" type="button" data-view="execution" data-i18n="tab_execution">执行图</button>
+  <button class="tab" type="button" data-view="audit" data-i18n="tab_audit">审计</button>
+  <button class="tab" type="button" data-view="events" data-i18n="tab_events">事件流</button>
 </nav>
 <section id="view-report" class="view"><div class="rpt" id="reportBody"></div></section>
-<section id="view-goals" class="view"><div class="grid"><div class="card span-8 card-pad"><div class="section-title"><h2 data-i18n="sec_goal">目标图</h2><span class="badge" id="goalRoot"></span></div><div class="goal-tree" id="goalTree"></div></div><div class="card span-4 card-pad"><div class="section-title"><h2 data-i18n="sec_cov">裁判覆盖</h2></div><div id="verifierCoverage"></div></div></div></section>
-<section id="view-execution" class="view"><div class="grid"><div class="card span-12 card-pad"><div class="section-title"><h2 data-i18n="sec_dag">状态图与实验</h2><span class="badge" id="currentState"></span></div><div class="list" id="executionList"></div></div></div></section>
-<section id="view-audit" class="view"><div class="grid"><div class="card span-12 card-pad"><div class="section-title"><h2 data-i18n="sec_contracts">验证合约</h2></div><div class="table-wrap"><table><thead><tr><th>ID</th><th>Claim</th><th>Version</th><th>Repetition</th><th>Rules</th></tr></thead><tbody id="contractRows"></tbody></table></div></div><div class="card span-12 card-pad"><div class="section-title"><h2 data-i18n="sec_attempts">尝试与判定</h2></div><div class="table-wrap"><table><thead><tr><th>Attempt</th><th>Experiment</th><th>Context</th><th>Status</th><th>Verdict</th><th>Reason</th><th>State</th></tr></thead><tbody id="attemptRows"></tbody></table></div></div><div class="card span-12 card-pad"><div class="section-title"><h2 data-i18n="sec_evidence">证据</h2></div><div class="list" id="evidenceList"></div></div><div class="card span-12 card-pad"><div class="section-title"><h2 data-i18n="sec_lessons">战利品</h2></div><div class="list" id="lessonList"></div></div></div></section>
-<section id="view-events" class="view"><div class="card card-pad"><div class="section-title"><h2 data-i18n="sec_events">只增事件流</h2><span class="badge" id="eventHead"></span></div><div class="ev-filter"><select id="evTypeFilter"></select><input id="evTextFilter" type="search" data-i18n-ph="ev_search" placeholder="过滤事件 JSON…"/></div><div id="eventList"></div></div></section>
-<div class="footer" id="footerLine">一切画面均由 task.json + events.jsonl 的确定性投影生成;回放的每一帧都是事件前缀的重新归约,可被 sisyfus research replay 哈希验证。MISS 不构成伤害:INVALID/ERROR 是测量失败,不是命题反证。</div>
+<section id="view-goals" class="view"><div class="grid"><div class="card span-8 card-pad"><div class="section-title"><h2 data-i18n="sec_goal">目标图</h2><span class="badge" id="goalRoot"></span></div><div class="goal-tree" id="goalTree"></div></div><div class="card span-4 card-pad"><div class="section-title"><h2 data-i18n="sec_cov">判定覆盖</h2></div><div id="verifierCoverage"></div></div></div></section>
+<section id="view-execution" class="view"><div class="grid"><div class="card span-12 card-pad"><div class="section-title"><h2 data-i18n="sec_dag">状态图与实验</h2><span class="badge mono" id="currentState"></span></div><div class="list" id="executionList"></div></div></div></section>
+<section id="view-audit" class="view"><div class="grid"><div class="card span-12 card-pad"><div class="section-title"><h2 data-i18n="sec_contracts">判定合约</h2></div><div class="table-wrap"><table><thead><tr><th>ID</th><th>Claim</th><th>Version</th><th>Repetition</th><th>Rules</th></tr></thead><tbody id="contractRows"></tbody></table></div></div><div class="card span-12 card-pad"><div class="section-title"><h2 data-i18n="sec_attempts">尝试与判定</h2></div><div class="table-wrap"><table><thead><tr><th>Attempt</th><th>Experiment</th><th>Context</th><th>Status</th><th>Verdict</th><th>Reason</th><th>State</th></tr></thead><tbody id="attemptRows"></tbody></table></div></div><div class="card span-12 card-pad"><div class="section-title"><h2 data-i18n="sec_evidence">证据</h2></div><div class="list" id="evidenceList"></div></div><div class="card span-12 card-pad"><div class="section-title"><h2 data-i18n="sec_lessons">经验</h2></div><div class="list" id="lessonList"></div></div></div></section>
+<section id="view-events" class="view"><div class="card card-pad"><div class="section-title"><h2 data-i18n="sec_events">只增事件流</h2><span class="badge mono" id="eventHead"></span></div><div class="ev-filter"><select id="evTypeFilter"></select><input id="evTextFilter" type="search" data-i18n-ph="ev_search" placeholder="过滤事件 JSON…"/></div><div id="eventList"></div></div></section>
+<div class="footer" id="footerLine"></div>
 <div class="footer" id="legendLine" style="padding-top:0"></div>
 
 <script id="sisyfus-data" type="application/json">__PAYLOAD__</script>
 <script>
-const DATA = JSON.parse(document.getElementById('sisyfus-data').textContent);
-let S = DATA.snapshot, E = DATA.events || [], FRAMES = DATA.frames || [];
+/* Python's json.dumps emits bare NaN / Infinity for non-finite metrics, which
+   JSON.parse rejects. Retry once with those tokens (outside string literals)
+   quoted, so one odd metric never blanks the whole workbench. */
+function parseLenient(text) {
+  try { return JSON.parse(text); } catch (_) {
+    return JSON.parse(String(text).replace(/"(?:[^"\\\\]|\\\\.)*"|-?\\bInfinity\\b|\\bNaN\\b/g, m => m[0] === '"' ? m : `"${m}"`));
+  }
+}
+let DATA, BOOT_ERROR = null;
+try { DATA = parseLenient(document.getElementById('sisyfus-data').textContent); }
+catch (error) { BOOT_ERROR = error; DATA = { snapshot: {}, events: [], frames: [], translations: {} }; }
+let S = DATA.snapshot || {}, E = DATA.events || [], FRAMES = DATA.frames || [];
 const $ = id => document.getElementById(id);
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const status = s => `<span class="status ${esc(s)}">${esc(s || 'MISSING')}</span>`;
+const GLYPH = { SUPPORTED:'✓', PASS:'✓', SOLVED:'✓', PROMOTED:'✓', REFUTED:'✕', FAIL:'✕', FAILED:'✕', REVOKED:'✕',
+  INCONCLUSIVE:'?', OPEN:'○', INVALIDATED:'⊘', INVALID:'⊘', ERROR:'!' };
+function stLabel(s) { return L['st_' + s] || s || 'MISSING'; }
+const status = s => `<span class="status ${esc(s)}" title="${esc(s || 'MISSING')}">${GLYPH[s] ? `<span class="g" aria-hidden="true">${GLYPH[s]}</span>` : ''}${esc(stLabel(s || 'MISSING'))}</span>`;
+const REDUCED = window.matchMedia ? window.matchMedia('(prefers-reduced-motion: reduce)') : { matches: false };
+const NARROW = window.matchMedia ? window.matchMedia('(max-width: 960px)') : { matches: false };
 
 /* ================= i18n ================= */
 const LOCALES = {
   zh: {
-    verified:'已验证', refuted:'已证伪', killfeed:'战况播报', claims_panel:'任务面板', respawn:'待命区',
-    live_btn:'直播', caster:'解说席', tab_arena:'观战', tab_goals:'目标图', tab_execution:'执行图', tab_audit:'审计', tab_events:'事件流',
-    sec_goal:'目标图', sec_cov:'裁判覆盖', sec_dag:'状态图与实验', sec_contracts:'验证合约', sec_attempts:'尝试与判定',
-    sec_evidence:'证据', sec_lessons:'战利品', sec_events:'只增事件流',
-    footer:'一切画面均由 task.json + events.jsonl 的确定性投影生成;回放的每一帧都是事件前缀的重新归约,可被 sisyfus research replay 哈希验证。MISS 不构成伤害:INVALID/ERROR 是测量失败,不是命题反证。',
-    legend_line:'👑 命题被验证攻克(SUPPORTED) · ☠️ 命题被证伪(REFUTED)——也是花预算买到的知识 · ❌ INVALID/ERROR 是测量失败,不构成命题反证 · 💰 lesson 战利品,双实验门槛后晋升全局知识库 · ❤ attempts/cost 预算即血蓝条,打空即终局 · 🧍 推石头的英雄(agent)站在哪里,哪里就是当前进攻的命题',
-    live:'直播', replay:'回放', attempts:'尝试', cost:'成本',
-    events_n: n => `${n} 事件`, claims_n: n => `${n} 命题`, combo: n => `连击 ×${n}`,
-    awaiting_evidence:'等证据', no_waiting:'无待命实验',
-    wait_not_before: ts => `不早于 ${ts}`, wait_until: c => `等待 ${c} 出证据`,
+    brand:'Sisyfus 研究工作台',
+    verified:'已支持', refuted:'已证伪', inconclusive_n:'未定', open_n:'待研究', invalidated_n:'已失效',
+    killfeed:'事件', claims_panel:'命题', respawn:'等待中的实验', inspector:'命题详情',
+    live_btn:'最新', caster:'最新动态', tab_arena:'图谱', tab_report:'报告', tab_goals:'目标图', tab_execution:'执行图', tab_audit:'审计', tab_events:'事件流',
+    sec_goal:'目标图', sec_cov:'判定覆盖', sec_dag:'状态图与实验', sec_contracts:'判定合约', sec_attempts:'尝试与判定',
+    sec_evidence:'证据', sec_lessons:'经验', sec_events:'只增事件流',
+    footer:'执行状态与判定由 task.json 和 events.jsonl 确定性生成；回放帧可用 sisyfus research replay 校验。报告正文是绑定当前证据版本的解释，不是新的测量或判定。INVALID / ERROR 表示测量失败；临时通过不等于已支持。',
+    legend_line:'已支持（SUPPORTED）：满足预注册门槛 · 已证伪（REFUTED）：同样是确定的结论 · 未定（INCONCLUSIVE）：仍存在的不确定性 · 已失效（INVALIDATED）：前提被推翻 · 研究已完成（SOLVED）表示研究流程结束，不代表盈利被证明 · 预算为尝试次数与成本单位',
+    live:'最新', replay:'回放中', ended:'已结束',
+    budget_attempts:'剩余尝试', budget_cost:'剩余成本', unlimited:'不限',
+    events_n: n => `${n} 个事件`, claims_n: n => `${n} 个命题`,
+    awaiting_evidence:'等待证据', next_wake:'下次唤醒', no_waiting:'没有等待中的实验',
+    wait_not_before: ts => `不早于 ${ts}`, wait_until: c => `等待 ${c} 的证据`,
     required:'必需', optional:'可选', critical:'关键',
-    evidence_n: n => `证据 ${n}`, provisional_n: n => `临时通过 ${n}`, cited_n: n => `被引用 ×${n}`,
-    uc_status:'状态', uc_contracts:'裁判合约', uc_engagements:'交战记录',
-    uc_gate: (p, c) => `需 ${p} 次通过 / ${c} 个独立环境`, tip_click:'点击查看单位卡',
-    uc_more: n => `+${n} 更多…`,
-    cov_full:'必需命题全部有裁判合约', cov_missing:'以下必需命题缺少裁判', empty_evidence:'尚无证据', empty_lessons:'尚未拾取任何战利品', root:'根节点',
-    ann_supported: c => `命题攻克 · ${c}`, ann_refuted: c => `命题被证伪 · ${c}`, ann_first:'首个证据!', ann_cascade:'连锁崩塌!',
-    ann_loot:'战利品入库!', ann_victory:'大获全胜', ann_budget:'弹尽粮绝', ann_goal_refuted:'目标被证伪',
-    n_run_created: t => ['比赛开始 — 目标锁定', `开赛!本场目标:${t}`],
-    n_spec_locked: () => ['规则预注册并锁定', '规则锁定:所有判定阈值已预注册,赛后不可改。'],
-    n_contract: id => [`裁判就位 ${id}`, `裁判合约 ${id} 上岗。`],
-    n_proposed: (title, claim) => [`战术提出:${title}`, `选手提出战术「${title}」,目标命题 ${claim}。`],
-    n_admitted: (e, claim) => [`进场:${e}`, `裁判放行,${e} 进场,兵锋直指 ${claim}!`],
-    n_backlogged: (e, r) => [`战术被拒:${e}(${r})`, `裁判拒绝 ${e} 进场:${r || '不合规'}。`],
-    n_pruned: e => [`战术放弃:${e}`, `${e} 被主动放弃。`],
-    n_reserved: (e, claim) => [`开打:${e}`, `${e} 对 ${claim} 发起进攻,预算已扣押。`],
-    n_started: e => [`交战中:${e}`, '交战进行中……'],
-    n_observation: () => ['战场数据回传', '测量数据回传,等待裁判裁决……'],
-    n_wait_fired: e => [`集结号:${e} 归队`, `等待条件满足,${e} 重新进场。`],
-    n_wait_expired: (e, p) => [`等待超时:${e}`, `${e} 等待超时(${p})。`],
-    n_pass_promoted: c => [`命题攻克!${c}`, `裁判判定 PASS——命题 ${c} 正式攻克!`],
-    n_pass_provisional: (e, c) => [`有效一击:${c}(待重复验证)`, `PASS!${e} 对 ${c} 打出有效一击,重复门槛未满,继续输出。`],
-    n_fail: (c, rb, r) => [`反杀!${c} 被证伪${rb ? ` · 连锁失效×${rb}` : ''}`, `FAIL!${c} 反杀成功——命题被证伪${rb ? `,${rb} 个下游命题连锁失效` : ''}!(${r || ''})`],
-    n_invalid: (e, r) => [`MISS:${e} 测量无效`, `裁判判 INVALID——这一击无效,不构成伤害。(${r || ''})`],
-    n_error: e => [`装备故障:${e}`, '基础设施故障,判 ERROR,不计入战果。'],
-    n_inconclusive: c => [`战况不明:${c}`, `INCONCLUSIVE——${c} 战况不明,需要更锋利的实验。`],
-    n_lesson_add: id => [`拾取战利品:${id}`, `战利品掉落:lesson「${id}」候选入包。`],
-    n_lesson_evidence: id => [`战利品附魔:${id}`, `lesson ${id} 追加证据。`],
-    n_lesson_promoted: id => [`战利品入库(全局):${id}`, `lesson「${id}」通过双实验门槛,晋升全局知识库——下一场比赛开局自带!`],
-    n_lesson_revoked: id => [`战利品作废:${id}`, `lesson ${id} 被反例击碎,撤销。`],
-    n_paused: () => ['暂停', '比赛暂停。'], n_resumed: () => ['继续', '比赛继续!'],
-    n_run_failed: r => ['比赛异常终止', `比赛异常终止:${r || ''}`],
-    n_final_solved: () => ['大获全胜 — 全部必需命题攻克', '比赛结束——大获全胜!Goal Graph 全线通过!'],
-    n_final_refuted: () => ['目标被证伪 — 问题得到否定答案', '比赛结束:目标被证伪——这个问题的答案是否定的,而这个确定性正是这场比赛买到的东西。'],
-    n_final_budget: () => ['弹尽粮绝 — 预算耗尽', '比赛结束:预算耗尽。地图上的每一条红色岔路都是花钱买来的知识。'],
-    n_final_other: st => [`终局:${st}`, `比赛结束:${st}。`],
-    n_report: () => ['转播画面更新', ''],
-    ended:'已终局', eb_kicker:'赛后结算', eb_view_map:'查看地图', eb_replay:'回放整场', eb_show:'赛果',
-    eb_attempts:'尝试消耗', eb_cost:'成本消耗', eb_duration:'比赛时长', eb_lessons:'战利品', eb_events:'总事件',
-    obj_label:'目标', epi_label:'知识',
-    meta_tip:'obj = 目标图客观完成度;epi = 认知覆盖度(有证据支撑的命题比例)',
-    rs_ACTIVE:'进行中', rs_PAUSED:'已暂停', rs_SOLVED:'大获全胜', rs_BUDGET_EXHAUSTED:'预算耗尽',
-    rs_FAILED:'异常终止', rs_BLOCKED:'受阻', rs_CONTESTED:'争议中',
+    evidence_n: n => `证据 ${n}`, provisional_n: n => `临时通过 ${n}`, prov_short: n => `临时通过 ${n}，未达门槛`, cited_n: n => `被引用 ×${n}`,
+    uc_contracts:'判定合约', uc_engagements:'实验', uc_evidence:'证据', uc_statement:'陈述', uc_conclusion:'结论',
+    uc_depends:'依赖的前提', uc_dependents:'被这些命题依赖', uc_snapshot_note:'回放中：合约、实验与证据取自最新快照，可能晚于当前帧。',
+    uc_gate: (p, c) => `需 ${p ?? '—'} 次通过 / ${c ?? '—'} 个独立环境`, uc_more: n => `另有 ${n} 项…`,
+    close:'关闭', inspector_empty:'在图中选择一个命题（点击，或用 Tab 聚焦后按 Enter / 空格），这里会显示它的陈述、判定合约、实验与证据。',
+    cov_full:'所有必需命题都有判定合约', cov_missing:'以下必需命题缺少判定合约', empty_evidence:'尚无证据', empty_lessons:'尚未记录经验', root:'根节点',
+    graph_title:'命题依赖图', graph_sub: (n, l) => `${n} 个命题 · ${l} 层依赖`, graph_hint_large:'图较大：拖动或滚动平移，「适配」查看全貌',
+    graph_empty:'尚无命题。任务规格锁定后，命题会出现在这里。',
+    zoom_in:'放大', zoom_out:'缩小', fit:'适配', fit_aria:'适配全图', reset:'重置', reset_aria:'重置视图',
+    viewport_aria:'命题依赖图视口：可滚动或拖动平移，Ctrl / ⌘ + 滚轮缩放',
+    legend_optional:'虚线框 = 可选命题', legend_arrow:'箭头：前提 → 依赖它的命题',
+    summary_btn:'研究摘要', target_tag:'当前实验目标',
+    solved_note:'研究已完成：必需命题均已按预注册合约得到判定。这表示研究流程结束，不代表收益或盈利已被证明。',
+    final_note: st => `研究已结束（${st}）。未判定的命题保持未定，不能视为已支持。`,
+    uncertain_lead:'仍有不确定：',
+    st_SUPPORTED:'已支持', st_REFUTED:'已证伪', st_INCONCLUSIVE:'未定', st_OPEN:'待研究', st_INVALIDATED:'已失效',
+    st_PASS:'通过', st_FAIL:'未通过', st_INVALID:'无效', st_ERROR:'错误', st_MISSING:'缺失',
+    st_SOLVED:'研究已完成', st_ACTIVE:'进行中', st_PAUSED:'已暂停', st_BUDGET_EXHAUSTED:'预算耗尽', st_FAILED:'异常终止',
+    st_BLOCKED:'受阻', st_CONTESTED:'存在争议', st_PROMOTED:'已晋升', st_REVOKED:'已撤销', st_CANDIDATE:'候选',
+    why_SUPPORTED:'已满足预注册合约的通过门槛（包括重复与独立环境要求）。',
+    why_REFUTED:'命中了预注册的 FAIL 规则：这是被确认的否定结论，同样是有价值的知识。',
+    why_INCONCLUSIVE:'实验有效，但证据不足以支持或否定——这是仍然存在的不确定性。',
+    why_OPEN:'尚未得到合约判定。',
+    why_INVALIDATED:'它依赖的前提被推翻，原有结论已失效。',
+    why_provisional: n => `已有 ${n} 次临时通过，但重复 / 独立环境门槛尚未满足——临时通过不等于已支持。`,
+    why_optional:'可选命题：不阻断研究完成，但它的结论需要单独看待。',
+    n_run_created: t => ['研究开始', `研究开始：${t}`],
+    n_spec_locked: () => ['规格已锁定', '任务规格与判定阈值已预注册并锁定，之后不可更改。'],
+    n_contract: id => [`登记判定合约 ${id}`, `判定合约 ${id} 已登记。`],
+    n_proposed: (title, claim) => [`提出实验：${title}`, `提出实验「${title}」，针对命题 ${claim}。`],
+    n_admitted: (e, claim) => [`实验准入：${e}`, `实验 ${e} 通过准入，针对命题 ${claim}。`],
+    n_backlogged: (e, r) => [`实验暂缓：${e}（${r}）`, `实验 ${e} 未获准入：${r || '不符合要求'}。`],
+    n_pruned: e => [`实验撤回：${e}`, `实验 ${e} 已撤回。`],
+    n_reserved: (e, claim) => [`预留预算：${e}`, `为 ${e}（命题 ${claim}）预留预算。`],
+    n_started: e => [`运行中：${e}`, `实验 ${e} 正在运行。`],
+    n_observation: () => ['记录观测', '观测已记录，等待按合约判定。'],
+    n_wait_fired: e => [`等待结束：${e}`, `等待条件已满足，${e} 继续。`],
+    n_wait_expired: (e, p) => [`等待超时：${e}`, `${e} 等待超时（${p}）。`],
+    n_pass_promoted: c => [`命题已支持：${c}`, `判定 PASS 且满足门槛——命题 ${c} 已支持。`],
+    n_pass_provisional: (e, c) => [`临时通过：${c}（未达门槛）`, `${e} 对命题 ${c} 判定 PASS，但重复 / 独立环境门槛尚未满足，命题仍未被支持。`],
+    n_fail: (c, rb, r) => [`命题被证伪：${c}${rb ? ` · ${rb} 个下游失效` : ''}`, `判定 FAIL——命题 ${c} 被证伪${rb ? `，${rb} 个下游命题随之失效` : ''}。（${r || ''}）`],
+    n_invalid: (e, r) => [`测量无效：${e}`, `判定 INVALID：本次测量无效，不构成对命题的证据。（${r || ''}）`],
+    n_error: e => [`执行错误：${e}`, '基础设施或执行错误（ERROR），不计为证据。'],
+    n_inconclusive: c => [`未定：${c}`, `判定 INCONCLUSIVE——命题 ${c} 的证据不足以支持或否定。`],
+    n_lesson_add: id => [`记录经验候选：${id}`, `记录经验候选「${id}」。`],
+    n_lesson_evidence: id => [`经验补充证据：${id}`, `经验 ${id} 新增证据。`],
+    n_lesson_promoted: id => [`经验晋升：${id}`, `经验「${id}」通过双实验门槛，晋升到全局知识库。`],
+    n_lesson_revoked: id => [`经验撤销：${id}`, `经验 ${id} 被反例推翻，已撤销。`],
+    n_paused: () => ['已暂停', '研究已暂停。'], n_resumed: () => ['已继续', '研究继续。'],
+    n_run_failed: r => ['运行异常终止', `运行异常终止：${r || ''}`],
+    n_final_solved: () => ['研究完成', '研究已完成：必需命题均已判定。完成不代表收益被证明。'],
+    n_final_refuted: () => ['目标被否定', '研究结束：目标被证伪，得到了明确的否定答案。'],
+    n_final_budget: () => ['预算耗尽', '研究结束：预算耗尽，未判定的命题保持未定。'],
+    n_final_other: st => [`研究结束：${st}`, `研究结束：${st}。`],
+    n_report: () => ['页面已更新', ''],
+    no_events:'尚无事件。',
+    eb_kicker:'研究摘要', eb_attempts:'已用尝试', eb_cost:'已用成本', eb_duration:'用时', eb_lessons:'经验', eb_events:'事件',
+    obj_label:'目标完成度', epi_label:'证据覆盖',
+    meta_tip:'目标完成度 = 目标图的客观完成比例；证据覆盖 = 有证据支撑的命题比例',
+    rs_ACTIVE:'进行中', rs_PAUSED:'已暂停', rs_SOLVED:'研究已完成', rs_BUDGET_EXHAUSTED:'预算耗尽',
+    rs_FAILED:'异常终止', rs_BLOCKED:'受阻', rs_CONTESTED:'存在争议', rs_REFUTED:'目标被否定', rs_EXHAUSTED:'实验已穷尽',
+    st_EXHAUSTED:'实验已穷尽', reconnecting:'连接中断', load_failed:'加载失败',
+    boot_error:'研究数据无法读取，页面没有加载出来。请检查本次研究的 events.jsonl 与快照文件，或重新生成报告。',
     ev_all_types:'全部类型', ev_search:'过滤事件 JSON…', artifacts_label:'产物',
-    play_all:'播放整场', feed_jump:'点击跳转到该事件',
+    play_all:'从头播放', play:'播放回放', pause:'暂停回放', speed:'回放速度', replay_aria:'回放时间轴', feed_jump:'跳转到该事件',
     eb_dur: (h, m, s) => h ? `${h} 小时 ${m} 分` : `${m} 分 ${s} 秒`,
     rsn_pass_rule_matched:'观测满足预注册的 PASS 规则与全部护栏。',
     rsn_fail_rule_matched:'观测满足预注册的 FAIL 规则。',
-    rsn_no_decisive_rule_matched:'实验有效,但 PASS 与 FAIL 规则均未决出。',
+    rsn_no_decisive_rule_matched:'实验有效，但 PASS 与 FAIL 规则均未决出。',
     rsn_invalid_rule_matched:'实验命中预注册的无效条件。',
-    rsn_guardrail_failed:'实验有效,但触发硬性护栏失败。',
+    rsn_guardrail_failed:'实验有效，但触发硬性护栏失败。',
     rsn_precondition_failed:'实验不满足预注册的前置条件。',
-    rsn_contradictory_contract:'PASS 与 FAIL 规则同时命中——该观测下验证合约自相矛盾。',
-    rsn_execution_timeout:'实验执行超时,不允许对命题做任何推断。',
-    rsn_execution_error:'实验执行出错,判为基础设施/执行故障。',
-    rsn_command_nonzero_exit:'命令以非零码退出,判为基础设施/执行故障。',
+    rsn_contradictory_contract:'PASS 与 FAIL 规则同时命中——该观测下判定合约自相矛盾。',
+    rsn_execution_timeout:'实验执行超时，不允许对命题做任何推断。',
+    rsn_execution_error:'实验执行出错，判为基础设施 / 执行故障。',
+    rsn_command_nonzero_exit:'命令以非零码退出，判为基础设施 / 执行故障。',
     rsn_required_artifact_missing:'要求的产物文件缺失。',
     rsn_manual_verdict:'人工判定。',
     rsn_manual_verdict_missing:'人工合约未收到有效的 manual_verdict。',
-    tab_report:'报告', sec_takeaways:'结论速览', sec_claim_evidence:'命题与证据', sec_loot_final:'战利品结论',
-    rpt_no_lessons:'本场没有沉淀可执行结论。', rpt_verdicts:'判定统计', rpt_required_only:'仅必需命题',
-    rpt_answer:'本场答案', rpt_do:'正确做法', rpt_dont:'不要这样做', rpt_details:'命题与证据明细',
+    tab_report:'报告', sec_takeaways:'命题结论', sec_claim_evidence:'命题与证据', sec_loot_final:'经验结论',
+    rpt_no_lessons:'本次研究没有沉淀可执行的经验。', rpt_verdicts:'判定统计', rpt_required_only:'仅必需命题',
+    rd_missing:'研究正文尚未提供；技术记录不代表收益结论。', rd_stale:'研究正文与当前证据版本不一致；请查看技术记录。', rd_invalid:'研究正文格式无效；请查看技术记录。', reader_claim:'这对研究问题说明了什么', reader_original:'原文语言：中文', reader_audit:'技术记录与核验', reader_legacy:'旧版摘要（非研究问题的答案）', rpt_answer:'结论', rpt_do:'建议做法', rpt_dont:'应避免', rpt_details:'命题与证据明细',
   },
   en: {
-    verified:'verified', refuted:'refuted', killfeed:'KILL FEED', claims_panel:'CLAIMS', respawn:'RESPAWN',
-    live_btn:'LIVE', caster:'CASTER', tab_arena:'Arena', tab_goals:'Goal Graph', tab_execution:'Execution', tab_audit:'Audit', tab_events:'Events',
-    sec_goal:'Goal Graph', sec_cov:'Verifier Coverage', sec_dag:'State DAG & Experiments', sec_contracts:'Verification Contracts', sec_attempts:'Attempts & Verdicts',
-    sec_evidence:'Evidence', sec_lessons:'Lessons', sec_events:'Append-only Event Stream',
-    footer:'Everything on screen is a deterministic projection of task.json + events.jsonl; every replay frame is a re-reduction of the event prefix, verifiable via sisyfus research replay. A MISS deals no damage: INVALID/ERROR are measurement failures, not refutations.',
-    legend_line:'👑 claim verified (SUPPORTED) · ☠️ claim refuted (REFUTED) — knowledge bought with budget · ❌ INVALID/ERROR are measurement failures, not refutations · 💰 lessons join the global library after the two-experiment gate · ❤ attempts/cost budgets are your HP/mana — empty bars end the match · 🧍 the boulder-pushing hero (agent) stands at the claim under assault',
-    live:'LIVE', replay:'REPLAY', attempts:'ATTEMPTS', cost:'COST',
-    events_n: n => `${n} events`, claims_n: n => `${n} claims`, combo: n => `COMBO ×${n}`,
-    awaiting_evidence:'awaiting evidence', no_waiting:'no waiting experiments',
+    rd_missing:'Research prose is missing; technical records do not establish returns.', rd_stale:'Research prose does not match the current evidence version.', rd_invalid:'Research prose has an invalid format; consult technical records.', reader_claim:'What this says about the question', reader_original:'Original language: Chinese', reader_audit:'Technical records and verification', reader_legacy:'Legacy summary (not an answer to the research question)',
+    brand:'Sisyfus Research Workspace',
+    verified:'supported', refuted:'refuted', inconclusive_n:'inconclusive', open_n:'open', invalidated_n:'invalidated',
+    killfeed:'Events', claims_panel:'Claims', respawn:'Waiting experiments', inspector:'Claim details',
+    live_btn:'Latest', caster:'Latest', tab_arena:'Graph', tab_report:'Report', tab_goals:'Goal Graph', tab_execution:'Execution', tab_audit:'Audit', tab_events:'Events',
+    sec_goal:'Goal Graph', sec_cov:'Verifier coverage', sec_dag:'State DAG & experiments', sec_contracts:'Verification contracts', sec_attempts:'Attempts & verdicts',
+    sec_evidence:'Evidence', sec_lessons:'Lessons', sec_events:'Append-only event stream',
+    footer:'Execution state and verdicts are deterministic projections of task.json + events.jsonl; replay frames are verifiable via sisyfus research replay. Report prose explains the pinned evidence version; it is not a new measurement or verdict. INVALID / ERROR are measurement failures; a provisional pass is not support.',
+    legend_line:'Supported: preregistered gate met · Refuted: an equally definite finding · Inconclusive: remaining uncertainty · Invalidated: a prerequisite was overturned · SOLVED means the study completed, not that profit was proven · Budget = attempts and cost units',
+    live:'Latest', replay:'Replaying', ended:'Ended',
+    budget_attempts:'Attempts left', budget_cost:'Cost left', unlimited:'unlimited',
+    events_n: n => `${n} events`, claims_n: n => `${n} claims`,
+    awaiting_evidence:'awaiting evidence', next_wake:'next wake', no_waiting:'no waiting experiments',
     wait_not_before: ts => `not before ${ts}`, wait_until: c => `until evidence on ${c}`,
     required:'required', optional:'optional', critical:'critical',
-    evidence_n: n => `evidence ${n}`, provisional_n: n => `provisional ${n}`, cited_n: n => `cited ×${n}`,
-    uc_status:'STATUS', uc_contracts:'VERIFIER CONTRACTS', uc_engagements:'ENGAGEMENTS',
-    uc_gate: (p, c) => `needs ${p} passes / ${c} independent contexts`, tip_click:'click for unit card',
-    uc_more: n => `+${n} more…`,
-    cov_full:'Full required-claim verifier coverage', cov_missing:'Required claims without a verifier', empty_evidence:'No evidence recorded.', empty_lessons:'No lessons looted yet.', root:'root',
-    ann_supported: c => `CLAIM TAKEN · ${c}`, ann_refuted: c => `REFUTED · ${c}`, ann_first:'FIRST EVIDENCE!', ann_cascade:'CASCADE!',
-    ann_loot:'LOOT SECURED!', ann_victory:'VICTORY', ann_budget:'OUT OF BUDGET', ann_goal_refuted:'GOAL REFUTED',
-    n_run_created: t => ['Match start — objective locked', `Match on! Objective: ${t}`],
-    n_spec_locked: () => ['Rules preregistered and locked', 'Rules locked: every verdict threshold is preregistered and immutable.'],
-    n_contract: id => [`Referee ready: ${id}`, `Verification contract ${id} is on duty.`],
-    n_proposed: (title, claim) => [`Tactic proposed: ${title}`, `The player proposes "${title}" targeting claim ${claim}.`],
-    n_admitted: (e, claim) => [`Entering: ${e}`, `Admission granted — ${e} enters the field, heading for ${claim}!`],
-    n_backlogged: (e, r) => [`Tactic rejected: ${e} (${r})`, `The referee rejects ${e}: ${r || 'not compliant'}.`],
-    n_pruned: e => [`Tactic abandoned: ${e}`, `${e} was withdrawn.`],
-    n_reserved: (e, claim) => [`Engaging: ${e}`, `${e} opens the assault on ${claim}; budget reserved.`],
-    n_started: e => [`In combat: ${e}`, 'Engagement in progress…'],
-    n_observation: () => ['Field telemetry received', 'Measurements are in — awaiting the referee…'],
-    n_wait_fired: e => [`Rally: ${e} returns`, `Wait satisfied — ${e} re-enters the field.`],
+    evidence_n: n => `evidence ${n}`, provisional_n: n => `provisional ×${n}`, prov_short: n => `provisional ×${n} · gate not met`, cited_n: n => `cited ×${n}`,
+    uc_contracts:'Verification contracts', uc_engagements:'Experiments', uc_evidence:'Evidence', uc_statement:'Statement', uc_conclusion:'Conclusion',
+    uc_depends:'Depends on', uc_dependents:'Required by', uc_snapshot_note:'Replaying: contracts, experiments and evidence come from the latest snapshot and may post-date this frame.',
+    uc_gate: (p, c) => `needs ${p ?? '—'} passes / ${c ?? '—'} independent contexts`, uc_more: n => `${n} more…`,
+    close:'Close', inspector_empty:'Select a claim in the graph (click, or Tab to it and press Enter / Space) to see its statement, contracts, experiments and evidence.',
+    cov_full:'Every required claim has a verifier', cov_missing:'Required claims without a verifier', empty_evidence:'No evidence recorded.', empty_lessons:'No lessons recorded yet.', root:'root',
+    graph_title:'Claim dependency graph', graph_sub: (n, l) => `${n} claims · ${l} levels`, graph_hint_large:'Large graph: drag or scroll to pan, Fit for the overview',
+    graph_empty:'No claims yet. They appear here once the task specification is locked.',
+    zoom_in:'Zoom in', zoom_out:'Zoom out', fit:'Fit', fit_aria:'Fit whole graph', reset:'Reset', reset_aria:'Reset view',
+    viewport_aria:'Claim graph viewport: scroll or drag to pan, Ctrl / ⌘ + wheel to zoom',
+    legend_optional:'dashed card = optional claim', legend_arrow:'arrow: prerequisite → dependent claim',
+    summary_btn:'Study summary', target_tag:'Current experiment target',
+    solved_note:'Study complete: every required claim was decided under its preregistered contract. Completion ends the study; it does not prove returns or profit.',
+    final_note: st => `The study has ended (${st}). Undecided claims remain undecided and must not be read as supported.`,
+    uncertain_lead:'Still uncertain:',
+    st_SUPPORTED:'Supported', st_REFUTED:'Refuted', st_INCONCLUSIVE:'Inconclusive', st_OPEN:'Open', st_INVALIDATED:'Invalidated',
+    st_PASS:'Pass', st_FAIL:'Fail', st_INVALID:'Invalid', st_ERROR:'Error', st_MISSING:'Missing',
+    st_SOLVED:'Study complete', st_ACTIVE:'Active', st_PAUSED:'Paused', st_BUDGET_EXHAUSTED:'Budget exhausted', st_FAILED:'Aborted',
+    st_BLOCKED:'Blocked', st_CONTESTED:'Contested', st_PROMOTED:'Promoted', st_REVOKED:'Revoked', st_CANDIDATE:'Candidate',
+    why_SUPPORTED:'The preregistered pass gate is met, including repetition and independent-context requirements.',
+    why_REFUTED:'A preregistered FAIL rule matched: this is a confirmed negative finding, which is knowledge too.',
+    why_INCONCLUSIVE:'The experiment was valid but the evidence neither supports nor refutes the claim — this is remaining uncertainty.',
+    why_OPEN:'No contract verdict yet.',
+    why_INVALIDATED:'A prerequisite was overturned, so the earlier conclusion no longer holds.',
+    why_provisional: n => `${n} provisional pass(es), but the repetition / independent-context gate is not met — a provisional pass is not support.`,
+    why_optional:'Optional claim: it does not block study completion, but its result should be read on its own.',
+    n_run_created: t => ['Study started', `Study started: ${t}`],
+    n_spec_locked: () => ['Specification locked', 'The task specification and verdict thresholds are preregistered and locked.'],
+    n_contract: id => [`Contract registered: ${id}`, `Verification contract ${id} registered.`],
+    n_proposed: (title, claim) => [`Experiment proposed: ${title}`, `Experiment "${title}" proposed for claim ${claim}.`],
+    n_admitted: (e, claim) => [`Experiment admitted: ${e}`, `Experiment ${e} admitted for claim ${claim}.`],
+    n_backlogged: (e, r) => [`Experiment deferred: ${e} (${r})`, `Experiment ${e} was not admitted: ${r || 'not compliant'}.`],
+    n_pruned: e => [`Experiment withdrawn: ${e}`, `Experiment ${e} was withdrawn.`],
+    n_reserved: (e, claim) => [`Budget reserved: ${e}`, `Budget reserved for ${e} (claim ${claim}).`],
+    n_started: e => [`Running: ${e}`, `Experiment ${e} is running.`],
+    n_observation: () => ['Observation recorded', 'Observation recorded; awaiting the contract verdict.'],
+    n_wait_fired: e => [`Wait satisfied: ${e}`, `Wait condition met; ${e} continues.`],
     n_wait_expired: (e, p) => [`Wait expired: ${e}`, `${e} timed out (${p}).`],
-    n_pass_promoted: c => [`CLAIM TAKEN! ${c}`, `Verdict PASS — claim ${c} officially supported!`],
-    n_pass_provisional: (e, c) => [`Solid hit: ${c} (repetition pending)`, `PASS! ${e} lands a hit on ${c}; the repetition gate is not met yet — keep pushing.`],
-    n_fail: (c, rb, r) => [`Counter-kill! ${c} refuted${rb ? ` · cascade ×${rb}` : ''}`, `FAIL! ${c} counter-kills — the claim is refuted${rb ? `, invalidating ${rb} downstream claims` : ''}! (${r || ''})`],
-    n_invalid: (e, r) => [`MISS: ${e} invalid measurement`, `Referee calls INVALID — no damage dealt. (${r || ''})`],
-    n_error: e => [`Gear failure: ${e}`, 'Infrastructure error — ruled ERROR, not counted as evidence.'],
-    n_inconclusive: c => [`Unclear: ${c}`, `INCONCLUSIVE — ${c} remains unclear; a sharper experiment is needed.`],
-    n_lesson_add: id => [`Loot picked up: ${id}`, `Loot drop: lesson "${id}" added as candidate.`],
-    n_lesson_evidence: id => [`Loot enchanted: ${id}`, `Lesson ${id} gains new evidence.`],
-    n_lesson_promoted: id => [`Loot secured (global): ${id}`, `Lesson "${id}" passes the two-experiment gate and joins the global library — the next match starts with it!`],
-    n_lesson_revoked: id => [`Loot destroyed: ${id}`, `Lesson ${id} shattered by a counterexample; revoked.`],
-    n_paused: () => ['Paused', 'Match paused.'], n_resumed: () => ['Resumed', 'Match resumes!'],
-    n_run_failed: r => ['Match aborted', `Match aborted: ${r || ''}`],
-    n_final_solved: () => ['VICTORY — all required claims taken', 'Match over — VICTORY! The Goal Graph passes end to end!'],
-    n_final_refuted: () => ['GOAL REFUTED — the question answered no', 'Match over: the goal is refuted. A definitive negative answer is exactly what this match paid for.'],
-    n_final_budget: () => ['OUT OF BUDGET', 'Match over: budget exhausted. Every red branch on the map is knowledge paid for in full.'],
-    n_final_other: st => [`Final: ${st}`, `Match over: ${st}.`],
-    n_report: () => ['Broadcast refreshed', ''],
-    ended:'ENDED', eb_kicker:'Match result', eb_view_map:'View map', eb_replay:'Replay match', eb_show:'RESULT',
-    eb_attempts:'Attempts used', eb_cost:'Cost spent', eb_duration:'Duration', eb_lessons:'Loot banked', eb_events:'Events',
-    obj_label:'obj', epi_label:'epi',
-    meta_tip:'obj = objective completion of the goal graph; epi = epistemic coverage (claims backed by evidence)',
-    rs_ACTIVE:'live', rs_PAUSED:'paused', rs_SOLVED:'victory', rs_BUDGET_EXHAUSTED:'budget exhausted',
-    rs_FAILED:'aborted', rs_BLOCKED:'blocked', rs_CONTESTED:'contested',
+    n_pass_promoted: c => [`Claim supported: ${c}`, `Verdict PASS with the gate met — claim ${c} is supported.`],
+    n_pass_provisional: (e, c) => [`Provisional pass: ${c} (gate not met)`, `${e} passed for claim ${c}, but the repetition / independent-context gate is not met; the claim is not yet supported.`],
+    n_fail: (c, rb, r) => [`Claim refuted: ${c}${rb ? ` · ${rb} downstream invalidated` : ''}`, `Verdict FAIL — claim ${c} is refuted${rb ? `, invalidating ${rb} downstream claims` : ''}. (${r || ''})`],
+    n_invalid: (e, r) => [`Invalid measurement: ${e}`, `Verdict INVALID: the measurement is not evidence about the claim. (${r || ''})`],
+    n_error: e => [`Execution error: ${e}`, 'Infrastructure or execution error (ERROR); not counted as evidence.'],
+    n_inconclusive: c => [`Inconclusive: ${c}`, `Verdict INCONCLUSIVE — the evidence on claim ${c} neither supports nor refutes it.`],
+    n_lesson_add: id => [`Lesson candidate: ${id}`, `Lesson candidate "${id}" recorded.`],
+    n_lesson_evidence: id => [`Lesson evidence: ${id}`, `Lesson ${id} gained evidence.`],
+    n_lesson_promoted: id => [`Lesson promoted: ${id}`, `Lesson "${id}" passed the two-experiment gate and joined the global library.`],
+    n_lesson_revoked: id => [`Lesson revoked: ${id}`, `Lesson ${id} was overturned by a counterexample and revoked.`],
+    n_paused: () => ['Paused', 'The study is paused.'], n_resumed: () => ['Resumed', 'The study resumed.'],
+    n_run_failed: r => ['Run aborted', `Run aborted: ${r || ''}`],
+    n_final_solved: () => ['Study complete', 'Study complete: every required claim was decided. Completion does not prove returns.'],
+    n_final_refuted: () => ['Goal refuted', 'Study ended: the goal is refuted — a definite negative answer.'],
+    n_final_budget: () => ['Budget exhausted', 'Study ended: budget exhausted; undecided claims remain undecided.'],
+    n_final_other: st => [`Study ended: ${st}`, `Study ended: ${st}.`],
+    n_report: () => ['Page refreshed', ''],
+    no_events:'No events yet.',
+    eb_kicker:'Study summary', eb_attempts:'Attempts used', eb_cost:'Cost used', eb_duration:'Duration', eb_lessons:'Lessons', eb_events:'Events',
+    obj_label:'objective', epi_label:'evidence coverage',
+    meta_tip:'objective = completion of the goal graph; evidence coverage = share of claims backed by evidence',
+    rs_ACTIVE:'Active', rs_PAUSED:'Paused', rs_SOLVED:'Study complete', rs_BUDGET_EXHAUSTED:'Budget exhausted',
+    rs_FAILED:'Aborted', rs_BLOCKED:'Blocked', rs_CONTESTED:'Contested', rs_REFUTED:'Goal refuted', rs_EXHAUSTED:'Experiments exhausted',
+    st_EXHAUSTED:'Experiments exhausted', reconnecting:'Reconnecting', load_failed:'Failed to load',
+    boot_error:'The research data could not be read, so this page did not load. Check events.jsonl and the snapshot for this run, or regenerate the report.',
     ev_all_types:'all types', ev_search:'filter event JSON…', artifacts_label:'artifacts',
-    play_all:'Play the full match', feed_jump:'Click to jump to this event',
+    play_all:'Play from the start', play:'Play replay', pause:'Pause replay', speed:'Replay speed', replay_aria:'Replay timeline', feed_jump:'Jump to this event',
     eb_dur: (h, m, s) => h ? `${h}h ${m}m` : `${m}m ${s}s`,
     rsn_pass_rule_matched:'The observation satisfied the preregistered PASS rule and all guardrails.',
     rsn_fail_rule_matched:'The observation satisfied the preregistered FAIL rule.',
@@ -618,12 +664,17 @@ const LOCALES = {
     rsn_required_artifact_missing:'Required artifacts were missing.',
     rsn_manual_verdict:'Manual verdict.',
     rsn_manual_verdict_missing:'Manual contract did not receive a valid manual_verdict.',
-    tab_report:'Report', sec_takeaways:'Key takeaways', sec_claim_evidence:'Claims & evidence', sec_loot_final:'Loot conclusions',
-    rpt_no_lessons:'No actionable lessons banked this match.', rpt_verdicts:'Verdict tally', rpt_required_only:'required claims only',
-    rpt_answer:'The answer', rpt_do:'How to do it right', rpt_dont:'What not to do', rpt_details:'Claims & evidence detail',
+    tab_report:'Report', sec_takeaways:'Claim conclusions', sec_claim_evidence:'Claims & evidence', sec_loot_final:'Lesson conclusions',
+    rpt_no_lessons:'No actionable lessons were recorded.', rpt_verdicts:'Verdict tally', rpt_required_only:'required claims only',
+    rpt_answer:'Answer', rpt_do:'Recommended', rpt_dont:'Avoid', rpt_details:'Claims & evidence detail',
   },
 };
-let lang = localStorage.getItem('sisyfus_lang') || ((navigator.language || '').toLowerCase().startsWith('zh') ? 'zh' : 'en');
+let lang = 'zh';
+try {
+  // canonical key first, legacy bootstrap key as read fallback; only en/zh are honoured
+  const saved = [localStorage.getItem('sisyfus_lang'), localStorage.getItem('sisyfus-lang')].find(v => v === 'en' || v === 'zh');
+  if (saved) lang = saved;
+} catch (_) {}
 let L = LOCALES[lang] || LOCALES.zh;
 function t(key) { const v = L[key]; return typeof v === 'string' ? v : key; }
 function runStatusLabel(st) { return L['rs_' + st] || st || ''; }
@@ -655,6 +706,7 @@ function applyStaticI18n() {
   document.documentElement.lang = lang === 'zh' ? 'zh-CN' : 'en';
   document.querySelectorAll('[data-i18n]').forEach(el => { el.textContent = t(el.dataset.i18n); });
   document.querySelectorAll('[data-i18n-ph]').forEach(el => { el.placeholder = t(el.dataset.i18nPh); });
+  document.querySelectorAll('[data-i18n-aria]').forEach(el => { const v = t(el.dataset.i18nAria); el.setAttribute('aria-label', v); el.title = v; });
   $('footerLine').textContent = t('footer');
   $('legendLine').textContent = t('legend_line');
   $('langBtn').textContent = lang === 'zh' ? 'EN' : '中文';
@@ -662,16 +714,27 @@ function applyStaticI18n() {
   $('topic').title = trTopic();
   $('matchMeta').title = t('meta_tip');
   $('playBtn').title = `${t('play_all')} (Space)`;
-  $('endboardBtn').textContent = `🏁 ${t('eb_show')}`;
+  $('endboardBtn').textContent = t('summary_btn');
+  $('arena').setAttribute('aria-label', t('graph_title'));
+  renderLegend(); renderGraphSub();
 }
 function setLang(next) {
   lang = next; L = LOCALES[lang] || LOCALES.zh;
-  try { localStorage.setItem('sisyfus_lang', lang); } catch (_) {}
-  applyStaticI18n(); renderDetailTabs(); renderWaiting();
-  showIndex(Number($('replaySlider').value), { feedRebuild: true });
+  try { localStorage.setItem('sisyfus_lang', lang); localStorage.setItem('sisyfus-lang', lang); } catch (_) {}
+  applyStaticI18n();
+  if (BOOT_ERROR) { showBootError(BOOT_ERROR); return; }  /* re-translate the failure only */
+  renderDetailTabs(); renderWaiting();
+  unitSig = ''; noteSig = '';
+  if (FRAMES.length) showIndex(Number($('replaySlider').value), { feedRebuild: true });
+  else renderSnapshotOnly();
+  renderUnitCard(SELECTED, currentStatuses());
+}
+function renderLegend() {
+  const items = ['SUPPORTED', 'REFUTED', 'INCONCLUSIVE', 'OPEN', 'INVALIDATED'].map(s => status(s)).join('');
+  $('graphLegend').innerHTML = `<span class="lg">${items}</span><span class="lg">${esc(t('legend_optional'))}</span><span class="lg">${esc(t('legend_arrow'))}</span>`;
 }
 
-/* ================= derived match data ================= */
+/* ================= derived data ================= */
 let CLAIM_POS = {}, TARGET_BY_SEQ = [], TOUCHED_BY_SEQ = [], COMBO_BY_SEQ = [], MARKERS = [], FIRST_PASS_SEQ = 0;
 
 function shortClaim(id) { return id.length > 22 ? id.slice(0, 20) + '…' : id; }
@@ -683,30 +746,159 @@ function expIdOf(d) {
   return d.experiment_id || (d.experiment && d.experiment.id) || (d.attempt && d.attempt.experiment_id)
     || (d.attempt_id && S.attempts[d.attempt_id] && S.attempts[d.attempt_id].experiment_id) || '';
 }
+function claimNo(id) { return `C${CLAIM_INDEX[id] || '·'}`; }
 
-function layoutClaims() {
-  const claims = Object.values(S.claims);
-  const depth = {};
+/* ---------- text measurement for SVG cards (CJK-aware wrapping) ---------- */
+function charUnits(ch) {
+  if (ch.codePointAt(0) >= 0x2E80) return 1;
+  if (ch === ' ') return 0.3;
+  if ("ilj.,:;|!()'".includes(ch)) return 0.3;
+  if ("mwMW@%&".includes(ch)) return 0.84;
+  if (ch >= 'A' && ch <= 'Z') return 0.66;
+  return 0.56;
+}
+function textUnits(s) { let u = 0; for (const ch of String(s)) u += charUnits(ch); return u; }
+const NO_LINE_START = '，。、；：！？）》」』〉】,.;:!?)';
+function wrapText(text, maxPx, size, maxLines) {
+  const max = maxPx / size;
+  const tokens = []; let word = '';
+  for (const ch of String(text || '')) {
+    const cjk = ch.codePointAt(0) >= 0x2E80, space = ch.trim() === '';
+    if (cjk || space) { if (word) { tokens.push(word); word = ''; } tokens.push(space ? ' ' : ch); }
+    else word += ch;
+  }
+  if (word) tokens.push(word);
+  const lines = []; let cur = '', w = 0;
+  const flush = () => { lines.push(cur.trim()); cur = ''; w = 0; };
+  for (const tok of tokens) {
+    if (tok === ' ') { if (cur) { cur += ' '; w += 0.3; } continue; }
+    const tw = textUnits(tok);
+    if (w + tw <= max) { cur += tok; w += tw; continue; }
+    if (cur && tok.length === 1 && NO_LINE_START.includes(tok)) { cur += tok; w += tw; continue; }
+    if (cur.trim()) flush(); else { cur = ''; w = 0; }
+    if (tw <= max) { cur = tok; w = tw; continue; }
+    for (const ch of tok) { const cw = charUnits(ch); if (w + cw > max && cur) flush(); cur += ch; w += cw; }
+  }
+  if (cur.trim()) flush();
+  if (lines.length <= maxLines) return lines;
+  const kept = lines.slice(0, maxLines);
+  let last = Array.from(kept[maxLines - 1]);
+  while (last.length && textUnits(last.join('')) + 1 > max) last.pop();
+  kept[maxLines - 1] = last.join('').trimEnd() + '…';
+  return kept;
+}
+
+/* ---------- layered DAG layout (Sugiyama-lite: layers, dummy nodes, barycentre ordering) ---------- */
+const NODE_DIM = { LR: { w: 252, h: 118, gapMain: 96, gapCross: 26 }, TB: { w: 212, h: 118, gapMain: 72, gapCross: 18 } };
+const GRAPH_PAD = 36, DUMMY_SPAN = 14;
+let GRAPH_W = 320, GRAPH_H = 200, ORIENT = 'LR', EDGE_ROUTES = [], LAYER_COUNT = 0;
+
+function claimDepths() {
+  const depth = {}, visiting = new Set();
   const depthOf = id => {
     if (depth[id] !== undefined) return depth[id];
-    const deps = (S.claims[id] && S.claims[id].depends_on) || [];
-    depth[id] = deps.length ? 1 + Math.max(...deps.map(depthOf)) : 0;
-    return depth[id];
+    if (visiting.has(id)) return 0;
+    visiting.add(id);
+    const deps = ((S.claims[id] || {}).depends_on || []).filter(d => S.claims[d] && d !== id);
+    const v = deps.length ? 1 + Math.max(...deps.map(depthOf)) : 0;
+    visiting.delete(id);
+    depth[id] = v;
+    return v;
   };
-  claims.forEach(c => depthOf(c.id));
-  const cols = {};
-  claims.forEach(c => (cols[depth[c.id]] = cols[depth[c.id]] || []).push(c));
-  const nCols = Object.keys(cols).length;
-  CLAIM_POS = {};
-  Object.entries(cols).forEach(([d, list]) => {
-    list.sort((a, b) => a.id.localeCompare(b.id));
-    const baseX = nCols === 1 ? 500 : 130 + (740 * d) / Math.max(1, nCols - 1);
-    list.forEach((c, i) => {
-      const x = baseX + (list.length > 1 ? (i % 2 ? 64 : -64) : 0);
-      const y = 76 + ((560 - 130) * (i + 1)) / (list.length + 1);
-      CLAIM_POS[c.id] = { x, y, claim: c };
+  Object.keys(S.claims || {}).forEach(depthOf);
+  return depth;
+}
+function layoutClaims() {
+  const vp = $('graphViewport');
+  ORIENT = vp && vp.clientWidth && vp.clientWidth < 640 ? 'TB' : 'LR';
+  const dim = NODE_DIM[ORIENT], LR = ORIENT === 'LR';
+  const depth = claimDepths();
+  const ids = Object.keys(S.claims || {}).sort((a, b) => (CLAIM_INDEX[a] || 1e9) - (CLAIM_INDEX[b] || 1e9) || a.localeCompare(b));
+  const nLayers = ids.length ? 1 + Math.max(...ids.map(id => depth[id])) : 0;
+  LAYER_COUNT = nLayers;
+  const layers = Array.from({ length: nLayers }, () => []);
+  const dummy = {}, preds = {}, succs = {}, edges = [];
+  const link = (a, b) => { (succs[a] = succs[a] || []).push(b); (preds[b] = preds[b] || []).push(a); };
+  ids.forEach(id => layers[depth[id]].push(id));
+  ids.forEach(id => {
+    const deps = [...new Set((S.claims[id].depends_on || []).filter(d => S.claims[d] && d !== id))];
+    deps.forEach(dep => {
+      const chain = [dep];
+      for (let l = depth[dep] + 1; l < depth[id]; l++) {
+        const key = `~${dep}>${id}#${l}`;
+        dummy[key] = true; layers[l].push(key); chain.push(key);
+      }
+      chain.push(id);
+      for (let k = 0; k + 1 < chain.length; k++) link(chain[k], chain[k + 1]);
+      edges.push({ from: dep, to: id, chain });
     });
   });
+  const pos = {};
+  layers.forEach(layer => layer.forEach((k, i) => { pos[k] = i; }));
+  const bary = (k, nb) => { const list = nb[k] || []; return list.length ? list.reduce((s, x) => s + pos[x], 0) / list.length : pos[k]; };
+  const sweep = (l, nb) => {
+    const b = {}; layers[l].forEach(k => { b[k] = bary(k, nb); });
+    layers[l].sort((x, y) => (b[x] - b[y]) || (pos[x] - pos[y]));
+    layers[l].forEach((k, i) => { pos[k] = i; });
+  };
+  for (let it = 0; it < 4; it++) {
+    for (let l = 1; l < nLayers; l++) sweep(l, preds);
+    for (let l = nLayers - 2; l >= 0; l--) sweep(l, succs);
+  }
+  const slot = k => dummy[k] ? DUMMY_SPAN : (LR ? dim.h : dim.w);
+  const extent = layer => layer.reduce((s, k) => s + slot(k), 0) + Math.max(0, layer.length - 1) * dim.gapCross;
+  const maxExtent = Math.max(0, ...layers.map(extent));
+  const mainSize = LR ? dim.w : dim.h;
+  const P = {};
+  CLAIM_POS = {};
+  layers.forEach((layer, l) => {
+    let cross = GRAPH_PAD + (maxExtent - extent(layer)) / 2;
+    const main = GRAPH_PAD + l * (mainSize + dim.gapMain);
+    layer.forEach(k => {
+      const s = slot(k);
+      const box = LR ? { x: main, y: cross, w: dim.w, h: dummy[k] ? s : dim.h } : { x: cross, y: main, w: dummy[k] ? s : dim.w, h: dim.h };
+      P[k] = box;
+      if (!dummy[k]) CLAIM_POS[k] = { ...box, layer: l, claim: S.claims[k] };
+      cross += s + dim.gapCross;
+    });
+  });
+  const mainTotal = nLayers ? nLayers * mainSize + (nLayers - 1) * dim.gapMain : 0;
+  GRAPH_W = Math.max(320, Math.ceil(2 * GRAPH_PAD + (LR ? mainTotal : maxExtent)));
+  GRAPH_H = Math.max(200, Math.ceil(2 * GRAPH_PAD + (LR ? maxExtent : mainTotal)));
+  /* ports: spread several edges along a card side so arrows never stack */
+  const mid = k => LR ? P[k].y + P[k].h / 2 : P[k].x + P[k].w / 2;
+  const outs = {}, ins = {};
+  edges.forEach(e => {
+    (outs[e.chain[0]] = outs[e.chain[0]] || []).push(e);
+    (ins[e.chain[e.chain.length - 1]] = ins[e.chain[e.chain.length - 1]] || []).push(e);
+  });
+  const spread = (list, key, prop) => {
+    list.sort((a, b) => mid(key(a)) - mid(key(b)));
+    const n = list.length, size = LR ? dim.h : dim.w;
+    const step = n > 1 ? Math.min(16, (size * 0.6) / (n - 1)) : 0;
+    list.forEach((e, i) => { e[prop] = (i - (n - 1) / 2) * step; });
+  };
+  Object.values(outs).forEach(list => spread(list, e => e.chain[1], 'outOff'));
+  Object.values(ins).forEach(list => spread(list, e => e.chain[e.chain.length - 2], 'inOff'));
+  const outPort = (k, off) => LR ? { x: P[k].x + P[k].w, y: mid(k) + off } : { x: mid(k) + off, y: P[k].y + P[k].h };
+  const inPort = (k, off) => LR ? { x: P[k].x, y: mid(k) + off } : { x: mid(k) + off, y: P[k].y };
+  EDGE_ROUTES = edges.map(e => {
+    const pts = [outPort(e.chain[0], e.outOff || 0)];
+    e.chain.slice(1, -1).forEach(k => { pts.push(inPort(k, 0)); pts.push(outPort(k, 0)); });
+    pts.push(inPort(e.chain[e.chain.length - 1], e.inOff || 0));
+    return { from: e.from, to: e.to, d: routePath(pts) };
+  });
+}
+function routePath(pts) {
+  const r = v => Math.round(v * 10) / 10;
+  let d = `M${r(pts[0].x)} ${r(pts[0].y)}`;
+  for (let j = 1; j < pts.length; j++) {
+    const a = pts[j - 1], b = pts[j];
+    if (j % 2 === 0) { d += ` L${r(b.x)} ${r(b.y)}`; continue; }
+    if (ORIENT === 'LR') { const m = (a.x + b.x) / 2; d += ` C${r(m)} ${r(a.y)} ${r(m)} ${r(b.y)} ${r(b.x)} ${r(b.y)}`; }
+    else { const m = (a.y + b.y) / 2; d += ` C${r(a.x)} ${r(m)} ${r(b.x)} ${r(m)} ${r(b.x)} ${r(b.y)}`; }
+  }
+  return d;
 }
 
 function verdictClass(st) {
@@ -740,69 +932,80 @@ function deriveTimeline() {
   });
 }
 
-/* narrative translation of one event (kill feed + caster), via the active locale */
-function narrate(ev) {
+/* narrative line for one event (event rail + latest line), via the active locale */
+function narrate(ev, raw = false) {
   const d = ev.data || {}, type = ev.event_type;
   const expId = expIdOf(d);
   const exp = S.experiments[expId] || {};
-  const claim = (exp.target_claim_ids || [])[0] || '';
+  const claimId = (exp.target_claim_ids || [])[0] || '';
+  const claim = !raw && S.claims[claimId] ? claimLabel(S.claims[claimId]) : claimId;
+  const expName = raw ? expId : (trExpTitle(exp) || expId);
+  const note = raw ? null : readerEventNote(readerReportState().report, ev);
   const v = d.verdict || {};
-  const out = (cls, icon, pair) => ({ cls, icon, feed: pair[0], caster: pair[1] });
+  const out = (cls, icon, pair) => ({ cls, icon, feed: note ? note.feed : pair[0], caster: note ? note.caster : pair[1] });
   switch (type) {
-    case 'RUN_CREATED': return out('info', '📯', L.n_run_created(S.topic));
-    case 'SPEC_LOCKED': return out('info', '🔒', L.n_spec_locked());
-    case 'CONTRACT_ADDED': return out('info', '📜', L.n_contract((d.contract && d.contract.id) || ''));
-    case 'EXPERIMENT_PROPOSED': return out('info', '🧭', L.n_proposed(trExpTitle(exp) || expId, claim));
-    case 'EXPERIMENT_ADMITTED': return out('info', '⚔️', L.n_admitted(expId, claim));
-    case 'EXPERIMENT_BACKLOGGED': return out('miss', '🚫', L.n_backlogged(expId, d.reason || ''));
-    case 'EXPERIMENT_PRUNED': return out('miss', '✂️', L.n_pruned(expId));
-    case 'ATTEMPT_RESERVED': return out('info', '🎯', L.n_reserved(expId, claim));
-    case 'ATTEMPT_STARTED': return out('info', '🔥', L.n_started(expId));
-    case 'OBSERVATION_RECORDED': return out('info', '🔬', L.n_observation());
-    case 'WAIT_FIRED': return out('info', '⏰', L.n_wait_fired(expId));
-    case 'WAIT_EXPIRED': return out('miss', '⌛', L.n_wait_expired(expId, d.on_expire || ''));
+    case 'RUN_CREATED': return out('info', '·', L.n_run_created(S.topic));
+    case 'SPEC_LOCKED': return out('info', '·', L.n_spec_locked());
+    case 'CONTRACT_ADDED': return out('info', '·', L.n_contract((d.contract && d.contract.id) || ''));
+    case 'EXPERIMENT_PROPOSED': return out('info', '·', L.n_proposed(trExpTitle(exp) || expId, claim));
+    case 'EXPERIMENT_ADMITTED': return out('info', '·', L.n_admitted(expName, claim));
+    case 'EXPERIMENT_BACKLOGGED': return out('miss', '–', L.n_backlogged(expName, d.reason || ''));
+    case 'EXPERIMENT_PRUNED': return out('miss', '–', L.n_pruned(expName));
+    case 'ATTEMPT_RESERVED': return out('info', '·', L.n_reserved(expName, claim));
+    case 'ATTEMPT_STARTED': return out('info', '·', L.n_started(expName));
+    case 'OBSERVATION_RECORDED': return out('info', '·', L.n_observation());
+    case 'WAIT_FIRED': return out('info', '·', L.n_wait_fired(expName));
+    case 'WAIT_EXPIRED': return out('miss', '–', L.n_wait_expired(expName, d.on_expire || ''));
     case 'VERDICT_ISSUED': {
       const effects = d.claim_effects || [];
       const supported = effects.some(x => x.status === 'SUPPORTED');
       const rollbacks = effects.filter(x => x.status === 'INVALIDATED').length;
       if (v.status === 'PASS') return supported
-        ? out('pass', '👑', L.n_pass_promoted(claim))
-        : out('pass', '💥', L.n_pass_provisional(expId, claim));
-      if (v.status === 'FAIL') return out('fail', '☠️', L.n_fail(claim, rollbacks, v.reason_code));
-      if (v.status === 'INVALID') return out('miss', '❌', L.n_invalid(expId, v.reason_code));
-      if (v.status === 'ERROR') return out('miss', '💢', L.n_error(expId));
-      return out('soft', '🌫️', L.n_inconclusive(claim));
+        ? out('pass', '✓', L.n_pass_promoted(claim))
+        : out('soft', '◐', L.n_pass_provisional(expName, claim));
+      if (v.status === 'FAIL') return out('fail', '✕', L.n_fail(claim, rollbacks, v.reason_code));
+      if (v.status === 'INVALID') return out('miss', '⊘', L.n_invalid(expName, v.reason_code));
+      if (v.status === 'ERROR') return out('miss', '!', L.n_error(expName));
+      return out('soft', '?', L.n_inconclusive(claim));
     }
-    case 'LESSON_CANDIDATE_CREATED': return out('loot', '💰', L.n_lesson_add((d.lesson && d.lesson.id) || ''));
-    case 'LESSON_EVIDENCE_ADDED': return out('loot', '🧾', L.n_lesson_evidence(d.lesson_id));
-    case 'LESSON_PROMOTED': return out('loot', '🏆', L.n_lesson_promoted(d.lesson_id));
-    case 'LESSON_REVOKED': return out('miss', '🗑️', L.n_lesson_revoked(d.lesson_id));
-    case 'RUN_PAUSED': return out('info', '⏸', L.n_paused());
-    case 'RUN_RESUMED': return out('info', '▶️', L.n_resumed());
-    case 'RUN_FAILED': return out('fail', '🛑', L.n_run_failed(d.reason));
+    case 'LESSON_CANDIDATE_CREATED': return out('loot', '◇', L.n_lesson_add((d.lesson && d.lesson.id) || ''));
+    case 'LESSON_EVIDENCE_ADDED': return out('loot', '◇', L.n_lesson_evidence(d.lesson_id));
+    case 'LESSON_PROMOTED': return out('loot', '◆', L.n_lesson_promoted(d.lesson_id));
+    case 'LESSON_REVOKED': return out('miss', '✕', L.n_lesson_revoked(d.lesson_id));
+    case 'RUN_PAUSED': return out('info', '‖', L.n_paused());
+    case 'RUN_RESUMED': return out('info', '›', L.n_resumed());
+    case 'RUN_FAILED': return out('fail', '✕', L.n_run_failed(d.reason));
     case 'RUN_FINALIZED': {
       const st = d.status || '';
-      if (st === 'SOLVED') return out('pass', '🏅', L.n_final_solved());
-      if (st === 'REFUTED') return out('fail', '⚖️', L.n_final_refuted());
-      if (st === 'BUDGET_EXHAUSTED') return out('fail', '🪫', L.n_final_budget());
-      return out('soft', '🏁', L.n_final_other(st));
+      if (st === 'SOLVED') return out('pass', '■', L.n_final_solved());
+      if (st === 'REFUTED') return out('fail', '■', L.n_final_refuted());
+      if (st === 'BUDGET_EXHAUSTED') return out('soft', '■', L.n_final_budget());
+      return out('soft', '■', L.n_final_other(runStatusLabel(st)));
     }
-    case 'REPORT_RENDERED': return out('info', '📺', L.n_report());
+    case 'REPORT_RENDERED': return out('info', '·', L.n_report());
   }
   return { cls:'info', icon:'·', feed:ev.event_type, caster:'' };
 }
 
-/* ================= arena rendering ================= */
+/* ================= graph rendering ================= */
+function renderGraphSub() {
+  const n = Object.keys(S.claims || {}).length;
+  const parts = [L.graph_sub(n, LAYER_COUNT)];
+  if (n && fitScale() < READABLE_SCALE) parts.push(t('graph_hint_large'));
+  $('graphSub').textContent = parts.join(' · ');
+  if (BOOT_ERROR) { $('graphEmpty').textContent = t('boot_error'); $('graphEmpty').hidden = false; return; }
+  $('graphEmpty').textContent = t('graph_empty');
+  $('graphEmpty').hidden = n > 0;
+}
+let LAYOUT_KEY = '';
 function renderArenaStatic() {
   layoutClaims();
-  const edges = $('edges'); edges.innerHTML = '';
-  Object.values(CLAIM_POS).forEach(p => {
-    (p.claim.depends_on || []).forEach(dep => {
-      const q = CLAIM_POS[dep];
-      if (q) edges.insertAdjacentHTML('beforeend',
-        `<path class="edge" data-claim="${esc(p.claim.id)}" d="M${q.x} ${q.y} C ${(q.x+p.x)/2} ${q.y}, ${(q.x+p.x)/2} ${p.y}, ${p.x} ${p.y}"/>`);
-    });
-  });
+  $('edges').innerHTML = EDGE_ROUTES.map(e =>
+    `<path class="edge" data-claim="${esc(e.to)}" data-dep="${esc(e.from)}" d="${e.d}"/>`).join('');
+  bossSig = '';
+  const key = `${ORIENT}|${GRAPH_W}x${GRAPH_H}`;
+  if (key !== LAYOUT_KEY) { LAYOUT_KEY = key; applyViewMode(); } else sizeGraph();
+  renderGraphSub();
 }
 function updateEdges(touchedSet, targetClaim) {
   document.querySelectorAll('#edges path').forEach(p => {
@@ -810,234 +1013,372 @@ function updateEdges(touchedSet, targetClaim) {
     p.classList.toggle('lit', touchedSet.has(c));
     p.classList.toggle('hot', !!targetClaim && c === targetClaim);
   });
+  updateEdgeSelection();
 }
-
-function bossSkin(st, touched) {
-  if (st === 'SUPPORTED') return { ring:'var(--radiant)', fill:'oklch(0.3 0.07 150)', mark:'👑', op:1 };
-  if (st === 'REFUTED') return { ring:'var(--dire)', fill:'oklch(0.28 0.09 25)', mark:'☠️', op:1 };
-  if (st === 'INVALIDATED') return { ring:'var(--ghost)', fill:'oklch(0.26 0.05 310)', mark:'🌀', op:1 };
-  if (st === 'INCONCLUSIVE') return { ring:'var(--amber)', fill:'oklch(0.27 0.05 80)', mark:'', qmark:'?!', op:1 };
-  return { ring:'var(--line)', fill:'oklch(0.22 0.02 80)', mark:'', op: touched ? 0.95 : 0.45, lock: !touched };
+function updateEdgeSelection() {
+  document.querySelectorAll('#edges path').forEach(p => {
+    const linked = !!SELECTED && (p.dataset.claim === SELECTED || p.dataset.dep === SELECTED);
+    p.classList.toggle('focus', linked);
+    p.classList.toggle('dim', !!SELECTED && !linked);
+  });
 }
+function svgLines(lines, cls, x, y0, lh) {
+  if (!lines.length) return '';
+  return `<text class="${cls}" x="${x}" y="${y0}">${lines.map((s, i) => `<tspan x="${x}"${i ? ` dy="${lh}"` : ''}>${esc(s)}</tspan>`).join('')}</text>`;
+}
+function nodeSvg(p, st, target, touched, latest) {
+  const c = p.claim, id = c.id, w = p.w, h = p.h, padX = 16, inner = w - padX * 2;
+  const label = claimLabel(c);
+  const takeaway = readerTakeaway(readerReportState().report,id,st,latest);
+  const stmt = takeaway || String(trClaimF(c, 'statement') || '');
+  const pillText = `${GLYPH[st] || '•'} ${stLabel(st)}`;
+  const pillW = Math.ceil(textUnits(pillText) * 11.5) + 18;
+  const labelLines = wrapText(label, inner, 14, takeaway ? 1 : 2);
+  const stmtLines = labelLines.length < 2 && stmt && stmt !== label ? wrapText(stmt, inner, 12.5, 2) : [];
+  const prov = latest && (st === 'OPEN' || st === 'INCONCLUSIVE') && (c.provisional_passes || 0) > 0;
+  const base =[c.required ? t('required') : t('optional')];
+  if (c.critical) base.push(t('critical'));
+  if (latest && !prov) base.push(L.evidence_n((c.evidence_ids || []).length));
+  const baseText = base.join(' · ');
+  const metaHtml = prov
+    ? `${esc(baseText)} · <tspan class="warn">${esc(wrapText(L.prov_short(c.provisional_passes), inner - textUnits(baseText + ' · ') * 12, 12, 1)[0] || '')}</tspan>`
+    : esc(wrapText(baseText, inner, 12, 1)[0] || '');
+  const sel = SELECTED === id;
+  const aria = `${claimNo(id)} ${label} — ${stLabel(st)} · ${c.required ? t('required') : t('optional')}${prov ? ' · ' + L.prov_short(c.provisional_passes) : ''}`;
+  const cls = ['claim-node', `st-${st}`, c.required ? '' : 'optional', touched ? '' : 'untouched', target ? 'target' : '', sel ? 'selected' : '', prov ? 'provisional' : ''].filter(Boolean).join(' ');
+  return `<g class="${esc(cls)}" data-claim="${esc(id)}" transform="translate(${p.x} ${p.y})" tabindex="0" role="button" aria-pressed="${sel}" aria-label="${esc(aria)}">
+    <title>${esc(stmt || label)}</title>
+    ${target ? `<text class="target-tag" x="2" y="-10">▸ ${esc(t('target_tag'))}</text>` : ''}
+    <rect class="node-ring" x="-5" y="-5" width="${w + 10}" height="${h + 10}" rx="14"/>
+    <rect class="node-shadow" x="0" y="2" width="${w}" height="${h}" rx="10"/>
+    <rect class="node-box" width="${w}" height="${h}" rx="10"/>
+    <rect class="node-stripe" x="0.5" y="14" width="3.5" height="${h - 28}" rx="1.75"/>
+    <text class="node-idx" x="${padX}" y="25">${esc(claimNo(id))}</text>
+    <g transform="translate(${w - 12 - pillW} 9)"><rect class="pill-bg" width="${pillW}" height="22" rx="11"/><text class="pill-text" x="${pillW / 2}" y="15" text-anchor="middle">${esc(pillText)}</text></g>
+    ${svgLines(labelLines, 'node-label', padX, 52, 20)}
+    ${svgLines(stmtLines, 'node-stmt', padX, 72, 18)}
+    <text class="node-meta" x="${padX}" y="${h - 13}">${metaHtml}</text>
+    <rect class="node-focus" x="-4" y="-4" width="${w + 8}" height="${h + 8}" rx="13"/>
+  </g>`;
+}
+function nodeEl(id) { return [...document.querySelectorAll('#bosses g.claim-node')].find(n => n.dataset.claim === id) || null; }
 
 let bossSig = '';
-function renderBosses(claimStatuses, targetClaim, touchedSet) {
-  const sig = JSON.stringify(claimStatuses || {}) + '|' + (targetClaim || '') + '|' + [...touchedSet].sort().join(',') + '|' + (SELECTED || '') + '|' + lang;
+function renderBosses(claimStatuses, targetClaim, touchedSet, latest) {
+  const sig = JSON.stringify(claimStatuses || {}) + '|' + (targetClaim || '') + '|' + [...touchedSet].sort().join(',') + '|' + (SELECTED || '') + '|' + lang + '|' + (latest ? 1 : 0);
   if (sig === bossSig) return;
   bossSig = sig;
-  const g = $('bosses'); g.innerHTML = '';
-  Object.values(CLAIM_POS).forEach(p => {
+  const active = document.activeElement;
+  const focused = active && active.closest ? active.closest('#bosses g.claim-node') : null;
+  const focusId = focused ? focused.dataset.claim : null;
+  $('bosses').innerHTML = Object.values(CLAIM_POS).map(p => {
     const st = (claimStatuses || {})[p.claim.id] || 'OPEN';
-    const skin = bossSkin(st, touchedSet.has(p.claim.id));
-    const targeted = p.claim.id === targetClaim && st !== 'SUPPORTED' && st !== 'REFUTED';
-    const num = CLAIM_INDEX[p.claim.id] || '·';
-    g.insertAdjacentHTML('beforeend', `
-      <g class="claim-node${SELECTED === p.claim.id ? ' selected' : ''}" data-claim="${esc(p.claim.id)}" opacity="${skin.op}" tabindex="0" role="button" aria-label="${esc(claimLabel(p.claim))}">
-        ${targeted ? `<circle cx="${p.x}" cy="${p.y}" r="40" fill="none" stroke="${skin.ring}" stroke-width="2" opacity="0.7"><animate attributeName="r" values="34;44;34" dur="1.6s" repeatCount="indefinite"/><animate attributeName="opacity" values="0.8;0.15;0.8" dur="1.6s" repeatCount="indefinite"/></circle>` : ''}
-        <circle class="sel-ring" cx="${p.x}" cy="${p.y}" r="39" fill="none" stroke="var(--gold)" stroke-width="2.5" stroke-dasharray="6 5"/>
-        <circle cx="${p.x}" cy="${p.y}" r="30" fill="${skin.fill}" stroke="${skin.ring}" stroke-width="3.5"/>
-        ${skin.mark ? `<text x="${p.x}" y="${p.y + 7}" text-anchor="middle" font-size="21">${skin.mark}</text>` : skin.qmark ? `<text x="${p.x}" y="${p.y + 7}" text-anchor="middle" font-size="18" font-weight="900" fill="var(--amber)">${skin.qmark}</text>` : skin.lock ? `<text x="${p.x}" y="${p.y + 5}" text-anchor="middle" font-size="13" opacity=".75">🔒</text>` : `<text x="${p.x}" y="${p.y + 5}" text-anchor="middle" font-size="12" fill="var(--muted)">?</text>`}
-        <circle cx="${p.x - 26}" cy="${p.y - 25}" r="10" fill="var(--gold)"/>
-        <text class="boss-num" x="${p.x - 26}" y="${p.y - 21}" text-anchor="middle">${num}</text>
-        <text class="boss-name" x="${p.x + 6}" y="${p.y - 42}" text-anchor="middle">${esc(claimLabel(p.claim))}</text>
-      </g>`);
-  });
+    return nodeSvg(p, st, p.claim.id === targetClaim, touchedSet.has(p.claim.id), latest);
+  }).join('');
   updateEdges(touchedSet, targetClaim);
+  if (focusId) { const n = nodeEl(focusId); if (n) n.focus({ preventScroll: true }); }
 }
 
-function tipHtml(claim, st) {
-  return `<b>${CLAIM_INDEX[claim.id] || ''} ${esc(claimLabel(claim))}</b> · ${status(st)}<br>${esc(trClaimF(claim, 'statement') || '')}<div class="tiny" style="margin-top:4px">${esc(t('tip_click'))} · ${esc(claim.id)}</div>`;
+/* ---------- viewport: native scroll for pan, explicit zoom controls ---------- */
+const READABLE_SCALE = 0.8, START_SCALE = 0.92;
+let ZOOM = 1, VIEW_MODE = 'auto';
+function fitScale() {
+  const vp = $('graphViewport');
+  if (!vp || !vp.clientWidth || !vp.clientHeight) return 1;
+  return Math.min((vp.clientWidth - 24) / GRAPH_W, (vp.clientHeight - 24) / GRAPH_H);
 }
+function sizeGraph() {
+  const svg = $('arena');
+  svg.setAttribute('viewBox', `0 0 ${GRAPH_W} ${GRAPH_H}`);
+  svg.setAttribute('width', String(Math.round(GRAPH_W * ZOOM)));
+  svg.setAttribute('height', String(Math.round(GRAPH_H * ZOOM)));
+  $('zoomRead').textContent = `${Math.round(ZOOM * 100)}%`;
+}
+function setZoom(k, anchor) {
+  const vp = $('graphViewport'), svg = $('arena');
+  k = Math.max(0.2, Math.min(2.5, k));
+  const vr = vp.getBoundingClientRect();
+  const ax = anchor ? anchor.x : vr.left + vp.clientWidth / 2;
+  const ay = anchor ? anchor.y : vr.top + vp.clientHeight / 2;
+  const before = svg.getBoundingClientRect();
+  const cx = (ax - before.left) / ZOOM, cy = (ay - before.top) / ZOOM;
+  ZOOM = k; sizeGraph();
+  const after = svg.getBoundingClientRect();
+  vp.scrollLeft += after.left + cx * k - ax;
+  vp.scrollTop += after.top + cy * k - ay;
+}
+function fitGraph() {
+  VIEW_MODE = 'fit';
+  ZOOM = Math.max(0.2, Math.min(1.25, fitScale()));
+  sizeGraph();
+  const vp = $('graphViewport'); vp.scrollLeft = 0; vp.scrollTop = 0;
+}
+function initialView() {
+  VIEW_MODE = 'auto';
+  const k = fitScale();
+  ZOOM = k >= READABLE_SCALE ? Math.min(k, 1.1) : START_SCALE;
+  sizeGraph();
+  const vp = $('graphViewport'); vp.scrollLeft = 0; vp.scrollTop = 0;
+}
+function applyViewMode() { if (VIEW_MODE === 'fit') fitGraph(); else if (VIEW_MODE === 'auto') initialView(); else sizeGraph(); }
+function ensureVisible(id) {
+  const p = CLAIM_POS[id], vp = $('graphViewport'), svg = $('arena');
+  if (!p || !vp) return;
+  const sr = svg.getBoundingClientRect(), vr = vp.getBoundingClientRect();
+  const left = sr.left - vr.left + p.x * ZOOM, top = sr.top - vr.top + p.y * ZOOM;
+  const w = p.w * ZOOM, h = p.h * ZOOM, m = 16;
+  if (left < m) vp.scrollLeft += left - m;
+  else if (left + w > vp.clientWidth - m) vp.scrollLeft += Math.min(left - m, left + w - vp.clientWidth + m);
+  if (top < m + 14) vp.scrollTop += top - m - 14;
+  else if (top + h > vp.clientHeight - m) vp.scrollTop += Math.min(top - m - 14, top + h - vp.clientHeight + m);
+}
+function initGraphViewport() {
+  const vp = $('graphViewport');
+  let drag = null;
+  vp.addEventListener('pointerdown', e => {
+    if (e.pointerType !== 'mouse' || e.button !== 0 || (e.target.closest && e.target.closest('.claim-node'))) return;
+    drag = { x: e.clientX, y: e.clientY, l: vp.scrollLeft, t: vp.scrollTop };
+    try { vp.setPointerCapture(e.pointerId); } catch (_) {}
+    vp.classList.add('panning');
+  });
+  vp.addEventListener('pointermove', e => {
+    if (!drag) return;
+    vp.scrollLeft = drag.l - (e.clientX - drag.x);
+    vp.scrollTop = drag.t - (e.clientY - drag.y);
+  });
+  const end = () => { drag = null; vp.classList.remove('panning'); };
+  vp.addEventListener('pointerup', end);
+  vp.addEventListener('pointercancel', end);
+  vp.addEventListener('wheel', e => {
+    if (!e.ctrlKey && !e.metaKey) return;
+    e.preventDefault();
+    VIEW_MODE = 'manual';
+    setZoom(ZOOM * Math.exp(-e.deltaY * 0.0025), { x: e.clientX, y: e.clientY });
+  }, { passive: false });
+  vp.addEventListener('keydown', e => {
+    if (e.target.closest && e.target.closest('.claim-node')) return;
+    if (e.key === '+' || e.key === '=') { e.preventDefault(); VIEW_MODE = 'manual'; setZoom(ZOOM * 1.2); }
+    else if (e.key === '-' || e.key === '_') { e.preventDefault(); VIEW_MODE = 'manual'; setZoom(ZOOM / 1.2); }
+    else if (e.key === '0') { e.preventDefault(); initialView(); }
+  });
+  $('graphZoomIn').addEventListener('click', () => { VIEW_MODE = 'manual'; setZoom(ZOOM * 1.2); });
+  $('graphZoomOut').addEventListener('click', () => { VIEW_MODE = 'manual'; setZoom(ZOOM / 1.2); });
+  $('graphFit').addEventListener('click', fitGraph);
+  $('graphReset').addEventListener('click', initialView);
+  let resizeTimer = null;
+  window.addEventListener('resize', () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => {
+      const orient = vp.clientWidth && vp.clientWidth < 640 ? 'TB' : 'LR';
+      if (orient !== ORIENT) rerenderGraph();
+      else { applyViewMode(); renderGraphSub(); }
+    }, 160);
+  });
+}
+function rerenderGraph() {
+  renderArenaStatic();
+  if (FRAMES.length) applyFrame(Number($('replaySlider').value), {});
+  else renderSnapshotOnly();
+}
+
+/* ---------- inspector ---------- */
+function claimEvidence(claim) {
+  const ids = new Set(claim.evidence_ids || []);
+  return Object.values(S.evidence || {}).filter(x => ids.has(x.id)
+    || (((S.experiments || {})[x.experiment_id] || {}).target_claim_ids || []).includes(claim.id));
+}
+let unitSig = '';
 function renderUnitCard(claimId, statuses) {
   const card = $('unitCard');
-  if (!claimId) { card.classList.remove('on'); return; }
-  const claim = S.claims[claimId]; if (!claim) { card.classList.remove('on'); return; }
-  const st = (statuses || {})[claimId] || claim.status || 'OPEN';
-  const contracts = Object.values(S.contracts).filter(c => c.target_claim_id === claimId);
-  const exps = Object.values(S.experiments).filter(x => (x.target_claim_ids || []).includes(claimId));
+  const claim = claimId ? (S.claims || {})[claimId] : null;
+  const st = claim ? ((statuses || {})[claimId] || claim.status || 'OPEN') : '';
+  const latest = isLatestFrame();
+  const sig = [claim ? claimId : '', st, lang, latest ? 1 : 0, S.snapshot_hash || ''].join('|');
+  if (sig === unitSig) return;
+  unitSig = sig;
+  if (!claim) {
+    card.classList.remove('on');
+    card.innerHTML = `<h2 class="insp-kicker">${esc(t('inspector'))}</h2><p class="insp-empty">${esc(t('inspector_empty'))}</p>`;
+    return;
+  }
+  const contracts = Object.values(S.contracts || {}).filter(c => c.target_claim_id === claimId);
+  const exps = Object.values(S.experiments || {}).filter(x => (x.target_claim_ids || []).includes(claimId));
+  const evs = claimEvidence(claim);
+  const deps = (claim.depends_on || []).filter(d => S.claims[d]);
+  const dependents = Object.values(S.claims).filter(c => (c.depends_on || []).includes(claimId)).map(c => c.id);
+  const takeaway = readerTakeaway(readerReportState().report,claimId,st,latest);
+  const conc = latest ? trClaimConclusion(claim) : '';
+  const stmt = trClaimF(claim, 'statement') || '';
+  const prov = latest && (st === 'OPEN' || st === 'INCONCLUSIVE') && (claim.provisional_passes || 0) > 0;
+  const why = [L['why_' + st] || '', prov ? L.why_provisional(claim.provisional_passes) : '', claim.required ? '' : t('why_optional')].filter(Boolean);
+  const chip = id => `<button type="button" class="chip-btn" data-claim="${esc(id)}"><span class="mono">${esc(claimNo(id))}</span>${esc(claimLabel(S.claims[id]))}</button>`;
+  const sec = (title, n, body) => `<section class="insp-sec"><h3>${esc(title)}${n != null ? ` <span class="n">${n}</span>` : ''}</h3>${body}</section>`;
+  const none = '<p class="insp-empty">—</p>';
   card.innerHTML = `
-    <div class="uc-head"><span class="uc-num">${CLAIM_INDEX[claimId] || ''}</span><span class="uc-label">${esc(claimLabel(claim))}</span><span class="uc-id mono">${esc(claimId)}</span><button class="uc-close" id="ucClose" type="button" aria-label="close">✕</button></div>
-    <div class="uc-body">
-      ${trClaimConclusion(claim) ? `<div class="uc-conc">${esc(trClaimConclusion(claim))}</div>` : ''}
-      <div${trClaimConclusion(claim) ? ' class="tiny"' : ''}>${esc(trClaimF(claim, 'statement') || '')}</div>
-      <div class="uc-sec"><span class="k">${esc(t('uc_status'))}</span> ${status(st)} <span class="tiny">· ${esc(claim.required ? t('required') : t('optional'))}</span>${claim.critical ? `<span class="tiny" style="color:var(--dire)"> · ${esc(t('critical'))}</span>` : ''}
-        <span class="tiny"> · ${esc(L.evidence_n((claim.evidence_ids || []).length))} · ${esc(L.provisional_n(claim.provisional_passes || 0))}</span></div>
-      ${contracts.length ? `<div class="uc-sec"><span class="k">${esc(t('uc_contracts'))}</span>${contracts.map(c => `<div class="tiny mono">${esc(c.id)} v${esc(c.version)} · ${esc(L.uc_gate(c.repetition.min_passes, c.repetition.min_independent_contexts))}</div>`).join('')}</div>` : ''}
-      ${exps.length ? `<div class="uc-sec"><span class="k">${esc(t('uc_engagements'))}</span>${exps.slice(0, 6).map(x => `<div class="uc-exp"><span>${esc(String(trExpTitle(x))).slice(0, 40)}</span>${status((x.last_verdict || {}).status || x.status)}</div>`).join('')}${exps.length > 6 ? `<div class="tiny" style="margin-top:4px">${esc(L.uc_more(exps.length - 6))}</div>` : ''}</div>` : ''}
-    </div>`;
+    <div class="insp-head"><span class="insp-idx mono">${esc(claimNo(claimId))}</span><h2 class="insp-title">${esc(claimLabel(claim))}</h2><button class="insp-close" id="ucClose" type="button" aria-label="${esc(t('close'))}" title="${esc(t('close'))}">✕</button></div>
+    <div class="insp-tags">${status(st)}<span class="tag${claim.required ? '' : ' dashed'}">${esc(claim.required ? t('required') : t('optional'))}</span>${claim.critical ? `<span class="tag crit">${esc(t('critical'))}</span>` : ''}${prov ? `<span class="tag warn">${esc(L.provisional_n(claim.provisional_passes))}</span>` : ''}</div>
+    ${takeaway ? sec(t('reader_claim'), null, `<p class="insp-conc">${esc(takeaway)}</p>`) : ''}
+    <details class="reader-technical"><summary>${esc(t('reader_audit'))}</summary>
+    ${why.length ? `<ul class="insp-why">${why.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}
+    ${conc ? sec(t('uc_conclusion'), null, `<p class="insp-conc">${esc(conc)}</p>`) : ''}
+    ${sec(t('uc_statement'), null, `<p class="insp-text">${esc(stmt || '—')}</p><div class="insp-id mono">${esc(claimId)}</div>`)}
+    ${deps.length ? sec(t('uc_depends'), deps.length, `<div>${deps.map(chip).join('')}</div>`) : ''}
+    ${dependents.length ? sec(t('uc_dependents'), dependents.length, `<div>${dependents.map(chip).join('')}</div>`) : ''}
+    ${latest ? '' : `<p class="insp-note">${esc(t('uc_snapshot_note'))}</p>`}
+    ${sec(t('uc_contracts'), contracts.length, contracts.length ? `<ul class="insp-list">${contracts.map(c => `<li><div class="insp-row"><span class="mono">${esc(c.id)} · v${esc(c.version)}</span><span class="tiny">${esc(c.kind || '')}</span></div><div class="insp-sub">${esc(L.uc_gate((c.repetition || {}).min_passes, (c.repetition || {}).min_independent_contexts))}</div></li>`).join('')}</ul>` : none)}
+    ${sec(t('uc_engagements'), exps.length, exps.length ? `<ul class="insp-list">${exps.slice(0, 12).map(x => `<li><div class="insp-row"><span>${esc(trExpTitle(x))}</span>${status((x.last_verdict || {}).status || x.status)}</div><div class="insp-sub mono">${esc(x.id)}</div></li>`).join('')}</ul>${exps.length > 12 ? `<div class="insp-more">${esc(L.uc_more(exps.length - 12))}</div>` : ''}` : none)}
+    ${sec(t('uc_evidence'), evs.length, evs.length ? `<ul class="insp-list">${evs.map(x => `<li><div class="insp-row"><span>${esc(reasonSummary(x) || x.id)}</span>${status(x.verdict_status)}</div>${reasonExtra(x) ? `<div class="insp-sub">${esc(reasonExtra(x))}</div>` : ''}<div class="insp-sub mono">${esc(x.id)}${x.context_id ? ' · ' + esc(x.context_id) : ''}</div>${evExtras(x)}</li>`).join('')}</ul>` : `<p class="insp-empty">${esc(t('empty_evidence'))}</p>`)}</details>`;
   card.classList.add('on');
-  const close = $('ucClose');
-  if (close) close.onclick = () => { SELECTED = null; card.classList.remove('on'); refreshSelection(); };
 }
 function refreshSelection() {
-  document.querySelectorAll('#bosses g.claim-node').forEach(n => n.classList.toggle('selected', n.dataset.claim === SELECTED));
+  document.querySelectorAll('#bosses g.claim-node, #quest .q-row').forEach(n => {
+    const on = n.dataset.claim === SELECTED;
+    n.classList.toggle('selected', on);
+    n.setAttribute('aria-pressed', on ? 'true' : 'false');
+  });
+  updateEdgeSelection();
 }
-function selectClaim(id, statuses) {
-  SELECTED = (SELECTED === id) ? null : id;
-  renderUnitCard(SELECTED, statuses || currentStatuses());
+function selectClaim(id, opts) {
+  opts = opts || {};
+  SELECTED = (SELECTED === id && !opts.keep) ? null : id;
+  renderUnitCard(SELECTED, currentStatuses());
   refreshSelection();
+  if (!SELECTED) return;
+  if (opts.from !== 'graph') ensureVisible(SELECTED);
+  else if (NARROW.matches) $('unitCard').scrollIntoView({ block: 'nearest', behavior: REDUCED.matches ? 'auto' : 'smooth' });
 }
-function currentStatuses() { const f = frameAt(Number($('replaySlider').value)); return (f && f.claim_statuses) || {}; }
+function closeInspector(returnFocus) {
+  const prev = SELECTED;
+  SELECTED = null;
+  renderUnitCard(null);
+  refreshSelection();
+  if (returnFocus && prev) { const n = nodeEl(prev); if (n) n.focus(); }
+}
+function snapshotStatuses() { const o = {}; Object.values(S.claims || {}).forEach(c => { o[c.id] = c.status || 'OPEN'; }); return o; }
+function currentStatuses() { const f = frameAt(Number($('replaySlider').value)); return (f && f.claim_statuses) || snapshotStatuses(); }
 function initArenaPointer() {
-  const bossOf = t => { const n = t.closest && t.closest('g.claim-node'); return n && n.dataset.claim; };
-  $('arena').addEventListener('click', e => { const id = bossOf(e.target); if (id) selectClaim(id); });
-  $('arena').addEventListener('keydown', e => {
-    if (e.key !== 'Enter' && e.key !== ' ') return;
-    const id = bossOf(e.target);
-    if (id) { e.preventDefault(); selectClaim(id); }
+  const claimOf = el => { const n = el && el.closest ? el.closest('[data-claim]') : null; return n ? n.dataset.claim : null; };
+  $('bosses').addEventListener('click', e => { const id = claimOf(e.target); if (id) selectClaim(id, { from: 'graph' }); });
+  $('bosses').addEventListener('keydown', e => {
+    if (e.key !== 'Enter' && e.key !== ' ' && e.key !== 'Spacebar') return;
+    const id = claimOf(e.target);
+    if (id) { e.preventDefault(); selectClaim(id, { from: 'graph' }); }
   });
-  $('arena').addEventListener('mousemove', e => {
-    const id = bossOf(e.target);
-    const tip = $('tip');
-    if (!id) { tip.style.display = 'none'; return; }
-    const wrap = $('arenaWrap').getBoundingClientRect();
-    tip.innerHTML = tipHtml(S.claims[id], currentStatuses()[id] || 'OPEN');
-    tip.style.display = 'block';
-    tip.style.left = Math.max(4, Math.min(e.clientX - wrap.left + 16, wrap.width - 310)) + 'px';
-    tip.style.top = (e.clientY - wrap.top + 14) + 'px';
+  $('quest').addEventListener('click', e => { const id = claimOf(e.target); if (id) selectClaim(id, { from: 'list' }); });
+  $('uncertainNote').addEventListener('click', e => { const id = claimOf(e.target); if (id) selectClaim(id, { from: 'list', keep: true }); });
+  $('unitCard').addEventListener('click', e => {
+    if (e.target.closest('#ucClose')) { closeInspector(true); return; }
+    const chipEl = e.target.closest('.chip-btn[data-claim]');
+    if (chipEl) selectClaim(chipEl.dataset.claim, { from: 'list', keep: true });
   });
-  $('arena').addEventListener('mouseleave', () => { $('tip').style.display = 'none'; });
-  $('quest').addEventListener('click', e => { const n = e.target.closest('.q-row'); if (n && n.dataset.claim) selectClaim(n.dataset.claim); });
 }
 
-function moveHero(claimId, instant) {
-  const p = claimId && CLAIM_POS[claimId];
-  const hero = $('hero');
-  const x = p ? Math.max(34, p.x - 52) : 70, y = p ? p.y + 20 : 480;
-  if (instant) hero.style.transition = 'none';
-  hero.style.transform = `translate(${x}px, ${y}px)`;
-  if (instant) { void hero.getBoundingClientRect(); hero.style.transition = ''; }
-}
-
-/* combat fx */
-function svgToScreen(x, y) {
-  const svg = $('arena'), rect = svg.getBoundingClientRect(), wrap = $('arenaWrap').getBoundingClientRect();
-  const vb = svg.viewBox.baseVal;
-  const scale = Math.min(rect.width / vb.width, rect.height / vb.height);
-  const ox = rect.left - wrap.left + (rect.width - vb.width * scale) / 2;
-  const oy = rect.top - wrap.top + (rect.height - vb.height * scale) / 2;
-  return { x: ox + x * scale, y: oy + y * scale };
-}
-function damageNumber(claimId, text, cls) {
-  const p = CLAIM_POS[claimId]; if (!p) return;
-  const s = svgToScreen(p.x, p.y - 20);
-  const el = document.createElement('div');
-  el.className = `dmg ${cls}`; el.textContent = text;
-  el.style.left = s.x + 'px'; el.style.top = s.y + 'px';
-  $('fxLayer').appendChild(el);
-  setTimeout(() => el.remove(), 1600);
-}
-let annBusy = Promise.resolve(), annPending = 0;
-function announce(text, cls, force) {
-  if (!force && annPending >= 2) return;  // cap backlog during fast playback; terminal slams pass force
-  annPending += 1;
-  annBusy = annBusy.then(() => new Promise(done => {
-    $('announcer').innerHTML = `<span class="${cls}">${esc(text)}</span>`;
-    setTimeout(() => { $('announcer').innerHTML = ''; annPending -= 1; done(); }, 1400);
-  }));
-}
-function shake() { const w = $('arenaWrap'); w.classList.remove('shake'); void w.offsetWidth; w.classList.add('shake'); }
-
-function fireFx(ev) {
-  const d = ev.data || {}, v = d.verdict || {};
-  const expId = expIdOf(d);
-  const exp = S.experiments[expId] || {};
-  const claim = (exp.target_claim_ids || [])[0];
-  if (ev.event_type === 'VERDICT_ISSUED') {
-    const effects = d.claim_effects || [];
-    const supported = effects.some(x => x.status === 'SUPPORTED');
-    const rollback = effects.some(x => x.status === 'INVALIDATED' || (x.previous_status === 'SUPPORTED'));
-    if (v.status === 'PASS') {
-      damageNumber(claim, supported ? 'SUPPORTED!' : 'HIT!', 'pass');
-      if (supported) announce(L.ann_supported(claim), 'radiant');
-      if (ev.seq === FIRST_PASS_SEQ) announce(t('ann_first'), 'gold');
-    } else if (v.status === 'FAIL') {
-      damageNumber(claim, 'REFUTED!', 'fail'); shake();
-      announce(L.ann_refuted(claim), 'dire');
-      if (rollback) announce(t('ann_cascade'), 'dire');
-    } else if (v.status === 'INVALID' || v.status === 'ERROR') {
-      damageNumber(claim, 'MISS', 'miss');
-    } else {
-      damageNumber(claim, '?', 'soft');
-    }
-  } else if (ev.event_type === 'LESSON_PROMOTED') {
-    announce(t('ann_loot'), 'gold');
-  } else if (ev.event_type === 'RUN_FINALIZED') {
-    const st = (d.status || '');
-    announce(st === 'SOLVED' ? t('ann_victory') : st === 'REFUTED' ? t('ann_goal_refuted') : st === 'BUDGET_EXHAUSTED' ? t('ann_budget') : st, st === 'SOLVED' ? 'radiant' : 'dire', true);
-  }
-}
-
-/* ================= HUD / frame application ================= */
+/* ================= frame application ================= */
 function frameAt(i) { return FRAMES[Math.max(0, Math.min(FRAMES.length - 1, i))]; }
 
-let prevAtt = null, prevCost = null;
-function barFloat(kind, text) {
-  const bar = document.querySelector(kind === 'hp' ? '.bar.hp' : '.bar.mana');
-  if (!bar) return;
-  const el = document.createElement('span');
-  el.className = 'bar-fx down';
-  el.textContent = text;
-  bar.appendChild(el);
-  setTimeout(() => el.remove(), 1150);
+let CURRENT_INDEX = 0;
+function isLatestFrame() { return !FRAMES.length || CURRENT_INDEX >= FRAMES.length - 1; }
+function tallyStatuses(statuses) {
+  const n = { SUPPORTED: 0, REFUTED: 0, INCONCLUSIVE: 0, OPEN: 0, INVALIDATED: 0 };
+  const ids = new Set([...Object.keys(S.claims || {}), ...Object.keys(statuses || {})]);
+  ids.forEach(id => { const st = (statuses || {})[id] || 'OPEN'; n[st] = (n[st] || 0) + 1; });
+  return n;
+}
+function renderTally(statuses) {
+  const n = tallyStatuses(statuses);
+  $('scoreV').textContent = n.SUPPORTED; $('scoreR').textContent = n.REFUTED;
+  $('scoreU').textContent = n.INCONCLUSIVE; $('scoreO').textContent = n.OPEN;
+  $('scoreX').textContent = n.INVALIDATED; $('scoreXWrap').hidden = !n.INVALIDATED;
+}
+function renderBudget(f) {
+  const B = S.budget || {};
+  const attMax = B.max_attempts, costMax = B.max_cost_units;
+  const att = f.attempts_remaining ?? B.attempts_remaining;
+  const cost = f.cost_units_remaining ?? B.cost_units_remaining;
+  if (attMax == null) {
+    $('hpFill').style.transform = 'scaleX(1)';
+    $('hpText').textContent = `${t('budget_attempts')} · ${t('unlimited')}`;
+  } else {
+    $('hpFill').style.transform = `scaleX(${Math.max(0, Math.min(1, (att ?? 0) / attMax))})`;
+    $('hpText').textContent = `${t('budget_attempts')} ${att}/${attMax}`;
+  }
+  if (costMax == null) {
+    $('manaFill').style.transform = 'scaleX(1)';
+    $('manaText').textContent = `${t('budget_cost')} · ${t('unlimited')}`;
+  } else {
+    $('manaFill').style.transform = `scaleX(${Math.max(0, Math.min(1, (cost ?? 0) / costMax))})`;
+    $('manaText').textContent = `${t('budget_cost')} ${Number(cost ?? 0).toFixed(1)}/${costMax}`;
+  }
+}
+function renderRunState(st) {
+  const el = $('runState');
+  el.className = 'status ' + (st || '');
+  el.textContent = st ? runStatusLabel(st) : '';
+}
+let noteSig = '';
+function renderGraphNote(runStatus, statuses) {
+  const final = isFinalStatus(runStatus);
+  const unsettled = Object.values(S.claims || {}).filter(c => {
+    const s = (statuses || {})[c.id] || 'OPEN';
+    return s === 'INCONCLUSIVE' || s === 'INVALIDATED' || (final && s === 'OPEN');
+  });
+  const sig = [runStatus || '', final ? 1 : 0, lang, isLatestFrame() ? 1 : 0, unsettled.map(c => c.id + ':' + ((statuses || {})[c.id] || 'OPEN')).join(',')].join('|');
+  if (sig === noteSig) return;
+  noteSig = sig;
+  const parts = [];
+  const reader = isLatestFrame() ? readerReportState().report : null;
+  if (reader) parts.push(`<p class="reader-graph-answer">${esc(reader.answer)}</p>`);
+  if (runStatus === 'SOLVED') parts.push(`<details><summary>${esc(t('reader_audit'))}</summary><p>${esc(t('solved_note'))}</p></details>`);
+  else if (final) parts.push(`<details><summary>${esc(t('reader_audit'))}</summary><p>${esc(L.final_note(runStatusLabel(runStatus)))}</p></details>`);
+  if (unsettled.length) parts.push(`<p><span class="unc-label">${esc(t('uncertain_lead'))}</span>${unsettled.map(c => {
+    const s = (statuses || {})[c.id] || 'OPEN';
+    return `<button type="button" class="chip-btn" data-claim="${esc(c.id)}"><span class="mono">${esc(claimNo(c.id))}</span>${esc(claimLabel(c))}${status(s)}${c.required ? '' : `<span class="tag dashed">${esc(t('optional'))}</span>`}</button>`;
+  }).join('')}</p>`);
+  $('uncertainNote').innerHTML = parts.join('');
+  $('uncertainNote').hidden = !parts.length;
 }
 function applyFrame(i, opts) {
   opts = opts || {};
   const f = frameAt(i); if (!f) return;
+  CURRENT_INDEX = Math.max(0, Math.min(FRAMES.length - 1, i));
+  const latest = isLatestFrame();
   const ev = E[f.seq - 1] || {};
   const statuses = f.claim_statuses || {};
-  const verified = Object.values(statuses).filter(x => x === 'SUPPORTED').length;
-  const refuted = Object.values(statuses).filter(x => x === 'REFUTED').length;
-  $('scoreV').textContent = verified; $('scoreR').textContent = refuted;
-  const attMax = S.budget.max_attempts, costMax = S.budget.max_cost_units;
-  const att = f.attempts_remaining ?? S.budget.attempts_remaining;
-  const cost = f.cost_units_remaining ?? S.budget.cost_units_remaining;
-  if (opts.fx && prevAtt !== null && prevCost !== null && att != null && cost != null) {
-    if (att < prevAtt) barFloat('hp', `−${prevAtt - att}`);
-    if (cost < prevCost - 1e-9) barFloat('mana', `−${(prevCost - cost).toFixed(1)}`);
-  }
-  if (att != null) prevAtt = att;
-  if (cost != null) prevCost = cost;
-  if (attMax == null) {
-    $('hpFill').style.transform = 'scaleX(1)';
-    $('hpText').textContent = `${t('attempts')} ∞`;
-  } else {
-    $('hpFill').style.transform = `scaleX(${Math.max(0, (att ?? 0) / attMax)})`;
-    $('hpText').textContent = `${t('attempts')} ${att}/${attMax}`;
-  }
-  if (costMax == null) {
-    $('manaFill').style.transform = 'scaleX(1)';
-    $('manaText').textContent = `${t('cost')} ∞`;
-  } else {
-    $('manaFill').style.transform = `scaleX(${Math.max(0, (cost ?? 0) / costMax)})`;
-    $('manaText').textContent = `${t('cost')} ${Number(cost ?? 0).toFixed(1)}/${costMax}`;
-  }
-  $('matchMeta').textContent = `seq ${f.seq}/${E.length} · ${runStatusLabel(f.run_status)} · ${t('obj_label')} ${f.objective}% · ${t('epi_label')} ${f.epistemic}%`;
-  $('lootMeta').textContent = f.n_lessons ? `💰×${f.n_lessons}` : '';
-  const target = TARGET_BY_SEQ[f.seq];
-  renderBosses(statuses, target, TOUCHED_BY_SEQ[f.seq] || new Set());
-  moveHero(target, opts.instant);
-  const combo = COMBO_BY_SEQ[f.seq] || 0;
-  $('combo').textContent = combo >= 2 ? L.combo(combo) : '';
-  $('combo').classList.toggle('on', combo >= 2);
+  renderTally(statuses);
+  renderBudget(f);
+  renderRunState(f.run_status);
+  $('matchMeta').textContent = `#${f.seq}/${E.length} · ${t('obj_label')} ${f.objective}% · ${t('epi_label')} ${f.epistemic}%`;
+  $('lootMeta').textContent = f.n_lessons ? `${t('eb_lessons')} ${f.n_lessons}` : '';
+  const target = isFinalStatus(f.run_status) ? null : TARGET_BY_SEQ[f.seq];
+  renderBosses(statuses, target, TOUCHED_BY_SEQ[f.seq] || new Set(), latest);
   renderQuest(statuses);
+  renderGraphNote(f.run_status, statuses);
   if (SELECTED) renderUnitCard(SELECTED, statuses);
   const n = narrate(ev);
-  if (n.caster) $('casterLine').textContent = n.caster;
-  $('frameLabel').textContent = `#${f.seq}/${E.length} · ${ev.event_type || ''} · ${ev.ts || ''}`;
+  $('casterLine').textContent = n.caster || t('no_events');
+  $('frameLabel').textContent = `#${f.seq}/${E.length} · ${(ev.ts || '').slice(5, 16).replace('T', ' ')}`;
   $('tlFill').style.width = pctOf(i) + '%';
   $('tlCursor').style.left = pctOf(i) + '%';
   $('replaySlider').value = i;
-  if (opts.fx && ev.event_type) fireFx(ev);
   if (opts.feedRebuild) rebuildFeed(f.seq); else if (opts.fx) appendFeed(ev);
-  updateEndboard(f);
   try { history.replaceState(null, '', '#seq=' + f.seq); } catch (_) {}
 }
+function renderSnapshotOnly() {
+  const statuses = snapshotStatuses();
+  renderTally(statuses);
+  renderBudget({});
+  renderRunState(S.run_status);
+  renderBosses(statuses, null, new Set(Object.keys(statuses)), true);
+  renderQuest(statuses);
+  renderGraphNote(S.run_status, statuses);
+  renderUnitCard(SELECTED, statuses);
+  if (!$('casterLine').textContent) $('casterLine').textContent = t('no_events');
+  rebuildFeed(E.length);
+  setLiveChip();
+}
 
-/* ---------- end-game scoreboard ---------- */
-const FINAL_STATUSES = new Set(['SOLVED','BUDGET_EXHAUSTED','FAILED','CANCELLED','ABORTED','TIME_EXHAUSTED','MAX_STATES_EXHAUSTED','BLOCKED']);
+const FINAL_STATUSES = new Set(['SOLVED','REFUTED','EXHAUSTED','BUDGET_EXHAUSTED','FAILED','CANCELLED','ABORTED','TIME_EXHAUSTED','MAX_STATES_EXHAUSTED','BLOCKED']);
 function isFinalStatus(st) { return FINAL_STATUSES.has(st) || /_EXHAUSTED$/.test(st || ''); }
-let ebDismissed = false;
 function matchDuration() {
   if (!E.length) return '—';
   const t0 = Date.parse(E[0].ts || ''), t1 = Date.parse(E[E.length - 1].ts || '');
@@ -1045,52 +1386,7 @@ function matchDuration() {
   const s = Math.round((t1 - t0) / 1000);
   return L.eb_dur(Math.floor(s / 3600), Math.floor((s % 3600) / 60), s % 60);
 }
-function claimMark(st, required) {
-  return st === 'SUPPORTED' ? '👑' : st === 'REFUTED' ? '☠️' : st === 'INVALIDATED' ? '🌀' : required ? '⚔️' : '◇';
-}
-function updateEndboard(f) {
-  const final = !!(f && isFinalStatus(f.run_status));
-  const show = final && follow && !ebDismissed;
-  if (show) renderEndboard(f);
-  $('endboard').classList.toggle('on', show);
-  $('endboardBtn').classList.toggle('on', final && follow && ebDismissed);
-}
-let ebSig = '';
-function renderEndboard(f) {
-  const sig = (f && f.seq) + '|' + lang;
-  if (sig === ebSig) return;
-  ebSig = sig;
-  const statuses = f.claim_statuses || {};
-  const verified = Object.values(statuses).filter(x => x === 'SUPPORTED').length;
-  const refuted = Object.values(statuses).filter(x => x === 'REFUTED').length;
-  const attMax = S.budget.max_attempts, costMax = S.budget.max_cost_units;
-  const att = f.attempts_remaining ?? S.budget.attempts_remaining;
-  const cost = f.cost_units_remaining ?? S.budget.cost_units_remaining;
-  const st = f.run_status || '';
-  const titleCls = st === 'SOLVED' ? 'radiant' : st === 'BUDGET_EXHAUSTED' ? 'dire' : 'gold';
-  const titleTxt = st === 'SOLVED' ? t('ann_victory') : st === 'BUDGET_EXHAUSTED' ? t('ann_budget') : runStatusLabel(st);
-  const attV = (attMax != null && att != null) ? `${attMax - att}/${attMax}` : '—';
-  const costV = (costMax != null && cost != null) ? `${(costMax - cost).toFixed(1)}/${costMax}` : '—';
-  const claims = Object.values(S.claims).map(c => {
-    const cs = statuses[c.id] || c.status || 'OPEN';
-    return `<div class="eb-claim"><span class="eb-cn">${CLAIM_INDEX[c.id] || ''}</span><span>${claimMark(cs, c.required)}</span><span>${esc(claimLabel(c))}</span><span class="st">${status(cs)}</span></div>`;
-  }).join('');
-  $('endboard').innerHTML = `<div class="eb-panel">
-    <div class="eb-kicker">${esc(t('eb_kicker'))} · ${esc(runStatusLabel(st))}</div>
-    <div class="eb-title ${titleCls}">${esc(titleTxt)}</div>
-    <div class="eb-sub">${esc(trTopic())}</div>
-    <div class="eb-score"><span class="n radiant">${verified}</span><span class="lbl">${esc(t('verified'))}</span><span class="vs2">VS</span><span class="n dire">${refuted}</span><span class="lbl">${esc(t('refuted'))}</span></div>
-    <div class="eb-grid">
-      <div class="eb-stat"><div class="k">${esc(t('eb_attempts'))}</div><div class="v">${esc(attV)}</div></div>
-      <div class="eb-stat"><div class="k">${esc(t('eb_cost'))}</div><div class="v">${esc(costV)}</div></div>
-      <div class="eb-stat"><div class="k">${esc(t('eb_duration'))}</div><div class="v">${esc(matchDuration())}</div></div>
-      <div class="eb-stat"><div class="k">${esc(t('eb_lessons'))}</div><div class="v">💰 ${f.n_lessons || 0}</div></div>
-      <div class="eb-stat"><div class="k">${esc(t('eb_events'))}</div><div class="v">${E.length}</div></div>
-    </div>
-    <div class="eb-claims">${claims}</div>
-    <div class="eb-actions"><button class="primary" data-eb="replay">▶ ${esc(t('eb_replay'))}</button><button data-eb="map">${esc(t('eb_view_map'))}</button></div>
-  </div>`;
-}
+function claimMark(st) { return GLYPH[st] || '○'; }
 
 function pctOf(i) { return FRAMES.length <= 1 ? 100 : (100 * i) / (FRAMES.length - 1); }
 
@@ -1098,18 +1394,20 @@ function rebuildFeed(uptoSeq) {
   const rows = [];
   for (let k = E.length - 1; k >= 0 && rows.length < 30; k--) {
     if (E[k].seq > uptoSeq) continue;
-    rows.push(feedRowHtml(E[k]));
+    rows.push(feedRowHtml(E[k], false));
   }
-  $('feed').innerHTML = rows.join('');
+  $('feed').innerHTML = rows.join('') || `<div class="feed-row info"><span class="feed-text">${esc(t('no_events'))}</span></div>`;
   $('feedCount').textContent = L.events_n(Math.min(uptoSeq, E.length));
 }
-function feedRowHtml(ev) {
+function feedRowHtml(ev, fresh) {
   const n = narrate(ev);
-  return `<div class="feed-row ${n.cls}" data-seq="${ev.seq}" title="${esc(t('feed_jump'))}"><span class="seq mono">#${ev.seq}</span><span>${n.icon}</span><span>${esc(n.feed)}</span><span class="ts mono">${esc((ev.ts || '').slice(11, 19))}</span></div>`;
+  return `<button type="button" class="feed-row ${n.cls}${fresh ? ' feed-new' : ''}" data-seq="${ev.seq}" title="${esc(t('feed_jump'))}"><span class="seq">#${ev.seq}</span><span class="glyph" aria-hidden="true">${esc(n.icon)}</span><span class="feed-text">${esc(n.feed)}</span><span class="ts">${esc((ev.ts || '').slice(11, 19))}</span></button>`;
 }
 function appendFeed(ev) {
-  $('feed').insertAdjacentHTML('afterbegin', feedRowHtml(ev));
-  while ($('feed').children.length > 30) $('feed').lastChild.remove();
+  const feed = $('feed');
+  if (!feed.querySelector('.feed-row[data-seq]')) feed.innerHTML = '';
+  feed.insertAdjacentHTML('afterbegin', feedRowHtml(ev, true));
+  while (feed.children.length > 30) feed.lastChild.remove();
   $('feedCount').textContent = L.events_n(ev.seq);
 }
 
@@ -1119,37 +1417,46 @@ function renderWaiting() {
   $('respawnSec').style.display = has ? '' : 'none';
   $('waitingList').style.display = has ? '' : 'none';
   if (!has) return;
-  $('nextWake').textContent = S.next_wake_at ? `⏰ ${S.next_wake_at}` : t('awaiting_evidence');
+  $('nextWake').textContent = S.next_wake_at ? `${t('next_wake')} ${S.next_wake_at}` : t('awaiting_evidence');
   $('waitingList').innerHTML = waits.map(w => {
     const x = S.experiments[w.experiment_id] || {};
     const cond = w.kind === 'time' ? L.wait_not_before(w.not_before_ts || '—') : L.wait_until(((w.until_evidence || {}).claim_id) || '?');
-    return `<div class="feed-row info"><span>⏳</span><span>${esc(trExpTitle(x) || w.experiment_id)}<span class="tiny"> · ${esc(cond)}</span></span></div>`;
+    return `<div class="feed-row soft"><span class="glyph" aria-hidden="true">◷</span><span class="feed-text">${esc(trExpTitle(x) || w.experiment_id)}<span class="tiny"> · ${esc(cond)}</span></span></div>`;
   }).join('');
 }
 let questSig = '';
 function renderQuest(statuses) {
-  const sig = JSON.stringify(statuses || {}) + '|' + lang;
+  const latest = isLatestFrame();
+  const sig = JSON.stringify(statuses || {}) + '|' + lang + '|' + (latest ? 1 : 0) + '|' + Object.keys(S.claims || {}).join(',') + '|' + (S.snapshot_hash || '');
   if (sig === questSig) return;
   questSig = sig;
-  const rows = Object.values(S.claims).map(c => {
-    const st = (statuses || {})[c.id] || c.status || 'OPEN';
-    const mark = st === 'SUPPORTED' ? '👑' : st === 'REFUTED' ? '☠️' : st === 'INVALIDATED' ? '🌀' : c.required ? '⚔️' : '◇';
-    const conc = trClaimConclusion(c);
+  const rows = Object.values(S.claims || {}).map(c => {
+    const st = (statuses || {})[c.id] || 'OPEN';
+    const conc = readerTakeaway(readerReportState().report,c.id,st,latest) || (latest ? trClaimConclusion(c) : '');
     const stmt = String(trClaimF(c, 'statement') || '');
-    return `<div class="q-row q-${esc(st)}" data-claim="${esc(c.id)}" style="cursor:pointer"><div class="q-title"><span class="q-mark">${mark}</span><span style="color:var(--gold);font-weight:900">${CLAIM_INDEX[c.id] || ''}</span><span>${esc(claimLabel(c))}</span><span class="q-state">${esc(st)}</span></div><div class="q-sub${conc ? ' q-conc' : ''}" title="${esc(stmt)}">${esc(conc || stmt.slice(0, 72))}</div></div>`;
+    const prov = latest && (st === 'OPEN' || st === 'INCONCLUSIVE') && (c.provisional_passes || 0) > 0;
+    const tags = (c.required ? '' : `<span class="tag dashed">${esc(t('optional'))}</span>`)
+      + (c.critical ? `<span class="tag crit">${esc(t('critical'))}</span>` : '')
+      + (prov ? `<span class="tag warn">${esc(L.prov_short(c.provisional_passes))}</span>` : '');
+    const sel = SELECTED === c.id;
+    return `<button type="button" class="q-row q-${esc(st)}${sel ? ' selected' : ''}" data-claim="${esc(c.id)}" aria-pressed="${sel}"><span class="q-top"><span class="q-idx mono">${esc(claimNo(c.id))}</span><span class="q-label">${esc(claimLabel(c))}</span>${status(st)}</span>${conc || stmt ? `<span class="q-sub" title="${esc(stmt)}">${esc(conc || stmt)}</span>` : ''}${tags ? `<span class="q-tags">${tags}</span>` : ''}</button>`;
   });
-  $('quest').innerHTML = rows.join('');
-  $('questCount').textContent = L.claims_n(Object.keys(S.claims).length);
+  $('quest').innerHTML = rows.join('') || `<p class="insp-empty" style="padding:4px 10px">${esc(t('graph_empty'))}</p>`;
+  $('questCount').textContent = L.claims_n(Object.keys(S.claims || {}).length);
 }
 
 /* ================= playback deck ================= */
 let follow = true, playTimer = null, speed = 2, liveChain = 0;
 function setLiveChip() {
-  const runFinal = isFinalStatus((FRAMES[FRAMES.length - 1] || {}).run_status);
+  if (BOOT_ERROR) { $('liveChip').className = 'livechip stale'; $('liveText').textContent = t('load_failed'); return; }
+  const runFinal = isFinalStatus((FRAMES[FRAMES.length - 1] || {}).run_status || (FRAMES.length ? '' : S.run_status));
+  const lost = pollMisses >= 3 && !runFinal;
   $('liveChip').classList.toggle('replaying', !follow);
   $('liveChip').classList.toggle('ended', runFinal);
-  $('liveText').textContent = follow ? (runFinal ? t('ended') : t('live')) : t('replay');
+  $('liveChip').classList.toggle('stale', lost);
+  $('liveText').textContent = lost ? t('reconnecting') : follow ? (runFinal ? t('ended') : t('live')) : t('replay');
   $('liveBtn').classList.toggle('active', follow);
+  $('endboardBtn').hidden = !runFinal;
 }
 function showIndex(i, opts) {
   if (!FRAMES.length) return;
@@ -1158,13 +1465,19 @@ function showIndex(i, opts) {
   setLiveChip();
   applyFrame(i, opts || { feedRebuild: true });
 }
-function stopPlay() { liveChain += 1; if (playTimer) { clearInterval(playTimer); playTimer = null; $('playBtn').textContent = '▶'; $('playBtn').classList.remove('active'); } }
+function setPlayButton(playing) {
+  const b = $('playBtn');
+  b.textContent = playing ? '❚❚' : '▶';
+  b.classList.toggle('active', playing);
+  b.setAttribute('aria-label', t(playing ? 'pause' : 'play'));
+}
+function stopPlay() { liveChain += 1; if (playTimer) { clearInterval(playTimer); playTimer = null; setPlayButton(false); } }
 function startPlay() {
   if (!FRAMES.length) return;
   stopPlay();
   let i = Number($('replaySlider').value);
   if (i >= FRAMES.length - 1) { i = -1; }
-  $('playBtn').textContent = '⏸'; $('playBtn').classList.add('active');
+  setPlayButton(true);
   const stepMs = 1000 / speed;
   if (i === -1) { i = 0; showIndex(0, { feedRebuild: true, instant: true }); }
   playTimer = setInterval(() => {
@@ -1182,11 +1495,12 @@ function renderMarkers() {
   $('tlStart').textContent = E.length ? (E[0].ts || '').slice(5, 16).replace('T', ' ') : '';
   $('tlEnd').textContent = E.length ? (E[E.length - 1].ts || '').slice(5, 16).replace('T', ' ') : '';
 }
+function openView(name) { const btn = document.querySelector(`.tab[data-view="${name}"]`); if (btn) btn.click(); }
 function initDeck() {
   renderMarkers();
   $('replaySlider').addEventListener('input', () => { stopPlay(); showIndex(Number($('replaySlider').value), { feedRebuild: true }); });
-  $('playBtn').addEventListener('click', e => { playTimer ? stopPlay() : startPlay(); e.currentTarget.blur(); });
-  $('liveBtn').addEventListener('click', e => { stopPlay(); showIndex(FRAMES.length - 1, { feedRebuild: true }); e.currentTarget.blur(); });
+  $('playBtn').addEventListener('click', () => { playTimer ? stopPlay() : startPlay(); });
+  $('liveBtn').addEventListener('click', () => { stopPlay(); showIndex(FRAMES.length - 1, { feedRebuild: true }); });
   $('speedSel').addEventListener('change', () => { speed = Number($('speedSel').value) || 2; if (playTimer) startPlay(); });
   $('feed').addEventListener('click', e => {
     const row = e.target.closest('.feed-row[data-seq]');
@@ -1194,16 +1508,11 @@ function initDeck() {
     stopPlay();
     showIndex(Number(row.dataset.seq) - 1, { feedRebuild: true });
   });
-  $('endboard').addEventListener('click', e => {
-    const b = e.target.closest('[data-eb]');
-    if (!b) return;
-    ebDismissed = true;
-    updateEndboard(frameAt(Number($('replaySlider').value)));
-    if (b.dataset.eb === 'replay') { showIndex(0, { feedRebuild: true, instant: true }); startPlay(); }
-  });
-  $('endboardBtn').addEventListener('click', () => { ebDismissed = false; updateEndboard(frameAt(Number($('replaySlider').value))); });
+  $('endboardBtn').addEventListener('click', () => openView('report'));
   window.addEventListener('keydown', e => {
-    if (e.target.closest && e.target.closest('input,select,textarea')) return;
+    if (e.key === 'Escape' && SELECTED) { closeInspector(true); return; }
+    if (e.defaultPrevented) return;
+    if (e.target.closest && e.target.closest('input,select,textarea,button,a,summary,[role="button"],[contenteditable],#graphViewport')) return;
     if (e.code === 'Space') { e.preventDefault(); playTimer ? stopPlay() : startPlay(); }
     else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
       e.preventDefault(); stopPlay();
@@ -1214,16 +1523,37 @@ function initDeck() {
   });
 }
 
-/* ================= live broadcast polling ================= */
+/* ================= live polling ================= */
+let pollMisses = 0;
 async function poll() {
   if (document.hidden) return;
   try {
-    const r = await fetch(`snapshot.json?ts=${Date.now()}`, { cache: 'no-store' });
-    const fresh = await r.json();
-    if (!fresh?.snapshot?.snapshot_hash || fresh.snapshot.snapshot_hash === S.snapshot_hash) return;
+    /* A daemon that accepts but never answers must still count as a miss. */
+    const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 5000);
+    let body;
+    try {
+      const r = await fetch(`snapshot.json?ts=${Date.now()}`, { cache: 'no-store', signal: ctl.signal });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      body = await r.text();
+    } finally { clearTimeout(timer); }
+    const fresh = parseLenient(body);
+    if (!fresh?.snapshot?.snapshot_hash) throw new Error('Snapshot hash missing');
+    if (pollMisses) { pollMisses = 0; setLiveChip(); }
+    const sameSnapshot = fresh.snapshot.snapshot_hash === S.snapshot_hash;
+    const translationsChanged = JSON.stringify(fresh.translations || {}) !== JSON.stringify(DATA.translations || {})
+      || JSON.stringify(fresh.snapshot.i18n || {}) !== JSON.stringify(S.i18n || {});
+    if (sameSnapshot && !translationsChanged) return;
+    DATA.translations = fresh.translations || {};
+    bossSig = ''; questSig = ''; unitSig = ''; noteSig = '';
+    if (sameSnapshot) {
+      // Same deterministic snapshot: refresh presentation only, not frames or state.
+      S.i18n = fresh.snapshot.i18n || {};
+      applyStaticI18n(); renderReport(); renderWaiting();
+      if (FRAMES.length) applyFrame(CURRENT_INDEX, {feedRebuild:true}); else renderSnapshotOnly();
+      return;
+    }
     const oldLen = FRAMES.length;
     S = fresh.snapshot; E = fresh.events || []; FRAMES = fresh.frames || [];
-    ebDismissed = false;
     deriveTimeline(); renderArenaStatic(); renderMarkers(); renderDetailTabs(); renderWaiting();
     if (follow && !playTimer) {
       const chain = ++liveChain;
@@ -1236,22 +1566,29 @@ async function poll() {
         setTimeout(step, 650);
       };
       step();
+    } else if (!playTimer && FRAMES.length) {
+      applyFrame(Number($('replaySlider').value), {});
     }
-  } catch (_) { /* between writes; retry next tick */ }
+  } catch (error) {
+    pollMisses += 1;
+    setLiveChip();
+    console.warn('Observatory poll failed; retrying next tick', error);
+  }
 }
 
 /* ================= detail tabs (audit layer) ================= */
 function initTabs() {
   document.querySelectorAll('.tab').forEach(btn => btn.addEventListener('click', () => {
+    const behavior = REDUCED.matches ? 'auto' : 'smooth';
     document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
     document.querySelectorAll('.view').forEach(x => x.classList.remove('active'));
     btn.classList.add('active');
     if (btn.dataset.view !== 'none') {
       const v = $('view-' + btn.dataset.view);
       v.classList.add('active');
-      requestAnimationFrame(() => v.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+      requestAnimationFrame(() => v.scrollIntoView({ behavior, block: 'start' }));
     } else {
-      window.scrollTo({ top: 0, behavior: 'smooth' });
+      window.scrollTo({ top: 0, behavior });
     }
   }));
   $('evTypeFilter').addEventListener('change', renderEventList);
@@ -1265,55 +1602,139 @@ function evExtras(x) {
   const arts = x.artifact_refs || [];
   return `${mets.length ? `<div class="ev-metrics">${mets.map(([k, v]) => `<span class="m">${esc(k)}=${esc(fmtMetricVal(v))}</span>`).join('')}</div>` : ''}${arts.length ? `<div class="ev-art">${esc(t('artifacts_label'))}: ${arts.map(a => `<a href="artifact/${encodeURIComponent(a.path || '')}" target="_blank" rel="noopener" class="mono">${esc(a.path || '')}</a>`).join(' · ')}</div>` : ''}`;
 }
+/* READER_PURE_START */
+function validateReaderReport(r, snapshotHash, eventCount) {
+  const result = diagnostic => ({report:null, diagnostic});
+  if (r == null) return result('missing');
+  const rec = x => x !== null && typeof x === 'object' && !Array.isArray(x);
+  const str = (x, max=20000) => typeof x === 'string' && x.length <= max;
+  const list = (x, max, check) => Array.isArray(x) && x.length <= max && x.every(check);
+  const note = x => x === undefined || str(x);
+  const count = x => Number.isSafeInteger(x) && x >= 0 && x <= 100000000;
+  const record = (x, check) => rec(x) && Object.keys(x).length <= 10000 && Object.entries(x).every(([k,v]) => str(k,256) && k.length > 0 && check(v,k));
+  const table = x => rec(x) && note(x.label) && note(x.caption) && list(x.columns,50,v=>str(v,2000)) && x.columns.length > 0
+    && list(x.rows,1000,row=>list(row,50,v=>str(v,20000)) && row.length === x.columns.length);
+  if (!rec(r) || r.schema_version !== 'sisyfus.reader-report.v1' || !rec(r.basis)
+    || !str(r.basis.snapshot_hash,256) || !r.basis.snapshot_hash.length || !count(r.basis.event_count)
+    || !['zh','en'].includes(r.language) || !['title','question','answer','scope_note'].every(k=>str(r[k]))
+    || !r.title.trim() || !r.question.trim() || !r.answer.trim() || !r.scope_note.trim()
+    || !list(r.sections,100,s=>rec(s) && str(s.heading,2000) && list(s.paragraphs,200,v=>str(v)) && note(s.note)
+      && (s.notes === undefined || list(s.notes,100,v=>str(v))) && (s.table === undefined || table(s.table)))
+    || !list(r.process,100,s=>rec(s) && ['title','what','finding','meaning'].every(k=>str(s[k])))
+    || !record(r.claim_takeaways,v=>rec(v) && ['OPEN','SUPPORTED','REFUTED','INCONCLUSIVE','INVALIDATED'].includes(v.status) && str(v.text))
+    || !record(r.event_notes,(v,k)=>/^[1-9][0-9]{0,8}$/.test(k) && count(Number(k)) && rec(v) && str(v.event_type,256) && v.event_type.length > 0 && str(v.feed) && str(v.caster))
+    || !list(r.sources,200,s=>rec(s) && str(s.label,2000) && str(s.href,4096)) || !note(r.note)
+    || (r.notes !== undefined && !list(r.notes,100,v=>str(v)))) return result('invalid');
+  if (r.basis.snapshot_hash !== snapshotHash || r.basis.event_count !== eventCount) return result('stale');
+  return {report:r,diagnostic:''};
+}
+function safeReaderHref(h) {
+  if (typeof h !== 'string' || !h || h.length > 4096 || h.trim() !== h) return '';
+  let decoded = h;
+  try {
+    for (let i=0;i<12;i++) {
+      const next = decodeURIComponent(decoded);
+      if (next === decoded) break;
+      decoded = next;
+      if (i === 11) return '';
+    }
+  } catch (error) { return ''; } // malformed URI is an explicitly disabled link
+  if (/[\\\\\\s\\u0000-\\u001f\\u007f]/.test(decoded) || decoded.startsWith('//')
+    || decoded.split(/[/?#]/).some(x=>x === '..')) return '';
+  if (h.startsWith('https://')) {
+    try { const u = new URL(h); return u.protocol === 'https:' && u.hostname && !u.username && !u.password ? h : ''; }
+    catch (error) { return ''; }
+  }
+  if (decoded.startsWith('/') || /[:]/.test(decoded) || /^[?#]/.test(decoded)) return '';
+  return h;
+}
+function readerProseHtml(r) {
+  const zh = r.language === 'zh';
+  const para = s => `<p>${esc(s)}</p>`;
+  const notes = x => (x.note === undefined ? '' : `<p class="reader-note">${esc(x.note)}</p>`)
+    + (x.notes || []).map(s=>`<p class="reader-note">${esc(s)}</p>`).join('');
+  return r.sections.map(s=>`<section class="reader-section"><h2>${esc(s.heading)}</h2>${s.paragraphs.map(para).join('')}${s.table ? `<div class="reader-table-wrap" tabindex="0" role="region" aria-label="${esc(s.table.label || s.heading)}"><table>${s.table.label || s.table.caption ? `<caption>${esc(s.table.label || s.table.caption)}</caption>` : ''}<thead><tr>${s.table.columns.map(c=>`<th scope="col">${esc(c)}</th>`).join('')}</tr></thead><tbody>${s.table.rows.map(row=>`<tr>${row.map(c=>`<td>${esc(c)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>` : ''}${notes(s)}</section>`).join('')
+    + notes(r) + `<section class="reader-section"><h2>${zh ? '这轮研究是怎样做的' : 'How the research was done'}</h2><ol class="reader-process">${r.process.map(s=>`<li><h3>${esc(s.title)}</h3><p><b>${zh ? '做了什么' : 'What was done'}：</b>${esc(s.what)}</p><p><b>${zh ? '发现' : 'Finding'}：</b>${esc(s.finding)}</p><p><b>${zh ? '意义' : 'Meaning'}：</b>${esc(s.meaning)}</p></li>`).join('')}</ol></section>`
+    + `<section class="reader-section"><h2>${zh ? '证据与来源' : 'Evidence and sources'}</h2><ul>${r.sources.map(s=>{ const h=safeReaderHref(s.href); return `<li>${h ? `<a href="${esc(h)}" target="_blank" rel="noopener noreferrer">${esc(s.label)}</a>` : `<span>${esc(s.label)} (${zh ? '链接已禁用' : 'link disabled'})</span>`}</li>`; }).join('')}</ul></section>`;
+}
+function readerTakeaway(r,id,status,latest) {
+  const v = r && r.claim_takeaways && Object.prototype.hasOwnProperty.call(r.claim_takeaways,id) ? r.claim_takeaways[id] : null;
+  return latest === true && v && v.status === status && typeof v.text === 'string' ? v.text : '';
+}
+function readerEventNote(r,ev) {
+  const key = String(ev && ev.seq);
+  const v = r && r.event_notes && Object.prototype.hasOwnProperty.call(r.event_notes,key) ? r.event_notes[key] : null;
+  return v && ev && v.event_type === ev.event_type ? v : null;
+}
+/* READER_PURE_END */
+function readerReportState() {
+  const select = language => {
+    const side = (((DATA.translations || {})[language] || {}).report || {});
+    const spec = (((S.i18n || {})[language] || {}).report || {});
+    return Object.prototype.hasOwnProperty.call(side,'reader') ? side.reader : spec.reader;
+  };
+  let candidate = select(lang);
+  let original = false;
+  if (candidate === undefined && lang === 'en') { candidate = select('zh'); original = candidate !== undefined; }
+  const state = validateReaderReport(candidate,S.snapshot_hash,E.length);
+  return {...state,original};
+}
+
 function trReportBlock() {
   return (((DATA.translations || {})[lang] || {}).report) || (((S.i18n || {})[lang] || {}).report) || null;
 }
 function renderReport() {
   const f = frameAt(FRAMES.length - 1) || {};
-  const statuses = f.claim_statuses || {};
+  const statuses = f.claim_statuses || snapshotStatuses();
   const st = f.run_status || S.run_status || '';
-  const titleCls = st === 'SOLVED' ? 'radiant' : st === 'BUDGET_EXHAUSTED' ? 'dire' : 'gold';
-  const titleTxt = st === 'SOLVED' ? t('ann_victory') : st === 'BUDGET_EXHAUSTED' ? t('ann_budget') : runStatusLabel(st);
-  const attMax = S.budget.max_attempts, costMax = S.budget.max_cost_units;
-  const att = f.attempts_remaining ?? S.budget.attempts_remaining;
-  const cost = f.cost_units_remaining ?? S.budget.cost_units_remaining;
+  const B = S.budget || {};
+  const attMax = B.max_attempts, costMax = B.max_cost_units;
+  const att = f.attempts_remaining ?? B.attempts_remaining;
+  const cost = f.cost_units_remaining ?? B.cost_units_remaining;
   const attV = (attMax != null && att != null) ? `${attMax - att}/${attMax}` : '—';
   const costV = (costMax != null && cost != null) ? `${(costMax - cost).toFixed(1)}/${costMax}` : '—';
   const tally = {};
-  Object.values(S.attempts).forEach(a => { const v = (a.verdict || {}).status; if (v) tally[v] = (tally[v] || 0) + 1; });
+  Object.values(S.attempts || {}).forEach(a => { const v = (a.verdict || {}).status; if (v) tally[v] = (tally[v] || 0) + 1; });
   const evByClaim = {};
-  Object.values(S.evidence).forEach(x => {
+  Object.values(S.evidence || {}).forEach(x => {
     const exp = S.experiments[x.experiment_id] || {};
     (exp.target_claim_ids || []).forEach(cid => { (evByClaim[cid] = evByClaim[cid] || []).push(x); });
   });
-  const claims = Object.values(S.claims);
-  const loot = Object.values(S.lessons);
+  const claims = Object.values(S.claims || {});
+  const loot = Object.values(S.lessons || {});
   const activeLoot = loot.filter(x => x.status !== 'REVOKED');
   const revokedLoot = loot.filter(x => x.status === 'REVOKED');
-  const verified = Object.values(statuses).filter(x => x === 'SUPPORTED').length;
-  const refuted = Object.values(statuses).filter(x => x === 'REFUTED').length;
+  const n = tallyStatuses(statuses);
   const rb = trReportBlock() || {};
-  const headline = rb.headline || `${titleTxt} · ${t('verified')} ${verified} · ${t('refuted')} ${refuted}`;
+  const readerState = readerReportState();
+  const reader = readerState.report;
+  const headline = readerState.diagnostic === 'missing' ? (rb.headline || '') : '';
   const doItems = (rb.do && rb.do.length ? rb.do : activeLoot.map(x => trLessonF(x, 'recommendation'))).filter(Boolean);
   const dontItems = (rb.dont && rb.dont.length ? rb.dont : [
     ...revokedLoot.map(x => trLessonF(x, 'recommendation')),
     ...claims.filter(c => (evByClaim[c.id] || []).some(x => x.verdict_status === 'FAIL'))
       .map(c => `FAIL×${(evByClaim[c.id] || []).filter(x => x.verdict_status === 'FAIL').length} · ${claimLabel(c)}`),
   ]).filter(Boolean);
+  const reqTag = c => `<span class="tag${c.required ? '' : ' dashed'}">${esc(c.required ? t('required') : t('optional'))}</span>`;
   $('reportBody').innerHTML = `
+  <article class="reader-report" lang="${reader ? reader.language : lang}">
+    ${reader ? `${readerState.original ? `<p class="reader-original">${esc(t('reader_original'))}</p>` : ''}<p class="reader-question">${esc(reader.question)}</p><h1>${esc(reader.title)}</h1><p class="reader-answer">${esc(reader.answer)}</p><p class="reader-note">${esc(reader.scope_note)}</p>${readerProseHtml(reader)}` : `<p class="reader-diagnostic" role="status">${esc(t('rd_' + readerState.diagnostic))}</p>${headline ? `<h2>${esc(t('reader_legacy'))}</h2><p>${esc(headline)}</p>` : ''}`}
+  </article>
+  <details class="card card-pad rpt-fold" id="reportAuditSummary"><summary>${esc(t('reader_audit'))}</summary>
   <div class="card card-pad">
-    <div class="eb-kicker">${esc(t('eb_kicker'))} · ${esc(runStatusLabel(st))}</div>
-    <div class="eb-title ${titleCls}" style="font-size:clamp(26px,3.6vw,38px)">${esc(titleTxt)}</div>
+    <div class="rpt-kicker">${esc(t('eb_kicker'))}</div>
+    <h2 class="rpt-title">${esc(runStatusLabel(st) || '—')}</h2>
     <div class="rpt-topic">${esc(trTopic())}</div>
-    <div class="rpt-answer">${esc(headline)}</div>
-    <div class="eb-grid" style="margin-top:14px;margin-bottom:10px">
-      <div class="eb-stat"><div class="k">${esc(t('eb_attempts'))}</div><div class="v">${esc(attV)}</div></div>
-      <div class="eb-stat"><div class="k">${esc(t('eb_cost'))}</div><div class="v">${esc(costV)}</div></div>
-      <div class="eb-stat"><div class="k">${esc(t('eb_duration'))}</div><div class="v">${esc(matchDuration())}</div></div>
-      <div class="eb-stat"><div class="k">${esc(t('eb_lessons'))}</div><div class="v">💰 ${f.n_lessons || 0}</div></div>
-      <div class="eb-stat"><div class="k">${esc(t('eb_events'))}</div><div class="v">${E.length}</div></div>
+    ${st === 'SOLVED' ? `<p class="rpt-note">${esc(t('solved_note'))}</p>` : isFinalStatus(st) ? `<p class="rpt-note">${esc(L.final_note(runStatusLabel(st)))}</p>` : ''}
+
+    <div class="rpt-facts">
+      <span>${esc(t('eb_attempts'))} <b>${esc(attV)}</b></span>
+      <span>${esc(t('eb_cost'))} <b>${esc(costV)}</b></span>
+      <span>${esc(t('eb_duration'))} <b>${esc(matchDuration())}</b></span>
+      <span>${esc(t('eb_lessons'))} <b>${f.n_lessons || 0}</b></span>
+      <span>${esc(t('eb_events'))} <b>${E.length}</b></span>
     </div>
-    <div class="tiny">${esc(t('rpt_verdicts'))}: ${Object.entries(tally).map(([k, n]) => `${k}×${n}`).join(' · ') || '—'}</div>
+    <div class="tiny" style="margin-top:8px">${esc(t('rpt_verdicts'))}: ${Object.entries(tally).map(([k, v]) => `${esc(k)}×${v}`).join(' · ') || '—'}</div>
   </div>
   ${doItems.length ? `<div class="card card-pad"><div class="section-title"><h2>${esc(t('rpt_do'))}</h2></div><div class="rpt-do">${doItems.map(x => `<div class="rpt-step">${esc(x)}</div>`).join('')}</div></div>` : ''}
   ${dontItems.length ? `<div class="card card-pad"><div class="section-title"><h2>${esc(t('rpt_dont'))}</h2></div><div class="rpt-do rpt-dont">${dontItems.map(x => `<div class="rpt-step">${esc(x)}</div>`).join('')}</div></div>` : ''}
@@ -1322,7 +1743,7 @@ function renderReport() {
     <div class="rpt-claims">${claims.map(c => {
       const cs = statuses[c.id] || c.status || 'OPEN';
       const conc = trClaimConclusion(c) || trClaimF(c, 'statement') || '';
-      return `<div class="rpt-claim"><span>${claimMark(cs, c.required)}</span><b>${CLAIM_INDEX[c.id] || ''} ${esc(claimLabel(c))}</b><span class="rpt-conc">${esc(conc)}</span><span class="st">${status(cs)}</span></div>`;
+      return `<div class="rpt-claim"><span class="rpt-mark mono">${esc(claimNo(c.id))}</span><b>${esc(claimLabel(c))} ${reqTag(c)}</b><span>${status(cs)}</span><span class="rpt-conc">${esc(conc)}</span></div>`;
     }).join('')}</div>
   </div>
   <details class="card card-pad rpt-fold"><summary class="section-title"><h2>${esc(t('rpt_details'))}</h2></summary>
@@ -1331,7 +1752,7 @@ function renderReport() {
       const conc = trClaimConclusion(c);
       const evs = evByClaim[c.id] || [];
       return `<div class="rpt-cblock">
-        <div class="rpt-chead"><span>${claimMark(cs, c.required)}</span><b>${CLAIM_INDEX[c.id] || ''} ${esc(claimLabel(c))}</b>${status(cs)}</div>
+        <div class="rpt-chead"><span class="rpt-mark mono">${esc(claimNo(c.id))}</span><b>${esc(claimLabel(c))}</b>${reqTag(c)}${status(cs)}</div>
         ${conc ? `<div class="rpt-conc-line">${esc(conc)}</div>` : ''}
         <div class="rpt-stmt">${esc(trClaimF(c, 'statement') || '')}</div>
         ${evs.length ? evs.map(x => `<div class="rpt-ev">${status(x.verdict_status)}<span class="tiny">${esc(reasonSummary(x))}</span>${evExtras(x)}</div>`).join('') : `<div class="tiny">—</div>`}
@@ -1339,25 +1760,25 @@ function renderReport() {
     }).join('')}
   </details>
   ${loot.length ? `<details class="card card-pad rpt-fold"><summary class="section-title"><h2>${esc(t('sec_loot_final'))}</h2></summary>
-    ${loot.map(x => `<div class="rpt-cblock"><div class="rpt-chead"><b>💰 ${esc(trLessonF(x, 'recommendation'))}</b>${status(x.status)}</div><div class="rpt-stmt">${esc(trLessonF(x, 'observation'))}</div></div>`).join('')}
-  </details>` : ''}`;
+    ${loot.map(x => `<div class="rpt-cblock"><div class="rpt-chead"><b>${esc(trLessonF(x, 'recommendation'))}</b>${status(x.status)}</div><div class="rpt-stmt">${esc(trLessonF(x, 'observation'))}</div></div>`).join('')}
+  </details>` : ''}</details>`;
 }
 function renderDetailTabs() {
   $('goalRoot').innerHTML = `${esc(t('root'))} ${status(S.goal_evaluation.root_status)}`;
   const nodes = S.goal_evaluation.nodes, depths = graphDepth(nodes, S.goal_evaluation.root_id);
   $('goalTree').innerHTML = nodes.slice().sort((a, b) => (depths[a.id] ?? 0) - (depths[b.id] ?? 0)).map(n => { const title = n.claim_id && S.claims[n.claim_id] ? (trClaimF(S.claims[n.claim_id], 'statement') || n.title) : (n.title === S.topic ? trTopic() : n.title); return `<div class="goal-node ${n.status === 'PASS' ? 'pass' : n.status === 'FAIL' ? 'fail' : 'open'} indent-${Math.min(3, depths[n.id] ?? 0)}"><div class="item-head"><div><b>${esc(title)}</b><div class="item-meta mono">${esc(n.id)} · ${esc(n.kind)}${n.claim_id ? ' · ' + esc(n.claim_id) : ''}</div></div>${status(n.status)}</div></div>`; }).join('');
   const gaps = S.verifier_gaps;
-  $('verifierCoverage').innerHTML = gaps.length ? `<div class="item"><b style="color:var(--amber)">${esc(t('cov_missing'))}</b><div class="mono tiny" style="margin-top:8px">${gaps.map(esc).join('<br>')}</div></div>` : `<div class="item"><b style="color:var(--radiant)">${esc(t('cov_full'))}</b></div>`;
+  $('verifierCoverage').innerHTML = gaps.length ? `<div class="item"><b style="color:var(--warn)">${esc(t('cov_missing'))}</b><div class="mono tiny" style="margin-top:8px">${gaps.map(esc).join('<br>')}</div></div>` : `<div class="item"><b style="color:var(--ok)">${esc(t('cov_full'))}</b></div>`;
   $('currentState').textContent = S.current_state_id;
   const states = Object.values(S.states).sort((a, b) => a.seq - b.seq);
-  $('executionList').innerHTML = states.map(st => { const exp = st.experiment_id ? S.experiments[st.experiment_id] : null; const rb = st.rollback || []; return `<div class="item"><div class="item-head"><div><div class="item-title mono">${esc(st.id)}</div><div class="item-meta">parents: ${st.parent_state_ids.length ? st.parent_state_ids.map(esc).join(', ') : 'genesis'}</div></div>${st.id === S.current_state_id ? '<span class="status ACTIVE">CURRENT</span>' : ''}</div>${exp ? `<div style="margin-top:6px"><b>${esc(trExpTitle(exp))}</b> · ${status(exp.last_verdict?.status || exp.status)}<div class="tiny">${esc(exp.id)} → ${exp.target_claim_ids.map(esc).join(', ')}</div></div>` : ''}${rb.length ? `<div class="tiny" style="color:var(--ghost);margin-top:6px">rollback: ${rb.map(x => esc(x.claim_id) + ' ← ' + esc(x.source_claim_id || x.previous_status)).join('; ')}</div>` : ''}</div>`; }).join('');
+  $('executionList').innerHTML = states.map(st => { const exp = st.experiment_id ? S.experiments[st.experiment_id] : null; const rb = st.rollback || []; return `<div class="item"><div class="item-head"><div><div class="item-title mono">${esc(st.id)}</div><div class="item-meta">parents: ${st.parent_state_ids.length ? st.parent_state_ids.map(esc).join(', ') : 'genesis'}</div></div>${st.id === S.current_state_id ? '<span class="status ACTIVE">CURRENT</span>' : ''}</div>${exp ? `<div style="margin-top:6px"><b>${esc(trExpTitle(exp))}</b> · ${status(exp.last_verdict?.status || exp.status)}<div class="tiny">${esc(exp.id)} → ${exp.target_claim_ids.map(esc).join(', ')}</div></div>` : ''}${rb.length ? `<div class="tiny" style="color:var(--void);margin-top:6px">rollback: ${rb.map(x => esc(x.claim_id) + ' ← ' + esc(x.source_claim_id || x.previous_status)).join('; ')}</div>` : ''}</div>`; }).join('');
   const ruleCount = c => ['preconditions','invalid_if','pass_if','fail_if','guardrails'].reduce((n, k) => n + (c[k]?.all?.length || 0) + (c[k]?.any?.length || 0), 0);
   $('contractRows').innerHTML = Object.values(S.contracts).map(c => `<tr><td class="mono">${esc(c.id)}</td><td>${esc(c.target_claim_id)}</td><td>${esc(c.version)}</td><td>${c.repetition.min_passes} pass / ${c.repetition.min_independent_contexts} ctx</td><td>${ruleCount(c)} checks · ${esc(c.kind)}</td></tr>`).join('');
   $('attemptRows').innerHTML = Object.values(S.attempts).sort((a, b) => String(a.id).localeCompare(String(b.id))).map(a => `<tr><td class="mono">${esc(a.id)}</td><td>${esc(a.experiment_id)}</td><td>${esc(a.context_id)}</td><td>${status(a.status)}</td><td>${status(a.verdict?.status || 'MISSING')}</td><td>${esc(a.verdict?.reason_code || '—')}</td><td class="mono">${esc(a.to_state_id || '—')}</td></tr>`).join('');
   const evidence = Object.values(S.evidence);
-  $('evidenceList').innerHTML = evidence.length ? evidence.map(x => `<div class="item"><div class="item-head"><div><div class="item-title">${esc(reasonSummary(x))}</div><div class="item-meta mono">${esc(x.id)} · ${esc(x.contract_id)} · ${esc(x.context_id)} · ${esc(x.reason_code)}</div></div>${status(x.verdict_status)}</div>${reasonExtra(x) ? `<div class="tiny" style="margin-top:6px;opacity:.75">${esc(reasonExtra(x))}</div>` : ''}${evExtras(x)}</div>`).join('') : `<div class="empty">${esc(t('empty_evidence'))}</div>`;
+  $('evidenceList').innerHTML = evidence.length ? evidence.map(x => `<div class="item"><div class="item-head"><div><div class="item-title">${esc(reasonSummary(x))}</div><div class="item-meta mono">${esc(x.id)} · ${esc(x.contract_id)} · ${esc(x.context_id)} · ${esc(x.reason_code)}</div></div>${status(x.verdict_status)}</div>${reasonExtra(x) ? `<div class="tiny" style="margin-top:6px">${esc(reasonExtra(x))}</div>` : ''}${evExtras(x)}</div>`).join('') : `<div class="empty">${esc(t('empty_evidence'))}</div>`;
   const lessons = Object.values(S.lessons); const usage = S.lesson_usage || {};
-  $('lessonList').innerHTML = lessons.length ? lessons.map(x => { const u = usage[x.id]; return `<div class="item"><div class="item-head"><div><div class="item-title">💰 ${esc(trLessonF(x, 'recommendation'))}</div><div class="item-meta mono">${esc(x.id)} · ${esc(L.evidence_n((x.evidence_ids || []).length))}${u ? ` · ${esc(L.cited_n(u.experiment_ids.length))}` : ''}</div></div>${status(x.status)}</div><div class="tiny" style="margin-top:6px">${esc(trLessonF(x, 'observation'))}</div></div>`; }).join('') : `<div class="empty">${esc(t('empty_lessons'))}</div>`;
+  $('lessonList').innerHTML = lessons.length ? lessons.map(x => { const u = usage[x.id]; return `<div class="item"><div class="item-head"><div><div class="item-title">${esc(trLessonF(x, 'recommendation'))}</div><div class="item-meta mono">${esc(x.id)} · ${esc(L.evidence_n((x.evidence_ids || []).length))}${u ? ` · ${esc(L.cited_n(u.experiment_ids.length))}` : ''}</div></div>${status(x.status)}</div><div class="tiny" style="margin-top:6px">${esc(trLessonF(x, 'observation'))}</div></div>`; }).join('') : `<div class="empty">${esc(t('empty_lessons'))}</div>`;
   $('eventHead').textContent = `head ${String(S.event_chain_head || '').slice(0, 20)}…`;
   renderEventList();
   renderReport();
@@ -1375,17 +1796,40 @@ function renderEventList() {
   const types = [...new Set(E.map(ev => ev.event_type))].sort();
   sel.innerHTML = `<option value="">${esc(t('ev_all_types'))}</option>` + types.map(x => `<option value="${esc(x)}"${x === cur ? ' selected' : ''}>${esc(x)}</option>`).join('');
   const rows = [...E].reverse().filter(ev => (!cur || ev.event_type === cur) && (!textF || ev.event_type.toLowerCase().includes(textF) || JSON.stringify(ev.data).toLowerCase().includes(textF)));
-  $('eventList').innerHTML = rows.length ? rows.map(ev => { const n = narrate(ev); return `<details class="ev-details" data-seq="${ev.seq}"${openSeqs.has(String(ev.seq)) ? ' open' : ''}><summary><span class="mono tiny">#${ev.seq}</span><span class="ev-type ${n.cls}">${esc(ev.event_type)}</span><span class="tiny">${esc(ev.actor)} · ${esc((ev.ts || '').slice(11, 19))}</span><span class="ev-sum">${esc(n.feed)}</span></summary><pre class="ev-json mono">${esc(JSON.stringify(ev.data, null, 2))}</pre></details>`; }).join('') : `<div class="empty">—</div>`;
+  $('eventList').innerHTML = rows.length ? rows.map(ev => { const n = narrate(ev, true); return `<details class="ev-details" data-seq="${ev.seq}"${openSeqs.has(String(ev.seq)) ? ' open' : ''}><summary><span class="mono tiny">#${ev.seq}</span><span class="ev-type ${n.cls}">${esc(ev.event_type)}</span><span class="tiny">${esc(ev.actor)} · ${esc((ev.ts || '').slice(11, 19))}</span><span class="ev-sum">${esc(n.feed)}</span></summary><pre class="ev-json mono">${esc(JSON.stringify(ev.data, null, 2))}</pre></details>`; }).join('') : `<div class="empty">—</div>`;
 }
 
 /* ================= boot ================= */
+/* A render failure must be visible: say so in the graph area and mark the
+   status chip, instead of leaving an empty workbench that still looks live. */
+let BOOT_SHOWN = false;
+function showBootError(error) {
+  if (!BOOT_SHOWN) console.error('Observatory failed to render', error);
+  BOOT_SHOWN = true;
+  BOOT_ERROR = error;  /* sticky: later resizes, keys and language changes keep this state */
+  const box = $('graphEmpty');
+  box.textContent = t('boot_error');
+  box.classList.add('error');
+  box.hidden = false;
+  $('liveChip').className = 'livechip stale';
+  $('liveText').textContent = t('load_failed');
+}
 applyStaticI18n();
 $('langBtn').addEventListener('click', () => setLang(lang === 'zh' ? 'en' : 'zh'));
-deriveTimeline(); renderArenaStatic(); initDeck(); initTabs(); initArenaPointer(); renderDetailTabs(); renderWaiting();
-const hashSeq = (location.hash || '').match(/seq=([0-9]+)/);
-showIndex(hashSeq ? Number(hashSeq[1]) - 1 : FRAMES.length - 1, { feedRebuild: true, instant: true });
+if (BOOT_ERROR) showBootError(BOOT_ERROR);
+else {
+  try {
+    deriveTimeline(); renderArenaStatic(); initDeck(); initTabs(); initArenaPointer(); initGraphViewport(); renderDetailTabs(); renderWaiting();
+    renderUnitCard(null);
+    setPlayButton(false);
+    const hashSeq = (location.hash || '').match(/seq=([0-9]+)/);
+    if (FRAMES.length) showIndex(hashSeq ? Number(hashSeq[1]) - 1 : FRAMES.length - 1, { feedRebuild: true, instant: true });
+    else renderSnapshotOnly();
+    if (new URLSearchParams(location.search).get('view') === 'report') openView('report');
+    if (location.protocol === 'http:' || location.protocol === 'https:') setInterval(poll, 2000);
+  } catch (error) { showBootError(error); }
+}
 window.addEventListener('beforeprint', () => document.querySelectorAll('details').forEach(d => { d.open = true; }));
-if (location.protocol === 'http:' || location.protocol === 'https:') setInterval(poll, 2000);
 </script>
 </body>
 </html>"""
@@ -1414,7 +1858,7 @@ def render_observatory(
         "frames": frames or [],
         "translations": translations,
     }
-    atomic_write_json(workspace.report_snapshot_path, public_snapshot)
+    atomic_write_json(workspace.report_snapshot_path, _finite(public_snapshot))
     topic = html.escape(str(snapshot.get("topic") or "Sisyfus Research"))
     payload = _json_for_script(public_snapshot)
     document = (

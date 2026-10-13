@@ -290,7 +290,7 @@ class Mission:
             if not self.evidence_current(dep):
                 return Decision("BLOCK", f"dependency {dep} lacks current verified evidence")
             proofs[dep] = self.store.latest_evidence(upstream["id"])["id"]
-        if len(runs) >= self.spec["max_calls"]:
+        if self.spec.get("max_calls") is not None and len(runs) >= self.spec["max_calls"]:
             return Decision("BLOCK", "mission native-call budget exhausted")
         previous = context.get("latest_evidence")
         prompt = (f"Task: {task['objective']}\nWork only inside this candidate directory. "
@@ -418,7 +418,9 @@ class NativeCapability:
                     upstream = m.store.latest_evidence(m.continuations()[dep]["id"])["payload"]["evidence"]
                     dest = candidate / "inputs" / dep
                     if dest.exists():
-                        shutil.rmtree(dest)
+                        import subprocess
+                        subprocess.run(["/usr/bin/trash", str(dest.resolve())], check=True,
+                                       capture_output=True, text=True)
                     copy_candidate(Path(upstream["candidate"]), dest)
                 driver = m.drivers[task["driver"]]
                 envelope = Request(task["id"], arguments["prompt"], str(candidate),
