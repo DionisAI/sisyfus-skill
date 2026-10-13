@@ -638,7 +638,7 @@ const SF_LABELS = {
    WAITING:'等待中', FAILED:'失败', EXHAUSTED:'预算用尽', BLOCKED:'受阻', CANCELLED:'已取消'},
   elapsed:'已运行', updated:'上次更新', tech:'技术细节', other_note:'这不是本页的研究。', details:'运行详情',
   operation:'操作', run:'研究', raw_phase:'阶段', raw_status:'状态', detail:'说明', heartbeat:'心跳',
-  ago: s => s < 60 ? `${Math.max(1, Math.round(s))} 秒前` : s < 3600 ? `${Math.round(s / 60)} 分钟前` : `${Math.round(s / 3600)} 小时前`
+  ago: s => s < 60 ? `${Math.max(1, Math.round(s))} 秒前` : s < 3600 ? `${Math.round(s / 60)} 分钟前` : s < 172800 ? `${Math.round(s / 3600)} 小时前` : `${Math.round(s / 86400)} 天前`
  },
  en: {
   phase: {IDLE:'Idle', UNKNOWN:'Unknown', INTAKE:'Understanding the task', CLARIFYING:'Clarifying', INSPECTING:'Inspecting the project',
@@ -651,7 +651,7 @@ const SF_LABELS = {
    WAITING:'Waiting', FAILED:'Failed', EXHAUSTED:'Budget exhausted', BLOCKED:'Blocked', CANCELLED:'Cancelled'},
   elapsed:'Running for', updated:'Last update', tech:'Technical details', other_note:'This is not the study on this page.', details:'Run details',
   operation:'Operation', run:'Run', raw_phase:'Phase', raw_status:'Status', detail:'Detail', heartbeat:'Heartbeat',
-  ago: s => s < 60 ? `${Math.max(1, Math.round(s))}s ago` : s < 3600 ? `${Math.round(s / 60)} min ago` : `${Math.round(s / 3600)} h ago`
+  ago: s => s < 60 ? `${Math.max(1, Math.round(s))}s ago` : s < 3600 ? `${Math.round(s / 60)} min ago` : s < 172800 ? `${Math.round(s / 3600)} h ago` : `${Math.round(s / 86400)} days ago`
  }
 };
 function sfLang() { return String(document.documentElement.lang || '').toLowerCase().startsWith('en') ? 'en' : 'zh'; }
