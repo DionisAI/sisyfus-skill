@@ -425,3 +425,25 @@
   - 同一提交在本地条件下（链接本仓库 `artifacts/`，设置回环与基线）：4803 项结果与 10-17 全量复跑中对应的测试逐项相同，失败恰为 `expected-red-47.txt` 中的 47 项。
 - 审计：189 个文件中没有真实密钥、令牌或个人联系信息，测试中的凭据形字符串均为合成夹具。审计另指出 `test_node_gateway_auth_path_diagnostic.py:28` 与 `test_node_gateway_late_auth_path_diagnostic.py:29` 在导入时安装进程级删除拦截；在普通 pytest（如 CI）下，它会让其后永久删除文件的测试失败。
 - 追加（2026-10-17，PR #7）：`test_node_gateway_auth_path_diagnostic.py` 与 `test_node_gateway_late_auth_path_diagnostic.py` 在导入时安装删除拦截；在 CI 的普通 pytest 下它作用于整个会话，约 2,500 项测试在创建临时目录时报错，pytest 在会话结束时崩溃而没有输出汇总。用户批准停止跟踪这两个文件；它们仍在磁盘上，在保留式运行器下照常运行。其余调用 `sys.addaudithook` 的已提交测试，或在子进程中调用，或其拦截在本测试结束后失效，不影响其他测试。
+
+## 用户决定：页面测试改由标准输入交给 Node（2026-10-17）
+
+- PR #7 的 CI 在 Linux 上有 223 项失败：`Argument list too long: 'node'`。8 个页面测试工具用 `node -e` 把整段页面脚本作为一个命令行参数传入；编排器的页面改动使该脚本 JSON 转义后约 198 KB，超过 Linux 单个参数 128 KiB 的上限（MAX_ARG_STRLEN）。macOS 没有单参数上限，所以本机一直通过。其中 `test_lead_rsi_page.py` 与 `test_lead_preflight_page.py` 早已在 main 上并且通过。
+- 用户批准按 R0(a) 修正（测试工具缺陷，与合同版本无关）：每处只改 `subprocess.run` 调用，改为 `node -`，以 `input=` 传入同一脚本。修改前副本：`frozen-test-corrections-20261013/pre-edit-20261017-node/`。
+
+| 文件（tests/workers/） | 旧 → 新 | 行 |
+|---|---|---|
+| test_chat_node_machine_inflight.py | d3b79232 → a3a05c18 | 30–31 |
+| test_chat_node_machine_retry.py | 7e2f403a → f39d3e87 | 26–27 |
+| test_chat_node_placement_page.py | e6e479a6 → 40e99abb | 84 |
+| test_chat_node_placement_page_inventory_refresh.py | a824aa1f → e1d42210 | 33 |
+| test_lead_preflight_page.py | 71b739a5 → b6fab3ca | 130 |
+| test_lead_rsi_page.py | 13304d3c → 5f61b879 | 89 |
+| test_mission_inbox_page.py | 7096b1d3 → ed0626dd | 64 |
+| test_mission_inbox_page_review.py | 0256262e → 2b5b803d | 80 |
+
+- 验证：
+  - 在本机用临时插件模拟 Linux 单参数上限：受影响的 13 个文件修改前 223 失败、3 通过（与 CI 一致），修改后 226 全部通过；不加模拟时修改前后都是 226 通过。
+  - 探针：在每段经标准输入交给 Node 的脚本末尾追加 `throw`，223 项全部失败，证明脚本确实被执行。
+  - 在模拟上限下的全量运行：4948 通过、47 失败、1 跳过，与 10-17 全量复跑逐项相同；失败恰为 `expected-red-47.txt` 中的 47 项，无任何参数长度错误。
+- `tests/test_reader_report.py` 也用 `node -e`，但脚本很小，CI 中通过，按最小改动未改。

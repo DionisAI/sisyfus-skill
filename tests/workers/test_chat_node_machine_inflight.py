@@ -27,8 +27,8 @@ def run_case(case, *, seed=()):
     harness = harness.replace('vm.runInContext(SOURCE,context);',
         'for(const [key,value] of ' + json.dumps(seed) + ')storage.set(key,value);\nvm.runInContext(SOURCE,context);')
     assert 'windowCallbacks.set(name,handler)' in harness
-    result = subprocess.run(['node', '-e', harness.replace('SOURCE', json.dumps(script)).replace(
-        'CASE', json.dumps(case + '\nconsole.log(' + json.dumps(MARKER) + ');'))],
+    result = subprocess.run(['node', '-'], input=harness.replace('SOURCE', json.dumps(script)).replace(
+        'CASE', json.dumps(case + '\nconsole.log(' + json.dumps(MARKER) + ');')),
         capture_output=True, text=True, timeout=20)
     assert result.returncode == 0, result.stdout + result.stderr
     assert MARKER in result.stdout, 'deferred scenario did not complete: ' + result.stdout + result.stderr

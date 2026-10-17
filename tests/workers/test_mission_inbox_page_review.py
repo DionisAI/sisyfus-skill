@@ -77,7 +77,7 @@ def run_js(case):
     script = PAGE.split('<script nonce="NONCE">', 1)[1].split('</script>', 1)[0]
     script = script.rsplit('render(); resizeComposer();', 1)[0]
     harness = HARNESS.replace('__PAGE_SCRIPT__', json.dumps(script)).replace('__CASE__', json.dumps(case))
-    result = subprocess.run(['node', '-e', harness], capture_output=True, text=True, timeout=30)
+    result = subprocess.run(['node', '-'], input=harness, capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stdout + result.stderr
 
 

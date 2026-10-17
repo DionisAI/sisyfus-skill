@@ -86,5 +86,5 @@ renderProposal({proposal:null,mission_id:'new-mission',approval_hash:'approved',
 assert.equal(el('announcement').textContent,'','successful Start does not announce withdrawn approval');
 `,context);
 '''
-    result = subprocess.run(['node', '-e', harness.replace('SOURCE', json.dumps(script))], capture_output=True, text=True)
+    result = subprocess.run(['node', '-'], input=harness.replace('SOURCE', json.dumps(script)), capture_output=True, text=True)
     assert result.returncode == 0, result.stdout + result.stderr

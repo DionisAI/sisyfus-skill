@@ -127,6 +127,6 @@ console.log('preflight UI gates, exact confirmation, no automatic requests: PASS
 '''
     node = shutil.which("node")
     assert node, "Node is required for the shipped UI regression check"
-    result = subprocess.run([node, "-e", harness.replace("SOURCE", json.dumps(script))],
+    result = subprocess.run([node, "-"], input=harness.replace("SOURCE", json.dumps(script)),
                             text=True, capture_output=True, timeout=15)
     assert result.returncode == 0, result.stdout + result.stderr

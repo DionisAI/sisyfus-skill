@@ -23,8 +23,8 @@ def run_case(case, *, seed=()):
     script = script.rsplit('render(); resizeComposer();', 1)[0]
     harness = HARNESS.replace('vm.runInContext(SOURCE,context);',
         'for(const [key,value] of ' + json.dumps(seed) + ')storage.set(key,value);\nvm.runInContext(SOURCE,context);')
-    result = subprocess.run(['node', '-e', harness.replace('SOURCE', json.dumps(script)).replace(
-        'CASE', json.dumps(case + '\nconsole.log(' + json.dumps(MARKER) + ');'))],
+    result = subprocess.run(['node', '-'], input=harness.replace('SOURCE', json.dumps(script)).replace(
+        'CASE', json.dumps(case + '\nconsole.log(' + json.dumps(MARKER) + ');')),
         capture_output=True, text=True, timeout=20)
     assert result.returncode == 0, result.stdout + result.stderr
     assert MARKER in result.stdout, 'scenario exited before completion: ' + result.stdout + result.stderr
