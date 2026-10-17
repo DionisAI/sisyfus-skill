@@ -247,3 +247,203 @@
 - 根因：`tests/workers/test_node_placement_recovery.py` 第65、109行从 `MissionHub.snapshot()` 信封顶层读取 `['phase']`；信封自 HEAD 起即为 `{id, snapshot, controller, controls}`，`phase` 位于 `['snapshot']`。两项测试因此在该行 KeyError，其后的归档与 driver 请求断言从未执行；属测试读取错误，非源码问题。
 - 用户批准修改该冻结测试：仅两行改为 `['snapshot']['phase']`，其余字节不变；文件 fa12ef4f → 171ab539。原哈希仍被 222 项既有记录固定，这些记录指修改前版本，原失败记录保留。
 - 修改后同文件 12 passed，3/3；此前未执行的归档与 driver 请求断言首次运行并通过。无源码修改，无其他测试导入该文件。
+
+## 用户决定：冻结测试版本（2026-10-13）
+
+- 依据：`docs/TECHLEAD-FROZEN-TEST-VERSION-DECISION.md`（2026-10-13 签署）。用户批准 R0 常设规则、B1、V1–V11 全部按推荐执行；V11（W3）选 WAL-aux；p16 回答"否"（网页 diagnostics50 上限不覆盖任务级诊断）。
+- 修改前副本：`artifacts/techlead/frozen-test-corrections-20261013/pre-edit/`（29 份，只读）与 `pre-edit-manifest.json`（5122d9d3）。凡引用旧哈希的既有记录仍指修改前版本，不追溯改写。全程无 skip、xfail、取消收集，无源码别名或兼容层，无删除。
+- B1：`artifacts/techlead/frozen-baselines/node_claims.0073.py`（0073e15c）与 `node_claims.8302.py`（8302cf50），均只读；`TECHLEAD-RUNBOOK.md` 增加两项导出，以及三个守卫测试经 `frozen-test-corrections-20261013/gated_run.py`（5516509b）运行的方法。
+
+### 逐文件修改（行号为修改前行号）
+
+| 文件（tests/workers/） | 旧 → 新 | 行 | 组 | 条款 |
+|---|---|---|---|---|
+| test_node_agent.py | e5957efd → 6aedc8f6 | 改 158、160、296–297、356、360、371–372、381、398–399、453、457、472、476；197/238/440/464/484 后各插 1 行，372 后 2 行，399 后 3 行 | ah0、ah1、V1 空转 20 项 | ah0 R0(a)；其余 R0(b)·V1 |
+| test_node_agent_gateway_error_type.py | 901e2e1f → 5e605f44 | 44、46、71–72、75、99–100、102、119、123、152–153 | ah2 | R0(b)·V1 |
+| test_node_agent_review_v1_micro.py | cb2624e2 → da179a89 | 53–54 | ah3 | R0(b)·V1 |
+| test_node_agent_review_v2_micro.py | 731e20ee → 63e6b634 | 126、130、163、167、188、192、309、314、324、327 | ah4 | R0(b)·V1 |
+| test_node_gateway.py | 3dfb7efa → 7b699e9a | 340、473、560 | gw7、gw8、gw9 | R0(a)、R0(a)、R0(b)·V5 |
+| test_node_claims.py | ae6bee10 → ff11cfce | 17、221 | gw10 | R0(b)·V4 |
+| test_node_gateway_lifecycle.py | e15c11c4 → efb16eaf | 67 | gw11 | R0(a) |
+| test_node_operator_http.py | 13f82134 → b30ff8cb | 178 | gw12 | R0(b)·V6 |
+| test_node_host_cli_lifecycle.py | 1c9d05ea → 962931a2 | 改 397；install() 内插 7 行 | ah7 | R0(b)·V7 |
+| test_node_host_review_boundaries.py | e0bd68fc → e5e708b0 | 210、523、777、991、1091 | ah9、ah10 | R0(a) |
+| test_node_cli.py | 4195b4ba → 0e3d357f | 413 | ah11 | R0(a) |
+| test_node_placement_readback.py | 056e0d03 → 9336e4bf | 157、225；197、199–206、212 改，215 后插 1 行 | prc7；S1 附注 | prc7 R0(a)；194–216 R0(b)·S1 |
+| test_node_placement_readback_sideeffects.py | 31289d06 → 5e8b553e | 129、288–290、358–360；移出 384–404 | prc13、prc10、prc11 | R0(a)；R0(b)·V11 WAL-aux；R0 第 4 条 |
+| test_node_placement_preparation_http.py | 9c2c6f60 → 3a8d3829 | 250 | prc8 | R0(a) |
+| test_remote_artifact_io_v2.py | 0a79241e → 7259cfa4 | 54 | prc16 | R0(a) |
+| test_orchestra_remote_pipeline.py | ec5e1442 → 48089d8a | 402 后插 1 行；464、523 | prc17、prc18 | R0(b)·V8；R0(a) |
+| test_orchestra_delivery_context.py | 5f9e69ee → ae42ba27 | 98 | prc19 | R0(a) |
+| test_portal_gateway.py | 542c6f78 → 3dfaf9e6 | 68、109、141、147、186；10/83/226/275 后各插 1 行 | p0–p3 | R0(b)·V9 |
+| test_portal_review_v5.py | 139d5f57 → 6f8ee4b4 | 69、92 后各插 1 行；移出 170–177 | p5、p6 | R0(b)·V9；R0 第 4 条 |
+| test_portal_console_integration.py | d9edf4b9 → 6fdfe309 | 34 | p7 | R0(b)·V9 |
+| test_portal_review_v6.py | d2c58e13 → 72a41494 | 83、94、125、153 | p4 | R0(a) |
+| test_mission_inbox_review_dispatch.py | c363717e → 44da3e0b | 71 | p8 | R0(b)·V3 |
+| test_mission_inbox_terminal_review.py | 4777f904 → b79e0743 | 313 | p9 | R0(a) |
+| test_lead_journal_record_in.py | 87836ea4 → ead3513e | 48 | p10 | R0(a) |
+| test_share_cli.py | 28089148 → bc0f2497 | 106 | p11 | R0(a) |
+| test_share_runtime.py | c2cc700c → aafadab7 | 375；383 插 1 行 | p13 | R0(a) |
+| test_lead_engineering_result_web.py | 32bca7c0 → dcd1114c | 32；179、549 后各插 1 行 | p14、p15、p16 | R0(a) |
+
+### 源码、守卫与归档
+
+- S1+S2：`src/sisyfus/workers/lead_console.py` 11b7c132 → b7f03d14（未提交）。`placements()` 冷、热两路共用一个 URI `mode=ro` + `BEGIN` 读事务，读前、读后各过一次身份栅栏；删除读写 `store._transaction` 分支，GET 不再建库、不再把头字节 18–19 由 [1,1] 改为 [2,2]，busy timeout 由 30 s 降为 5 s。S2：`mode=ro` 打开失败时重跑身份栅栏，数据库消失返回 403 而非 500。复核另记：既有的换目录窗口（BEGIN 后栅栏与首个 SELECT 之间替换目录，可能在被替换目录中同步或创建 `-shm`，随后读后栅栏返回 403）现在也覆盖热路径，无测试覆盖。
+- S3：`src/sisyfus/workers/share_gateway.py` 1e1f4c63 → 5d75e616，第 184 行 `ShareGateway` 类体加 `request_queue_size = 64`。
+- 网页守卫重新冻结：`frozen-test-corrections-20261013/web-guard-v2/web_guard.py`（60834202，只读），仅在已武装的 bind 期间放行 `gethostbyaddr('127.0.0.1')`；原守卫 ede9dc68 不变。`engineering-web-tests-pauli-870e75316bcf/FINAL-FROZEN-HANDOFF.json` 仍固定旧守卫与旧测试哈希 32bca7c0，指修改前版本。新测试第 32 行 `PROOF` 指向 v2 目录，因此该文件只能以 `gated_run.py web2` 运行（`web` 下 47 项在第 44 行失败）。
+- 归档（移动，非删除），位于 `artifacts/techlead/retired-tests-20261012/tests/workers/`：
+  - `test_node_agent_public_tree_verification.py`（b402e40a，整文件，V2，13 项）
+  - `test_node_host_admission.py`（c80aad9d，整文件，ah8，4 项；`test_node_host_admission_stable.py` 4/4 通过）
+  - 函数 `test_actual_uri_ro_live_wal_zero_full_tree_candidate`（e92a47e1，prc11，2 项，V11）
+  - 函数 `test_adoption_exact_actual_public_approval_envelope_binds_readonly`（33ddd823，p6，1 项，V9）
+
+### 偏离与待决事项
+
+- prc7：签署原文"给 later 修订提供 a、b 两个检查的任务"会多出第 4 行，破坏 :168/:259。实际在同两行（157、225）把 `required_checks` 收窄为 `['a']`，修复同一夹具缺陷，未越出签署行。
+- 放置单元三轮独立复核均为 FAIL，原因都是 S1 与测试的冲突。readback 第 157、225 行与 194–216 行的修改是我在复核结束后完成的，只经全量复跑验证，未经独立复核；`pending-s1/` 两个补丁的 204/204 与变异结果为实施者自报，也未经复核。
+- V5 措辞：签署后我更正了决定文档 V5 段的解释文字（原写"拒绝格式错误的批次"，实为拒绝含节点凭据材料的批次，`node_gateway.py:736-737`）。裁定与动作不变；摘要表第 45 行原文未改。
+- **S1 使两项原本通过的测试转红，未修改（所在行未经签署）：**（2026-10-15 已按用户批准应用补丁，见下节）
+  - `test_node_placement_readback.py::test_tasks_and_pins_share_snapshot_while_writer_commits_new_pin_and_plan`（prc7 第二项）：夹具已修，但 :261 `len(reads) == 1` 观察的是 S1 已移除的 `store._transaction`，需重定向修改前 222–256 行。
+  - `test_node_placement_readback_history.py::test_wal_writer_commits_after_task_read_without_mixed_pin_snapshot`：:214 `[] == [False]`，同因；该文件不在签署文件内（1f3cedc8，未改）。
+  - 候选补丁（未应用，只读）：`frozen-test-corrections-20261013/pending-s1/test_node_placement_readback.220-260.patch`（bbf054b3）与 `test_node_placement_readback_history.patch`（711d8e53）。实验室证据：相邻五个文件 204/204，连续 3 次；变异 A（修改前的读写热路径）使三项重写测试全部失败；变异 B（去掉 BEGIN/COMMIT）使两项因混合快照失败。
+- gw10 除 221 行外还改了第 17 行 import（加 `DispatchBlocked`），与 `test_node_unknown_admission.py:15` 相同。gw9（V5）、gw10（V4）分诊建议保持红，签署批准改写，按签署执行。
+- V1 空转 20 项：把篡改移入转发的 `admit_response` 回调。篡改代码除控制器 `_send` 钩子由 `value|{…}` 改为 `value.envelope|{…}`（网关现传入响应对象）外逐字不变，无断言改动；这是对"修好包装器，使其测到声称的内容"的解读。corrupt_sync 7 项的冻结断言（修改后 :391）恒真，因为 local 中必有 'identity' 与 'error'；未改，需另行决定。（2026-10-16 已修，见"补齐三处遗留"一节）
+- ah7：非网关线程直接得到真实 `threading.Thread`；该文件本身检测不到 `serve_forever` 被移除。ah10 签署引用 1089–1090，实际为 1090–1091。
+- 门户：组合计 53 项（不是 49）：52 绿，1 归档。`test_portal_gateway.py` 143、149、279 与 `test_portal_review_v5.py` 94（修改后行号）是数字指纹夹具的必然后果行。`PHONE-PORTAL-SOURCE-GATE-v8.json` 与 `candidate-v6-pins.json` 对这 4 个测试文件的哈希现指修改前版本；源码哈希不变。
+- p16：用户裁定"否"只改了测试断言（夹具加 64 条非任务诊断）。页面实际上限 `lead_chat_page.py:1938–1940` 先合并结果、任务、集成三类诊断再取前 50，即已覆盖任务级诊断；要与裁定一致需改源码，本次未改。（2026-10-16 已修，见"补齐三处遗留"一节）
+- prc18：放宽为"UNKNOWN 且无候选"后，嵌套在 'retained' 下的候选不会被检出（变异下两项均通过）。过期租约测试 :525 仍检查磁盘实体，中断驱动测试无此兜底。
+- `test_remote_artifact_io_v2` 中现已转绿的真实删除测试按设计调用 `/usr/bin/trash`，每次运行在 `~/.Trash` 留下一个小文件。
+- 负载敏感：share p17 在负载 21–35 时曾 3 次失败 2 次；`test_node_agent_review_v2_micro.py` `[upload]` 在负载下偶发 409 LeaseLost。
+
+### 全量复跑结果（2026-10-13）
+
+- 命令：与基线相同的 retained 全量（排除三个守卫文件），另以 `gated_run.py` 运行三个守卫文件（web2、share、share）。
+- 合计 5092 项：5041 通过，50 失败，1 跳过。非守卫部分 4931 通过、50 失败（549 s）；web2 47/47，share_gateway_http 62/62，share_password_gateway 1/1（含 p17）。
+- 清单 247 项：179 绿，20 归档，48 红。签署预计为 180 / 20 / 47。48 红 = 签署预期的 47 项（A 3、V1 35、V10 1、P 8，与附录 A 一一对应，无遗漏）+ prc7 第二项（S1，见上）。
+- 清单外 2 项失败：
+  - `test_node_placement_readback_history.py` 一项：S1 所致，见上。
+  - `test_autonomy_adapters_cli.py::test_command_planner_enforces_streamed_output_limit`：`adapters.py:111` 的 `os.killpg` 得到 EPERM，属 macOS 上子进程组已退出时的竞态。单独复跑 5/5 通过；源码与测试均未改动，不计为回归。
+
+## 用户决定：应用 S1 测试补丁（2026-10-15）
+
+- 用户批准应用 `frozen-test-corrections-20261013/pending-s1/` 的两个补丁。两处修改所在行不在签署文件内，由此次批准覆盖，条款 R0(b)·S1。
+- 修改前副本：`frozen-test-corrections-20261013/pre-edit-s1/`（只读）及其 `pre-edit-manifest.json`。
+
+| 文件（tests/workers/） | 旧 → 新 | 行 | 补丁 |
+|---|---|---|---|
+| test_node_placement_readback.py | 9336e4bf → 9b575f86 | 原始修改前编号 222–256 行内的观察代码：222、226–228、230、235、240、244–253、255–256 | bbf054b3 |
+| test_node_placement_readback_history.py | 1f3cedc8 → 9674b6db | 13 行后插入 `import sqlite3`；143、174–177、179、184–190、192–199、202、220 | 711d8e53 |
+
+- 内容：两处观察代码由包装 `store._transaction` 改为包装 `sqlite3.connect`，并要求 `?mode=ro` 与 `uri=True`。readback 的 `len(reads) == 1` 改为更严格的 `reads == [False]`；history 的日志模式检查改为读取数据库本身的模式。两文件的结果断言不变。
+- 验证：
+  - 修改前两项均红（readback :261，history :214）。
+  - 修改后，放置相关五个文件（readback、history、sideeffects、race、preparation_http）在仓库中 204/204，连续 3 次。
+  - 复制树变异：A（修改前读写热路径）使三项重写测试全部失败；B（S1 但每次读取各自成快照）使两项快照测试在 :254、:212 失败；对照 89/89。
+- 独立复核两份，均 PASS：
+  - 合规复核：自 056e0d03 起的全部改动（含 10-13 的 157、225、194–216）都在批准行内；无 skip/xfail/取消收集，无源码配合修改，无断言变弱；两个补丁作用于修改前副本可逐字节复现 9b575f86 与 9674b6db。
+  - 检出复核：15 个新变异中，凡改变行为者至少被三项测试之一捕获；三项合起来没有因重写而新增的盲区。
+- 复核记录的局限（均未改）：
+  - readback 第一项测试（194–216）单独已检测不到"读取中途提交"：pin 在提前 COMMIT 后读取（原测试能检出），或在另一连接以自动提交读取。另两项测试仍能检出。复核建议在 :220 后加两行计数断言即可补上，需另行批准。（2026-10-16 已修，见"补齐三处遗留"一节）
+  - 三处观察都以 `'IMMEDIATE' in sql` 判定读事务，`BEGIN EXCLUSIVE` 会被当作普通读事务；在 `mode=ro` 连接上二者行为相同。
+  - readback 第 3 行文档字符串仍是旧的热路径说明，两文件的 `contextmanager` 导入已无用；按最小改动未动。
+- 全量复跑（2026-10-15，命令同 10-13）：合计 5092 项，5044 通过，47 失败，1 跳过。非守卫部分 4934 通过、47 失败（534 s）；web2 47/47，share_gateway_http 62/62，share_password_gateway 1/1。47 项失败恰为签署预期保持红的 47 项（A 3、V1 35、V10 1、P 8），无其他失败。清单 247 项现为 180 绿、20 归档、47 红，与签署预计一致。
+
+## 用户决定：补齐三处遗留（2026-10-16）
+
+- 用户指令"fix em all"，批准修复 10-15 列出的三项：corrupt_sync 判定、readback 单事务测试的计数断言、p16 页面上限。
+- 修改前副本：`frozen-test-corrections-20261013/pre-edit-20261016/`（只读）及其 `pre-edit-manifest.json`。
+
+| 文件 | 旧 → 新 | 行（修改前编号） | 条款 |
+|---|---|---|---|
+| tests/workers/test_node_agent.py | 6aedc8f6 → 10e829c2 | 391 行后插入 3 行 | R0(a)，用户批准 |
+| tests/workers/test_node_placement_readback.py | 9b575f86 → d1327ab4 | 220 行后插入 2 行 | R0(b)·S1，用户批准 |
+| src/sisyfus/workers/lead_chat_page.py | 097bdbca → 0294adb4 | 1936 行后插入 1 行注释；1938–1941 改为 1939–1945 | p16 源码改动，用户批准 |
+| tests/workers/test_lead_result_page_diagnostics.py | 新文件 → d5780bd4 | 7 项测试 | 新测试，非冻结 |
+
+- corrupt_sync：7 个参数化用例在首次运行后以只读连接读取 `agent.sqlite3` 的 `attempts.ack`，必须仍为 0。原断言 `any(w in local …)` 恒真，因此不变。
+- readback 单事务测试：追加两行，要求语句以 `COMMIT` 结束，且事务内恰好 1 次 `techlead:plans:` 读取、2 次 `techlead:placement:` 读取。
+- p16：页面"投影诊断"中，结果与集成诊断共用 50 行上限，沿用"诊断"截断说明；子任务诊断另列，单独 50 行上限，截断说明为"子任务诊断显示 50 / N"。两类都排在子任务详情之前；两类都为空时才显示"本次投影没有记录诊断"。合同 `TECHLEAD-ENGINEERING-RESULT-WEB-SIDECAR-V1-CONTRACT.md` 第 56 行的 diagnostics50 按此理解，合同文本未改。
+- 验证：
+  - 修改前用变异证明原测试空转：接受错误 ACK 或跳过控制器信封检查时，corrupt_sync 7 项全过；readback 单事务测试在变异 O、P、E3 下通过。
+  - 修改后：接受错误 ACK 时 6 项失败，跳过信封检查时其余 1 项失败，合计覆盖 7 项；O、P、E3 均失败；正确代码全部通过。
+  - p16 新测试在修改前页面上 3 项失败（集成诊断被挤掉、子任务诊断被隐藏、无子任务截断说明），修改后 7/7；复核者的 15 个页面变异全部被至少一项捕获。
+  - 冻结网页测试（web2 守卫）47/47；页面相邻测试 428 passed。
+- 独立复核两份，均 PASS：
+  - 测试复核：两处均为纯新增行；复核者自建 15 个变异，原测试全部漏过，新测试全部捕获；连续 3 次稳定；Python 3.11、3.13 也通过。
+  - 页面复核：改动最小且正确；最坏情况 DOM 约 2963 节点，低于 3000；从冻结网页测试模块导入辅助函数不触发守卫，也不会收集冻结测试。
+- 记录的局限（未改）：
+  - readback 的精确计数 1 与 2 绑定当前"每个任务一次 pin 查询"的形状；若改为批量读取 pin，需要新的 R0(b) 条目。
+  - corrupt_sync 断言假定每个用例恰有 1 条 attempts 记录，由夹具保证。
+  - 页面在子任务详情之前最多多出 51 行诊断，重负载时子任务详情会更早被 2960 节点计数截断。
+  - `share_page.py` 约 439 行仍用旧的合并列表，两个渲染器已不一致；p16 是否同样适用于分享页需用户决定。（2026-10-17 已移植，见"分享页同步 p16"一节）
+  - 历史交付基线（`artifacts/techlead/orchestra-*/` 下各 baseline JSON）中的页面哈希仍指修改前版本。
+- 全量复跑（2026-10-16，命令同 10-13）：合计 5099 项（新增测试 7 项），5051 通过，47 失败，1 跳过。非守卫部分 4941 通过、47 失败（618 s）；web2 47/47，share_gateway_http 62/62，share_password_gateway 1/1。47 项失败恰为签署预期保持红的 47 项，无其他失败；清单 247 项保持 180 绿、20 归档、47 红。
+
+## 用户决定：分享页同步 p16（2026-10-17）
+
+- 用户指令"continue fix"，批准把 p16 的诊断上限改动同样用于公开分享页。
+- 修改前副本：`frozen-test-corrections-20261013/pre-edit-20261017/`（只读）及其 `pre-edit-manifest.json`。
+
+| 文件 | 旧 → 新 | 行（修改前编号） | 说明 |
+|---|---|---|---|
+| src/sisyfus/workers/share_page.py | 5c1aa392 → b8a738e7 | 437 行后插入 1 行注释；439–442 改为 440–446 | 与 10-16 网页改动逐字相同的一段；两页 `buildEngineeringResult` 再次逐字节一致 |
+| tests/workers/test_share_page_diagnostics.py | 新文件 → 2a1e159c | 7 项测试 | 新测试，非冻结；直接调用分享页渲染函数，不经守卫 |
+| tests/workers/test_lead_result_page_diagnostics.py | d5780bd4 → 38616933 | both-floods 与 general-only 两项 | 非冻结测试加严：要求两类各恰好显示前 50 行，general-only 加正向断言 |
+
+- 验证：
+  - 分享页新测试在修改前页面上 3 项失败（与网页相同的三项），修改后 7/7。
+  - 18 个渲染函数变异（复核者的 15 个，加上限 49、子任务上限 49、取末 50 行）分别作用于两页，36 次全部被捕获。
+  - 守卫下的分享测试：share_gateway_http 62/62，share_password_gateway 1/1；非守卫的分享与门户测试仅 V10 签名锁（保持红）失败。
+- 独立复核 PASS：改动与网页段逐字相同，分享网关无需改动，没有测试固定分享页哈希；分享页自身的 `classifyEngineering` 对 7 个夹具都判为 OK，说明这些场景在运行时会真实出现。复核指出的"只查上限、不查恰好前 50 行"已在两份新测试中补上。
+- 仍固定旧分享页哈希 5c1aa392 的历史记录（指修改前版本，未改）：`orchestra-20261007/share-password-logout-fence-micro-carver-v1-85a3e42e…/` 下 6 份、`orchestra-20261007/share-password-main-63e74ed4…/` 下 7 份、`orchestra-20261008/full-delivery-b9e7b966…/` 下 7 份 JSON。另有 `share-gateway-http-tests-pauli-5b83c7937e4e/main-outcome-gate.json` 固定的是更早的 5827415b，本次之前已过时。
+- 负载敏感：复核期间 p17 在负载约 10 时也偶发失败（修改前、后树各 14 次中失败 1 次），与本改动无关。
+- 全量复跑（2026-10-17，命令同 10-13）：合计 5106 项（新增分享页测试 7 项），5058 通过，47 失败，1 跳过。非守卫部分 4948 通过、47 失败（758 s）；web2 47/47，share_gateway_http 62/62，share_password_gateway 1/1。失败集合与 10-16 复跑（已对照 247 项清单核实）完全相同，无回归；清单 247 项保持 180 绿、20 归档、47 红。
+- 临时目录中的 247 项清单文件已被系统定期清理（非本人删除）。保持红的 47 项测试 ID 已另存为 `frozen-test-corrections-20261013/expected-red-47.txt`（只读），供今后复跑对照。
+
+## 用户决定：提交源码、测试与文档（2026-10-17）
+
+- 用户指令"commit it all with the source deps"，并选择：测试中除 5 个无法在干净检出中收集的文件外全部提交；6 个新文件中的本机绝对路径改为仓库相对路径。
+- 分三次本地提交，未推送：源码 44 个文件；测试 103 个文件；文档 36 个文件与 AGENTS.md。`artifacts/` 未提交（其中 `artifacts/techlead/` 按 `.gitignore` 不作为源码发布），仓库根目录遗留的 `share/` 也未提交。
+- 未提交的 5 个测试文件在导入时读取被忽略目录中的文件，会使干净检出的收集中断。它们仍在磁盘上，本地运行方式不变：
+  - `test_node_receipt_response_admission.py`、`test_node_response_admission.py`：读取 `held-node_claims.8302.txt`；
+  - `test_orchestra_delivery_context.py`：执行 `diagnosis.py`；
+  - `test_share_gateway_http.py`、`test_share_password_gateway.py`：导入 `share_gateway_guard`。
+- 路径替换（修改前副本：`frozen-test-corrections-20261013/pre-edit-20261017-paths/`）：
+
+| 文件 | 旧 → 新 | 改动 |
+|---|---|---|
+| tests/workers/test_share_password_cli.py | 403bdd70 → 865623be | 第 182 行改为由仓库根解析同一冻结辅助文件，24/24 不变；用户批准的冻结测试修改 |
+| docs/TECHLEAD-OBSERVATORY-RETENTION-CONTRACT.md | d1f153e8 → 93d206bf | 6 处绝对路径改为仓库相对路径 |
+| docs/TECHLEAD-ENGINEERING-RESULT-S0-CONTRACT.md | 6d6a52b3 → f8cf66e2 | 4 处 |
+| docs/TECHLEAD-ENGINEERING-RESULT-WEB-SIDECAR-V1-CONTRACT.md | 097208c7 → b0524ed2 | 解释器与 Node 路径改为 `<release-venv>`、`<nvm>` 占位，SHA256 固定值不变 |
+| docs/TECHLEAD-REPORT-PIPELINE-STATUS.md | 5b5fb84c → 0cbf1338 | 2 处 |
+| docs/TECHLEAD-TEMPORARY-SHARE.md | 49cff1c7 → b3f5fa8a | 1 处链接改为 `../artifacts/…` |
+
+- 干净检出验证：
+  - 只含源码的提交，在 CI 环境变量下用保留式运行器：876 通过、8 失败。8 项为 P 组删除守卫测试，与 HEAD 相同；在真实 CI 的普通 pytest 下它们通过。
+  - 含测试的提交，在 CI 环境下：无收集错误；4175 通过、64 失败、608 报错、3 跳过。失败与报错都因缺少本地条件（`SISYFUS_TEST_LOOPBACK`、只读基线、网络守卫、macOS 废纸篓等）。若对此分支开 PR，CI 会是红的，直到 CI 提供这些条件或另行决定。
+  - 同一提交在本地条件下（链接本仓库 `artifacts/`，设置回环与基线）：4803 项结果与 10-17 全量复跑中对应的测试逐项相同，失败恰为 `expected-red-47.txt` 中的 47 项。
+- 审计：189 个文件中没有真实密钥、令牌或个人联系信息，测试中的凭据形字符串均为合成夹具。审计另指出 `test_node_gateway_auth_path_diagnostic.py:28` 与 `test_node_gateway_late_auth_path_diagnostic.py:29` 在导入时安装进程级删除拦截；在普通 pytest（如 CI）下，它会让其后永久删除文件的测试失败。
+- 追加（2026-10-17，PR #7）：`test_node_gateway_auth_path_diagnostic.py` 与 `test_node_gateway_late_auth_path_diagnostic.py` 在导入时安装删除拦截；在 CI 的普通 pytest 下它作用于整个会话，约 2,500 项测试在创建临时目录时报错，pytest 在会话结束时崩溃而没有输出汇总。用户批准停止跟踪这两个文件；它们仍在磁盘上，在保留式运行器下照常运行。其余调用 `sys.addaudithook` 的已提交测试，或在子进程中调用，或其拦截在本测试结束后失效，不影响其他测试。
+
+## 用户决定：页面测试改由标准输入交给 Node（2026-10-17）
+
+- PR #7 的 CI 在 Linux 上有 223 项失败：`Argument list too long: 'node'`。8 个页面测试工具用 `node -e` 把整段页面脚本作为一个命令行参数传入；编排器的页面改动使该脚本 JSON 转义后约 198 KB，超过 Linux 单个参数 128 KiB 的上限（MAX_ARG_STRLEN）。macOS 没有单参数上限，所以本机一直通过。其中 `test_lead_rsi_page.py` 与 `test_lead_preflight_page.py` 早已在 main 上并且通过。
+- 用户批准按 R0(a) 修正（测试工具缺陷，与合同版本无关）：每处只改 `subprocess.run` 调用，改为 `node -`，以 `input=` 传入同一脚本。修改前副本：`frozen-test-corrections-20261013/pre-edit-20261017-node/`。
+
+| 文件（tests/workers/） | 旧 → 新 | 行 |
+|---|---|---|
+| test_chat_node_machine_inflight.py | d3b79232 → a3a05c18 | 30–31 |
+| test_chat_node_machine_retry.py | 7e2f403a → f39d3e87 | 26–27 |
+| test_chat_node_placement_page.py | e6e479a6 → 40e99abb | 84 |
+| test_chat_node_placement_page_inventory_refresh.py | a824aa1f → e1d42210 | 33 |
+| test_lead_preflight_page.py | 71b739a5 → b6fab3ca | 130 |
+| test_lead_rsi_page.py | 13304d3c → 5f61b879 | 89 |
+| test_mission_inbox_page.py | 7096b1d3 → ed0626dd | 64 |
+| test_mission_inbox_page_review.py | 0256262e → 2b5b803d | 80 |
+
+- 验证：
+  - 在本机用临时插件模拟 Linux 单参数上限：受影响的 13 个文件修改前 223 失败、3 通过（与 CI 一致），修改后 226 全部通过；不加模拟时修改前后都是 226 通过。
+  - 探针：在每段经标准输入交给 Node 的脚本末尾追加 `throw`，223 项全部失败，证明脚本确实被执行。
+  - 在模拟上限下的全量运行：4948 通过、47 失败、1 跳过，与 10-17 全量复跑逐项相同；失败恰为 `expected-red-47.txt` 中的 47 项，无任何参数长度错误。
+- `tests/test_reader_report.py` 也用 `node -e`，但脚本很小，CI 中通过，按最小改动未改。

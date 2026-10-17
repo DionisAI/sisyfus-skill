@@ -929,8 +929,50 @@ def cmd_research_propose(args: argparse.Namespace) -> int:
     return 0 if result["admission"].get("accepted") or args.no_admit else 3
 
 
+def _report_preflight(engine: ResearchEngine) -> None:
+    from .research_v2.reporting import validate_reporting_policy
+    validate_reporting_policy(engine)
+
+
+def _report_after_write(engine: ResearchEngine, research_code: int) -> int:
+    import sys
+    from .research_v2.reporting import maybe_compose
+    try:
+        outcome = maybe_compose(engine)
+        report_code = 5 if outcome["status"] in {"FAILED", "FENCED", "UNKNOWN", "REJECTED", "STOPPED"} else 0
+    except Exception as exc:
+        from .workers.protocol import redact
+        outcome = {"status": "FAILED", "error": {"code": getattr(exc, "code", "REPORT"), "message": redact(str(exc))}}
+        report_code = 5
+    print(json.dumps(outcome, ensure_ascii=False), file=sys.stderr)
+    return research_code or report_code
+
+
+def cmd_research_report_compose(args: argparse.Namespace) -> int:
+    import sys
+    from .research_v2.reporting import ReportCoordinator, ReportError, _json
+    engine = _research_engine(args, ensure_live=False)
+    try:
+        policy = _json(Path(args.policy).read_bytes()) if args.policy else None
+        outcome = ReportCoordinator(engine, policy=policy).compose(approved=args.yes)
+    except ReportError as exc:
+        print(json.dumps({"status": "FAILED", "error": {"code": exc.code, "message": str(exc)}}, ensure_ascii=False), file=sys.stderr)
+        return 5
+    _print_json(outcome)
+    return 0
+
+
+def cmd_research_report_control(args: argparse.Namespace) -> int:
+    from .research_v2.reporting import ReportCoordinator
+    engine = _research_engine(args, ensure_live=False)
+    _print_json(ReportCoordinator(engine).control(args.action, key=args.key, note=args.note, approved=args.yes))
+    return 0
+
+
 def cmd_research_execute(args: argparse.Namespace) -> int:
-    engine = _research_engine(args)
+    engine = _research_engine(args, ensure_live=False)
+    _report_preflight(engine)
+    ensure_observatory(engine.workspace.root, engine.workspace.research_id)
     previews = _command_exec_previews(engine, [args.experiment_id], workdir=args.workdir)
     if not _confirm_command_execution(previews, assume_yes=args.yes):
         return 4
@@ -946,7 +988,7 @@ def cmd_research_execute(args: argparse.Namespace) -> int:
                 "state": _research_summary(result["snapshot"], engine),
             }
         )
-    return 0 if result["verdict"]["status"] == "PASS" else 2
+    return _report_after_write(engine, 0 if result["verdict"]["status"] == "PASS" else 2)
 
 
 def cmd_research_begin(args: argparse.Namespace) -> int:
@@ -970,7 +1012,9 @@ def cmd_research_begin(args: argparse.Namespace) -> int:
 
 
 def cmd_research_settle(args: argparse.Namespace) -> int:
-    engine = _research_engine(args)
+    engine = _research_engine(args, ensure_live=False)
+    _report_preflight(engine)
+    ensure_observatory(engine.workspace.root, engine.workspace.research_id)
     result = engine.settle_attempt(args.attempt_id, load_json_object(args.observation), actor=args.actor)
     if getattr(args, "brief", False):
         _print_json(_verdict_brief(result))
@@ -983,11 +1027,14 @@ def cmd_research_settle(args: argparse.Namespace) -> int:
                 "state": _research_summary(result["snapshot"], engine),
             }
         )
-    return 0 if result["verdict"]["status"] == "PASS" else 2
+    return _report_after_write(engine, 0 if result["verdict"]["status"] == "PASS" else 2)
 
 
 def cmd_research_wake(args: argparse.Namespace) -> int:
-    engine = _research_engine(args)
+    engine = _research_engine(args, ensure_live=False) if args.execute else _research_engine(args)
+    if args.execute:
+        _report_preflight(engine)
+        ensure_observatory(engine.workspace.root, engine.workspace.research_id)
     waits_before = {
         item["experiment_id"]: item.get("status")
         for item in engine.snapshot().get("waits") or []
@@ -1036,7 +1083,7 @@ def cmd_research_wake(args: argparse.Namespace) -> int:
             "frontier": [item.get("id") for item in snapshot.get("frontier") or []],
         }
     )
-    return 0
+    return _report_after_write(engine, 0) if args.execute else 0
 
 
 def cmd_research_recover(args: argparse.Namespace) -> int:
@@ -1171,10 +1218,12 @@ def cmd_research_resume(args: argparse.Namespace) -> int:
 
 
 def cmd_research_finalize(args: argparse.Namespace) -> int:
-    engine = _research_engine(args)
+    engine = _research_engine(args, ensure_live=False)
+    _report_preflight(engine)
+    ensure_observatory(engine.workspace.root, engine.workspace.research_id)
     snapshot = engine.finalize(status=args.status, actor=args.actor, reason=args.reason)
     _print_json(_research_summary(snapshot, engine))
-    return 0 if snapshot["run_status"] == "SOLVED" else 2
+    return _report_after_write(engine, 0 if snapshot["run_status"] == "SOLVED" else 2)
 
 
 def cmd_research_demo(args: argparse.Namespace) -> int:
@@ -1704,6 +1753,22 @@ def build_parser() -> argparse.ArgumentParser:
     p_rprune.add_argument("--root")
     p_rprune.add_argument("--actor", default="user")
     p_rprune.set_defaults(func=cmd_research_prune)
+
+    p_rcompose = research_sub.add_parser("report-compose", help="compose an independently reviewed Chinese reader")
+    p_rcompose.add_argument("research_id", nargs="?", default="latest")
+    p_rcompose.add_argument("--yes", action="store_true")
+    p_rcompose.add_argument("--policy", help="explicit reader-policy JSON path")
+    p_rcompose.add_argument("--root")
+    p_rcompose.set_defaults(func=cmd_research_report_compose)
+
+    p_rcontrol = research_sub.add_parser("report-control", help="control reader reports only")
+    p_rcontrol.add_argument("research_id")
+    p_rcontrol.add_argument("action", choices=["status", "pause", "resume", "stop", "resolve-unknown"])
+    p_rcontrol.add_argument("--key")
+    p_rcontrol.add_argument("--note", default="")
+    p_rcontrol.add_argument("--yes", action="store_true")
+    p_rcontrol.add_argument("--root")
+    p_rcontrol.set_defaults(func=cmd_research_report_control)
 
     p_rreport = research_sub.add_parser("report", help="render/open the HTML Observatory")
     p_rreport.add_argument("research_id", nargs="?", default="latest")

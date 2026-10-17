@@ -26,6 +26,8 @@ class CodexDriver:
         return {**probe(self.command), "driver": self.name, "controls": self.controls}
 
     def run(self, request: Request, emit: EventSink, controls: ControlSource = lambda: []) -> Receipt:
+        if request.mode == "no-tools":
+            raise ValueError("Codex does not support no-tools requests")
         proc = None
         thread_id = turn_id = None
         output: dict[str, str] = {}

@@ -99,19 +99,28 @@ class LeadJournal(Journal):
 
     def record(self, category: str, key: str, data: dict[str, Any]) -> dict[str, Any]:
         """Immutable, idempotent receipt/proposal; no extra database or verdict table."""
+        with self.store._transaction() as db:
+            return self.record_in(db, category, key, data)
+
+    def record_in(self, db: Any, category: str, key: str, data: dict[str, Any]) -> dict[str, Any]:
+        """Record in the caller's transaction without opening or committing one.
+
+        Preserves record's redaction, immutable replay, shape and hash-chain
+        event. SQL/event errors propagate; the caller owns rollback and the
+        connection lifetime. This metadata grants no native or verdict authority.
+        """
         safe = redact(data)
         name = self.prefix + category + ":" + key
-        with self.store._transaction() as db:
-            row = db.execute("SELECT value FROM metadata WHERE key=?", (name,)).fetchone()
-            if row:
-                saved = json.loads(row[0])
-                if saved["data"] != safe:
-                    raise IdempotencyConflictError(f"conflicting {category} record: {key}")
-                return saved
-            saved = {"key": key, "created_at": utc_now(), "data": safe}
-            db.execute("INSERT INTO metadata VALUES(?,?)", (name, canonical_json(saved)))
-            self._event(db, "lead_" + category, key, saved)
+        row = db.execute("SELECT value FROM metadata WHERE key=?", (name,)).fetchone()
+        if row:
+            saved = json.loads(row[0])
+            if saved["data"] != safe:
+                raise IdempotencyConflictError(f"conflicting {category} record: {key}")
             return saved
+        saved = {"key": key, "created_at": utc_now(), "data": safe}
+        db.execute("INSERT INTO metadata VALUES(?,?)", (name, canonical_json(saved)))
+        self._event(db, "lead_" + category, key, saved)
+        return saved
 
     def get(self, category: str, key: str) -> dict[str, Any] | None:
         with self.store._transaction(immediate=False) as db:
@@ -235,14 +244,15 @@ class LeadJournal(Journal):
         return [{**r, "role": roles.get(r["key"], {}).get("role", "worker"),
                  "role_metadata": roles.get(r["key"])} for r in super().runs()]
 
-    def reserve(self, key, task_id, fingerprint, *, continuation_id=None, lease_token=None):
+    def reserve(self, key, task_id, fingerprint, *, continuation_id=None, lease_token=None, on_reserved=None):
         # The core-owned freeze happens before even direct/manual reservation
         # paths. It creates no replacement truth and never backfills legacy runs.
         while True:
             if self.before_reserve is not None:
                 self.before_reserve()
             try:
-                return super().reserve(key, task_id, fingerprint, continuation_id=continuation_id, lease_token=lease_token)
+                return super().reserve(key, task_id, fingerprint, continuation_id=continuation_id,
+                                       lease_token=lease_token, on_reserved=on_reserved)
             except DispatchBlocked as exc:
                 if str(exc) != "mission is paused":
                     raise

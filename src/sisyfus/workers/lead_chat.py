@@ -3,6 +3,21 @@
 Native Opus can read a selected project and propose prose. Only operator-supplied,
 hash-validated checks bind a mission. Draft proposals cannot invent executable
 checks; confirmed execution delegates to MissionHub/LeadMission unchanged.
+
+ChatSessions is the existing chat manager. prepare_placement(chat_id,
+allow_planning, request_id, approval_hash) requires literal True planning
+permission and the same readiness/confirmed spec as Start. It returns the
+ordinary public chat projection with placement_preparation:
+{request_id, approval_hash, scope:'planning_only', spec_hash, mission_id,
+ status:CREATING|MAPPED|PLANNING|ACK|UNKNOWN, control:None|planning-only hub ACK}.
+ACK is admission, not completed planning or acceptance. Persist reservation
+before create, mapping before planning; exact replay is readonly, including
+uncertain results. Lost outcomes never create another mission or resend planning.
+The draft stays frozen. A separate explicit Start with the original worker
+permission may reuse this exact mission once; placement_start records
+{request_id, approval_hash, status:STARTING|ACK|UNKNOWN}. Core/Hub own all runtime
+locks, UNKNOWN fences, placement readiness and execution truth. No chat method
+settles a run or treats a planning ACK as execution permission.
 """
 from __future__ import annotations
 
@@ -20,6 +35,7 @@ from pathlib import Path
 from typing import Any
 
 from .chat_directory import directory_request, open_parent, paths
+from . import chat_rsi
 from .claude_code import ClaudeCodeDriver
 from .lead_contracts import load_lead_spec
 from .lead_mission import strict_json
@@ -28,6 +44,18 @@ from .protocol import Receipt, Request, digest, redact
 MODEL = 'claude-opus-5-5'
 _ID = re.compile(r'c_[a-f0-9]{32}\Z')
 _REQUEST = re.compile(r'[A-Za-z0-9_-][A-Za-z0-9_-]{7,99}\Z')
+_APPROVAL = re.compile(r'[a-f0-9]{64}\Z')
+
+
+def planning_ack(value: Any, mission_id: str, request_id: str) -> dict[str, Any]:
+    """Validate a bounded hub admission reply, never a completion receipt."""
+    expected = {'id': 'prepare-placement:' + request_id, 'mission_id': mission_id,
+                'request_id': request_id, 'action': 'prepare-placement', 'status': 'ACK',
+                'accepted': True, 'terminal': False, 'scope': 'planning_only'}
+    if (not isinstance(value, dict) or set(value) != set(expected) or
+            any(type(value[k]) is not type(v) or value[k] != v for k, v in expected.items())):
+        raise ValueError('planning acknowledgement must match the exact mission/request and planning-only fields')
+    return copy.deepcopy(value)
 
 
 def durable_flush(fd: int) -> None:
@@ -112,6 +140,11 @@ class ChatSessions:
                 state.update(status='UNKNOWN', directory_preparation=preparation, error={'type':'DirectoryOutcomeUnknown', 'message':preparation['detail']})
                 self._save(state)
             if state['status'] in {'RUNNING', 'STARTING'}:
+                for key, active in (('placement_preparation', {'CREATING', 'MAPPED', 'PLANNING'}),
+                                    ('placement_start', {'STARTING'})):
+                    saved = state.get(key)
+                    if saved and saved['status'] in active:
+                        saved['status'] = 'UNKNOWN'
                 state.update(status='UNKNOWN', error={'type': 'InterruptedRequest', 'message': '上次请求的结果待核对；已保留记录，当前对话暂停派发。请查看诊断或新建对话。'})
                 self._save(state)
 
@@ -143,8 +176,43 @@ class ChatSessions:
                 raise ValueError('draft contains malformed message history')
         if state.get('bound_spec') is not None and not isinstance(state['bound_spec'], dict):
             raise ValueError('draft bound specification must be an object')
+        rsi = state.get('rsi_preparation')
+        if rsi is not None and (not isinstance(rsi, dict) or rsi.get('status') not in {'CONFIGURED', 'NEEDS_INPUT', 'ERROR'} or not isinstance(rsi.get('configuration'), dict) or not isinstance(rsi.get('detail'), str)):
+            raise ValueError('draft RSI preparation receipt is malformed')
         if state.get('proposal') is not None:
             proposal({'reply': 'draft shape validation', 'proposal': state['proposal']})
+        preparation = state.get('placement_preparation')
+        if preparation is not None:
+            fields = {'request_id', 'approval_hash', 'scope', 'spec_hash', 'mission_id', 'status', 'control'}
+            if (not isinstance(preparation, dict) or set(preparation) != fields or
+                    not isinstance(preparation['status'], str) or
+                    preparation['status'] not in {'CREATING', 'MAPPED', 'PLANNING', 'ACK', 'UNKNOWN'} or
+                    preparation['scope'] != 'planning_only' or
+                    any(not isinstance(preparation[k], str) or not _APPROVAL.fullmatch(preparation[k])
+                        for k in ('approval_hash', 'spec_hash'))):
+                raise ValueError('draft planning preparation receipt is malformed')
+            rid = self._request_id(preparation['request_id'])
+            if state['requests'].get(rid) != {'kind': 'prepare-placement', 'approval_hash': preparation['approval_hash']}:
+                raise ValueError('draft planning request identity mismatch')
+            mid = preparation['mission_id']
+            if mid != state.get('mission_id') or (mid is not None and not isinstance(mid, str)):
+                raise ValueError('draft planning mission mapping mismatch')
+            if preparation['status'] in {'MAPPED', 'PLANNING', 'ACK'} and not mid:
+                raise ValueError('mapped preparation requires its original mission identity')
+            if preparation['control'] is not None:
+                planning_ack(preparation['control'], mid, rid)
+            elif preparation['status'] == 'ACK':
+                raise ValueError('planning admission requires a retained hub acknowledgement')
+        started = state.get('placement_start')
+        if started is not None:
+            if (not preparation or not isinstance(started, dict) or
+                    set(started) != {'request_id', 'approval_hash', 'status'} or
+                    not isinstance(started['status'], str) or started['status'] not in {'STARTING', 'ACK', 'UNKNOWN'} or
+                    started['approval_hash'] != preparation['approval_hash']):
+                raise ValueError('draft prepared Start receipt is malformed')
+            rid = self._request_id(started['request_id'])
+            if state['requests'].get(rid) != {'kind': 'start', 'approval_hash': started['approval_hash']}:
+                raise ValueError('draft prepared Start request identity mismatch')
         return state
 
     def _save(self, state: dict[str, Any]) -> None:
@@ -159,6 +227,13 @@ class ChatSessions:
         os.replace(tmp, path / 'draft.json')
         flush_directory(path)
         flush_directory(self.root)
+
+    @staticmethod
+    def _effective_spec(state: dict[str, Any]) -> dict[str, Any] | None:
+        bound = copy.deepcopy(state.get('bound_spec'))
+        if bound is not None and state.get('rsi_preparation'):
+            bound['rsi'] = copy.deepcopy(state['rsi_preparation']['configuration'])
+        return bound
 
     @staticmethod
     def _readiness(state: dict[str, Any]) -> dict[str, Any]:
@@ -188,6 +263,13 @@ class ChatSessions:
                         '方案已有的文字验收是需求草案；还需落实为带通过/失败条件的固定校验脚本和工程验收文件，审阅后绑定。当前聊天尚未自动生成这些文件。')},
             {'id': 'native', 'label': '调用状态', 'ready': status == 'IDLE', 'detail': native_detail},
         ]
+        rsi = state.get('rsi_preparation')
+        if rsi:
+            caps = [name for name in chat_rsi.CAPS if (state.get('bound_spec') or {}).get(name) is not None]
+            capped = rsi['configuration'].get('enabled', True) and bool(caps)
+            requirements.append({'id': 'rsi', 'label': 'RSI 评估准备',
+                                 'ready': rsi['status'] == 'CONFIGURED' and not capped,
+                                 'detail': 'RSI 子试验被当前有限预算隔离：' + '、'.join(caps) + '；预算合同保持原样。' if capped else rsi['detail']})
         ready = all(item['ready'] for item in requirements) and not state.get('mission_id')
         missing = [item['label'] for item in requirements if not item['ready']]
         reason = ('方案已关联执行任务，请到进度页查看真实状态。' if state.get('mission_id') else
@@ -198,7 +280,8 @@ class ChatSessions:
 
     def _public(self, state: dict[str, Any]) -> dict[str, Any]:
         value = {k: copy.deepcopy(v) for k, v in state.items() if k not in {'bound_spec', 'requests', 'native_session'}}
-        value['approval_hash'] = digest({'source': state['source'], 'spec': state.get('bound_spec'), 'proposal': state.get('proposal')}) if state.get('proposal') else None
+        value['approval_hash'] = digest({'source': state['source'], 'spec': self._effective_spec(state), 'proposal': state.get('proposal')}) if state.get('proposal') else None
+        value['rsi_configuration'] = copy.deepcopy((state.get('rsi_preparation') or {}).get('configuration') or (state.get('bound_spec') or {}).get('rsi'))
         value['readiness'] = self._readiness(state)
         directory = directory_request(state, Path.home())
         value['directory_request'] = directory
@@ -427,6 +510,18 @@ class ChatSessions:
             self._save(state)  # Reservation precedes process dispatch.
             if directory:
                 self._prepare_directory(state, 'auto:' + request_id, directory)
+            rsi = chat_rsi.instruction(message, state.get('rsi_preparation'))
+            if rsi:
+                for entry in state['messages']:
+                    if entry['id'] == request_id:
+                        entry['controller_kind'] = 'rsi'
+                prepared = chat_rsi.prepare(rsi, self._effective_spec(state) or {}, self.hub.directory, state['source'])
+                prepared.update(request_id=request_id, created_at=now())
+                state['rsi_preparation'] = prepared
+                state['native_session'] = None
+                state['messages'].append({'id': 'rsi-' + request_id, 'role': 'assistant', 'kind': 'rsi',
+                                          'text': prepared['detail'], 'created_at': now()})
+                self._save(state)
             thread = threading.Thread(target=self._reply, args=(ident, request_id), name='opus-chat-' + ident, daemon=False)
             self.threads[ident] = thread
             try:
@@ -443,9 +538,11 @@ class ChatSessions:
         context = {'source': state['source'], 'approved_objective': base.get('objective'),
                    'constraints': base.get('constraints', []), 'deliverables': base.get('deliverables', []),
                    'check_names': list(base.get('checks', {})), 'directory_preparation': state.get('directory_preparation'),
-                   'messages': state['messages']}
+                   'rsi_preparation': {k: copy.deepcopy((state.get('rsi_preparation') or {}).get(k)) for k in ('status', 'catalog', 'detail')},
+                   'rsi_configuration': {k: (state.get('rsi_preparation') or {}).get('configuration', base.get('rsi') or {}).get(k) for k in ('enabled', 'auto_promote')},
+                   'messages': [{**m, 'text': chat_rsi.planning_text(m['text'])} if m.get('controller_kind') == 'rsi' else m for m in state['messages']]}
         return '''You are the Chinese-speaking Tech Lead in a conversational project interface.
-Answer in natural concise Chinese. When returning a proposal, reply should be a brief 150-300 Chinese-character summary rather than repeating the full plan. Put architecture, task details and acceptance in proposal. Use plain text paragraphs, without Markdown emphasis markers. Clarify material unknowns; produce an actionable architecture and acceptance outline when enough is known. You have read-only tools; read the selected source as needed, never modify any file or run commands. The controller separately handles explicit user directory requests: directory_preparation is authoritative. When source is bound and preparation says BOUND, state the directory is already prepared; do not ask the user to type it into settings, claim it still needs creation, or repeat obsolete earlier directory limitations. If preparation says NEEDS_CONFIRMATION, ask only the concrete missing path or existing-directory choice in chat. Directory preparation does not start an implementation mission. No model weights are changed. Do not claim implementation, execution or test success. No mission starts from a chat message. Operator confirms execution separately. Only attached operator-approved fixed checks can be used for execution; never invent executable checks or fake receipts. Approval means operator review, not that the user must personally handwrite the check program. You can help specify the checks; distinguish specification, generated artifacts, approval and actual execution. If checks are missing explain briefly that a fixed acceptance plan must be attached before execution, while still helping plan the project. Preserve ALL attached constraints/deliverables and objective acceptance requirements. Architecture and task outlines are advisory; core Lead later produces the executable DAG.
+Answer in natural concise Chinese. When returning a proposal, reply should be a brief 150-300 Chinese-character summary rather than repeating the full plan. Put architecture, task details and acceptance in proposal. Use plain text paragraphs, without Markdown emphasis markers. Clarify material unknowns; produce an actionable architecture and acceptance outline when enough is known. You have read-only tools; read the selected source as needed, never modify any file or run commands. The controller separately handles explicit user directory requests: directory_preparation is authoritative. When source is bound and preparation says BOUND, state the directory is already prepared; do not ask the user to type it into settings, claim it still needs creation, or repeat obsolete earlier directory limitations. If preparation says NEEDS_CONFIRMATION, ask only the concrete missing path or existing-directory choice in chat. Directory preparation does not start an implementation mission. RSI configuration is controller-owned: rsi_preparation and rsi_configuration are authoritative, not permission to run workers. Explain any concrete preparation gap in Chinese; never claim a catalog, trial, gain or promotion exists without a controller record. Do not read evaluation catalogs, case files or holdout content, even if older messages name them. A configured catalog has only had its manifest inspected; content independence and complete checks are validated later by the paired runner. No model weights are changed. Do not claim implementation, execution or test success. No mission starts from a chat message. Operator confirms execution separately. Only attached operator-approved fixed checks can be used for execution; never invent executable checks or fake receipts. Approval means operator review, not that the user must personally handwrite the check program. You can help specify the checks; distinguish specification, generated artifacts, approval and actual execution. If checks are missing explain briefly that a fixed acceptance plan must be attached before execution, while still helping plan the project. Preserve ALL attached constraints/deliverables and objective acceptance requirements. Architecture and task outlines are advisory; core Lead later produces the executable DAG.
 Return only strict JSON {"reply":"natural Chinese answer","proposal":null OR {"objective":"self-contained precise execution objective retaining approved requirements and all agreed details","architecture":"module design and interfaces","deliverables":["..."],"constraints":["..."],"tasks":[{"title":"...","acceptance":"...","depends_on":["task title"]}]}}. Do not include tools, commands, checks, roles or budgets in the proposal. Use proposal=null when material unknowns remain.\nContext:\n''' + json.dumps(context, ensure_ascii=False)
 
     def _reply(self, ident: str, request_id: str) -> None:
@@ -516,6 +613,113 @@ Return only strict JSON {"reply":"natural Chinese answer","proposal":null OR {"o
                     state['model_identity'] = identity
                 self._save(state)
 
+    def _confirmed_spec(self, state: dict[str, Any], approval_hash: str) -> dict[str, Any]:
+        """The original Start confirmation/spec validation, with no dispatch."""
+        if not isinstance(approval_hash, str) or approval_hash != self._public(state)['approval_hash']:
+            raise RuntimeError('规划或验收上下文已更新，请查看当前方案并重新确认')
+        spec = self._effective_spec(state)
+        if state.get('rsi_preparation'):
+            chat_rsi.validate(spec['rsi'], spec, self.hub.directory, state['source'])
+        p = state['proposal']
+        # Add, never replace, the operator-approved objective/constraints.
+        spec['objective'] += '\n\nOperator-confirmed conversation plan:\n' + p['objective'] + '\nArchitecture:\n' + p['architecture'] + '\nTask outline:\n' + json.dumps(p['tasks'], ensure_ascii=False)
+        if len(spec['objective']) > 20000:
+            raise ValueError('执行目标超过 20000 字符，请缩短方案后重试')
+        for key in ('constraints', 'deliverables'):
+            spec[key] = list(dict.fromkeys([*spec.get(key, []), *p[key]]))
+        spec['source'] = state['source']
+        load_lead_spec(spec)  # Revalidate pinned hashes and paths before binding.
+        return spec
+
+    def _placement_binding(self, state: dict[str, Any]) -> None:
+        """Read the canonical bound spec; never discover/recreate an unknown ID."""
+        from .lead_console import approved_spec
+        saved = state['placement_preparation']
+        if (state['mission_id'] != saved['mission_id'] or
+                digest(approved_spec(self.hub.path(state['mission_id']))) != saved['spec_hash']):
+            raise RuntimeError('prepared mission differs from the original confirmed specification')
+
+    def prepare_placement(self, chat_id: str, allow_planning: bool, request_id: str,
+                          approval_hash: str) -> dict[str, Any]:
+        """Explicit planning-only binding; exact retry only reads durable state."""
+        if allow_planning is not True:
+            raise PermissionError('准备子任务需要明确同意 Lead 规划调用；这不是实现调用许可')
+        request_id = self._request_id(request_id)
+        if not isinstance(approval_hash, str) or not _APPROVAL.fullmatch(approval_hash):
+            raise ValueError('approval_hash must be a lowercase SHA256 string')
+        with self.lock:
+            if self.closed:
+                raise RuntimeError('conversation service is closing')
+            state = self._read(chat_id)
+            reservation = {'kind': 'prepare-placement', 'approval_hash': approval_hash}
+            if request_id in state['requests']:
+                if state['requests'][request_id] != reservation:
+                    raise ValueError('request_id already belongs to another operation or approval')
+                return self._public(state)
+            self._idle(state)
+            if not self._public(state)['readiness']['ready']:
+                raise ValueError('先附上工程验收方案，并让 Opus 完成一版规划')
+            if self.hub.single:
+                raise ValueError('现有单任务控制台只管理原任务；新建对话任务请使用 hub')
+            spec = self._confirmed_spec(state, approval_hash)
+            saved = {'request_id': request_id, 'approval_hash': approval_hash,
+                     'scope': 'planning_only', 'spec_hash': digest(load_lead_spec(spec)),
+                     'mission_id': None, 'status': 'CREATING', 'control': None}
+            state['requests'][request_id] = reservation
+            state.update(status='STARTING', error=None, placement_preparation=saved)
+            self._save(state)  # Persist the operation BEFORE a potentially lost create.
+            try:
+                created = self.hub.create(spec)
+                if not isinstance(created, dict) or not isinstance(created.get('id'), str) or not created['id']:
+                    raise ValueError('mission creation did not return a fixed mission identity')
+                self.hub.path(created['id'])
+                state['mission_id'] = saved['mission_id'] = created['id']
+                saved['status'] = 'MAPPED'
+                self._save(state)  # Mapping persists BEFORE planning admission.
+                self._placement_binding(state)
+                saved['status'] = 'PLANNING'
+                self._save(state)  # An interrupted admission is fenced, not resent.
+                control = self.hub.prepare_placement(created['id'], request_id, allow_planning=True)
+                saved['control'] = planning_ack(control, created['id'], request_id)
+                saved['status'] = 'ACK'
+                state.update(status='IDLE')
+                state['messages'].append({'id': 'prepare-placement-' + request_id, 'role': 'assistant', 'kind': 'control',
+                    'text': '子任务规划请求已提交给原任务控制器。规划结果与冻结任务以控制器记录为准；选择执行机器后，还需单独确认 Start 实现调用许可。', 'created_at': now()})
+                self._save(state)
+            except Exception as exc:
+                saved['status'] = 'UNKNOWN'
+                state.update(status='UNKNOWN', error=error(exc))
+                self._save(state)
+                raise
+            return self._public(state)
+
+    def _start_prepared(self, state: dict[str, Any], request_id: str, approval_hash: str) -> dict[str, Any]:
+        """Separate worker grant for the original mapped mission, never create."""
+        saved = state['placement_preparation']
+        if state['status'] != 'IDLE' or saved['status'] != 'ACK' or state.get('placement_start'):
+            raise RuntimeError('prepared mission is active, already started or its outcome needs reconciliation')
+        spec = self._confirmed_spec(state, approval_hash)
+        if approval_hash != saved['approval_hash'] or digest(load_lead_spec(spec)) != saved['spec_hash']:
+            raise RuntimeError('prepared mission source/spec/approval differs from the original binding')
+        self._placement_binding(state)
+        started = {'request_id': request_id, 'approval_hash': approval_hash, 'status': 'STARTING'}
+        state['requests'][request_id] = {'kind': 'start', 'approval_hash': approval_hash}
+        state.update(status='STARTING', error=None, placement_start=started)
+        self._save(state)
+        try:
+            self.hub.start(state['mission_id'], allow_local_workers=True)
+            started['status'] = 'ACK'
+            state.update(status='IDLE')
+            state['messages'].append({'id': 'start-' + request_id, 'role': 'assistant', 'kind': 'control',
+                'text': '已向原任务控制器单独提交 Start 实现调用许可。规划与机器选择保持原记录，完成状态以测试、审查和集成证据为准。', 'created_at': now()})
+            self._save(state)
+        except Exception as exc:
+            started['status'] = 'UNKNOWN'
+            state.update(status='UNKNOWN', error=error(exc))
+            self._save(state)
+            raise
+        return self._public(state)
+
     def start(self, ident: str, allow_local_workers: bool, request_id: str, approval_hash: str) -> dict[str, Any]:
         if allow_local_workers is not True:
             raise PermissionError('确认开工需要明确同意本地 Agent 执行')
@@ -529,23 +733,14 @@ Return only strict JSON {"reply":"natural Chinese answer","proposal":null OR {"o
                 if previous != {'kind': 'start', 'approval_hash': approval_hash}:
                     raise ValueError('request_id already belongs to another operation')
                 return self._public(state)
+            if state.get('placement_preparation') and state.get('mission_id'):
+                return self._start_prepared(state, request_id, approval_hash)
             self._idle(state)
             if not self._public(state)['readiness']['ready']:
                 raise ValueError('先附上工程验收方案，并让 Opus 完成一版规划')
             if self.hub.single:
                 raise ValueError('现有单任务控制台只管理原任务；新建对话任务请使用 hub')
-            if not isinstance(approval_hash, str) or approval_hash != self._public(state)['approval_hash']:
-                raise RuntimeError('规划或验收上下文已更新，请查看当前方案并重新确认')
-            spec = copy.deepcopy(state['bound_spec'])
-            p = state['proposal']
-            # Add, never replace, the operator-approved objective/constraints.
-            spec['objective'] += '\n\nOperator-confirmed conversation plan:\n' + p['objective'] + '\nArchitecture:\n' + p['architecture'] + '\nTask outline:\n' + json.dumps(p['tasks'], ensure_ascii=False)
-            if len(spec['objective']) > 20000:
-                raise ValueError('执行目标超过 20000 字符，请缩短方案后重试')
-            for key in ('constraints', 'deliverables'):
-                spec[key] = list(dict.fromkeys([*spec.get(key, []), *p[key]]))
-            spec['source'] = state['source']
-            load_lead_spec(spec)  # Revalidate pinned hashes and paths before binding.
+            spec = self._confirmed_spec(state, approval_hash)
             state['requests'][request_id] = {'kind': 'start', 'approval_hash': approval_hash}
             state.update(status='STARTING', error=None)
             self._save(state)

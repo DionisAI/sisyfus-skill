@@ -120,11 +120,15 @@ def load_lead_spec(value: str | Path | Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError("constraints must be text entries")
     if not isinstance(result["deliverables"], list) or not all(isinstance(x, str) for x in result["deliverables"]):
         raise ValueError("deliverables must be text entries")
-    if not isinstance(result["rsi"], dict) or set(result["rsi"]) - {"enabled", "auto_promote", "evaluation_root"}:
+    if not isinstance(result["rsi"], dict) or set(result["rsi"]) - {"enabled", "auto_promote", "evaluation_root", "evaluation_manifest_hash"}:
         raise ValueError("unsupported RSI configuration")
     for flag in ("enabled", "auto_promote"):
         if flag in result["rsi"] and type(result["rsi"][flag]) is not bool:
             raise ValueError("RSI flags must be booleans")
+    if 'evaluation_manifest_hash' in result['rsi']:
+        pin = result['rsi']['evaluation_manifest_hash']
+        if not isinstance(pin, str) or not re.fullmatch(r'[a-f0-9]{64}', pin) or not isinstance(result['rsi'].get('evaluation_root'), str) or not result['rsi']['evaluation_root']:
+            raise ValueError('RSI manifest pin requires a SHA256 hash and an evaluation root')
     if "tasks" in raw:
         result["initial_plan"] = validate_plan({"architecture": "operator supplied", "interfaces": [], "tasks": raw["tasks"]}, result)
     result["acceptance_hash"] = digest({"checks": result["checks"], "required": result["required_checks"],
