@@ -101,6 +101,17 @@ def execute(s):
     return lead_trials.run_trials(s["origin"], s["proposal"]["id"], s["root"])
 
 
+def test_operator_manifest_pin_blocks_changed_catalog_before_children(setup):
+    import hashlib
+    s = setup
+    s['origin'].spec['rsi']['evaluation_manifest_hash'] = hashlib.sha256(s['path'].read_bytes()).hexdigest()
+    s['path'].write_text(s['path'].read_text() + '\n')
+    report = execute(s)
+    assert report['status'] == 'NONPROMOTION' and report['promoted'] is False
+    assert 'manifest changed' in report['error']['message']
+    assert s['children'] == [] and not s['origin'].journal.records('paired_trial_children')
+
+
 def write_manifest(s):
     s["path"].write_text(json.dumps(s["manifest"]))
 
