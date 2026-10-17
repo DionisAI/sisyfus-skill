@@ -90,9 +90,28 @@ PYTHONPATH="$PWD/src" python3 -m sisyfus techlead up "$DEMO/mission.json" \
 检查真实结果；没有实测收益就保持旧版本。
 
 完整配置见 [英文运行手册](TECHLEAD-RUNBOOK.md#enable-the-paired-procedure-lab)。
-浏览器可操作预先配置的任务并查看策略证据；带独立评估集的任务通过 JSON/CLI
-创建。总预算默认 Unlimited；当前启用有限父预算时，RSI 子试验保守停止调度，
-主工程仍按自己的预算执行。
+在已经绑定工程与固定验收的对话里，可以直接说：
+
+> 开启 RSI，评估集目录为 `/绝对路径/catalog`，通过全部门槛后自动晋升。
+
+也可说“RSI 只评估，不自动晋升”或“关闭 RSI”。缺少评估集时，继续在聊天
+里给出评估集目录即可，不需要编辑 RSI 表单或重新输入整段需求。目录必须有
+已经准备好的 `manifest.json`，包含固定 search 和独立 holdout 案例的 spec
+文件路径引用；聊天准备不接收清单里内嵌的案例定义。原 JSON/CLI 支持保持原样。
+准备工程案例可运行 `scripts/prepare_procedure_trials.py --output <新目录>`；
+该准备步骤不调用模型，也不是一次性能评估。
+
+控制器先核对清单、保存哈希与聊天回执，不读取 holdout 的任务内容，不派发
+Sol。审阅更新后的方案与 RSI 范围，再明确确认开工。修改清单会使原确认失效；
+再运行时也会核对已批准哈希。目录有效不等于案例来源独立，后者由原配对
+评估器验证。缺少固定工程验收的普通新对话仍需先准备并绑定验收文件。
+
+任务进度的 **RSI 对照与晋升** 显示 search / holdout 的 baseline/candidate
+实际调用数、判定依据与当前采用的策略。缺失证明不显示为零；零收益不晋升；
+评估合格与实际采用分开显示。失败记录与策略历史继续保留。
+
+总预算默认 Unlimited；当前启用有限父预算时，聊天会说明 RSI 子试验的预算
+缺项，不自动放宽原合同。JSON/CLI 入口继续保留。
 
 Claude 的实际回执模型与请求模型分别显示。当前原生 Codex 接口缺少 Sol
 实际模型的执行证明时，actual_model 保持 null，不把配置名称当成证明。

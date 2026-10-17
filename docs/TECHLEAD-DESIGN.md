@@ -38,6 +38,11 @@ Opus Lead     Sol tasks      independent Opus review
   the approved contract to the existing controller, retaining the approved
   objective/constraints and adding the accepted conversation plan. Idempotent
   request IDs and restart UNKNOWN fencing prevent blind resend.
+- `chat_rsi.py` admits explicit operator configuration in conversation, prepares
+  manifest-only metadata and binds its hash to confirmed execution. It does not
+  inspect holdout task content or grant model proposals configuration authority.
+  Existing paired trials, canonical metrics and promotion gates remain the only
+  evaluation truth; see `TECHLEAD-RSI-CHAT-ACCEPTANCE.md`.
 - `lead_chat_page.py` is the default Chinese chat interface; `/console` retains
   the developer interface.
 - `lead_console.py` and `lead_cli.py` expose user operations. A web connection or

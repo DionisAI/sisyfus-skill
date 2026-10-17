@@ -91,8 +91,22 @@ In a new mission specification, set:
 The catalog's `manifest.json` has nonempty `search` and `holdout` arrays of
 `{"id": "unique-case", "spec": "relative-spec.json"}` entries. Each spec owns
 source content, approved external hash-pinned checks and explicit role models.
-`scripts/prepare_procedure_trials.py <new-directory>` prepares the retained
+`scripts/prepare_procedure_trials.py --output <new-directory>` prepares the retained
 engineering pilot used for this delivery. It does not run a model.
+
+The Chinese chat page also accepts explicit operator directives such as
+`开启 RSI，评估集目录为 /absolute/catalog，通过门槛后自动晋升` before
+mission binding. Configuration reads only the public manifest, pins its SHA256
+as `rsi.evaluation_manifest_hash`, and retains a controller preparation receipt.
+Chat manifests reference spec files, not inline case definitions; the legacy
+runner's mapping support is unchanged. Preparation neither opens held-out case
+files nor dispatches workers. Missing catalog
+and finite aggregate-cap prerequisites remain visible in chat; they are not
+silently supplied or relaxed. Confirmed Start rechecks the manifest and binds the
+configuration to the existing LeadMission. The paired runner rechecks the same
+pin before child admission. Native planning receives flags/counts but no catalog
+paths. The task page displays canonical arm counts and current procedure adoption
+without equating ELIGIBLE, NONPROMOTION or incomplete proofs with activation.
 
 At an accepted boundary the controller asks the real Lead for a grounded policy
 candidate, runs actual baseline/candidate child missions, and evaluates canonical
@@ -136,3 +150,18 @@ it is not a completed Tripo3D integration or a network-service test.
 permanent-deletion tripwire. Existing legacy migration tests that permanently
 unlink a database must be excluded under the user's active deletion policy;
 their policy failure must be recorded rather than hidden.
+
+The gateway claim and response-admission tests import pinned NodeClaims
+sources. Export both before running them; the files are read-only and the tests
+check their sha256:
+
+```bash
+export SISYFUS_GATEWAY_CLAIMS_BASELINE="$PWD/artifacts/techlead/frozen-baselines/node_claims.0073.py"
+export SISYFUS_GATEWAY_RESPONSE_CLAIMS_BASELINE="$PWD/artifacts/techlead/frozen-baselines/node_claims.8302.py"
+```
+
+`test_lead_engineering_result_web.py`, `test_share_gateway_http.py` and
+`test_share_password_gateway.py` need their network guards. Run them through
+`artifacts/techlead/frozen-test-corrections-20261013/gated_run.py {web2,share}
+OUT_DIR TEST_FILE` (OUT_DIR must not exist yet), not through the once-only gated
+runners stored beside the guards.
