@@ -424,3 +424,4 @@
   - 含测试的提交，在 CI 环境下：无收集错误；4175 通过、64 失败、608 报错、3 跳过。失败与报错都因缺少本地条件（`SISYFUS_TEST_LOOPBACK`、只读基线、网络守卫、macOS 废纸篓等）。若对此分支开 PR，CI 会是红的，直到 CI 提供这些条件或另行决定。
   - 同一提交在本地条件下（链接本仓库 `artifacts/`，设置回环与基线）：4803 项结果与 10-17 全量复跑中对应的测试逐项相同，失败恰为 `expected-red-47.txt` 中的 47 项。
 - 审计：189 个文件中没有真实密钥、令牌或个人联系信息，测试中的凭据形字符串均为合成夹具。审计另指出 `test_node_gateway_auth_path_diagnostic.py:28` 与 `test_node_gateway_late_auth_path_diagnostic.py:29` 在导入时安装进程级删除拦截；在普通 pytest（如 CI）下，它会让其后永久删除文件的测试失败。
+- 追加（2026-10-17，PR #7）：`test_node_gateway_auth_path_diagnostic.py` 与 `test_node_gateway_late_auth_path_diagnostic.py` 在导入时安装删除拦截；在 CI 的普通 pytest 下它作用于整个会话，约 2,500 项测试在创建临时目录时报错，pytest 在会话结束时崩溃而没有输出汇总。用户批准停止跟踪这两个文件；它们仍在磁盘上，在保留式运行器下照常运行。其余调用 `sys.addaudithook` 的已提交测试，或在子进程中调用，或其拦截在本测试结束后失效，不影响其他测试。
