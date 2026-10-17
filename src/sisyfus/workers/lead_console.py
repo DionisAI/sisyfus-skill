@@ -2,9 +2,24 @@
 
 MissionHub(directory) inventories fixed child control directories.  Use
 MissionHub(directory, single=True) for an existing single mission. Constructors,
-inventory and page loads do not dispatch work. Only start/control('start',
-allow_local_workers=True) admits a controller thread. Core owns execution
-fencing, acceptance, integration and restart reconciliation.
+inventory and page loads do not dispatch work. Start/control('start',
+allow_local_workers=True) grants worker execution. Explicit prepare_placement
+admits only a planning thread, never workers. Core owns execution fencing,
+acceptance, integration and restart reconciliation.
+
+MissionHub.placements(ident) returns exactly {mission_id: ident, placements:
+[{task_id: fixed_task_id, placement: exact_core_placement}]} for ALL immutable
+plan task records, including historical tasks, in the core journal's record
+order. Default placement is exactly {'kind':'local'}. Tasks and every pin share
+one readonly snapshot of the original autonomy.sqlite3. Cached and cold/legacy
+readers alike use URI mode=ro + BEGIN, never a read-write store connection, and
+never initialize/reconcile a controller, registry, backend, schema or metadata.
+Directory/database device+inode identities (no symlinks, single-link DB) fence
+both opens and the completed read. The approved native specification is checked
+again in that same task/pin snapshot, including the cached controller binding.
+GET /api/missions/{id}/placements accepts no query and retains the original
+operator boundary. This projection grants no readiness/online/heartbeat,
+planning, execution, acceptance or integration authority; POST is unchanged.
 """
 from __future__ import annotations
 
@@ -13,18 +28,27 @@ import json
 import re
 import secrets
 import sqlite3
+import stat
+import sys
 import threading
+import time
+from contextlib import nullcontext
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from socketserver import BaseServer
 from typing import Any, Callable, Mapping
 from urllib.parse import parse_qs, urlsplit
 
 from .lead_contracts import SCHEMA, load_lead_spec
+from .mission_inbox import MissionInbox, validate_cursor
 from .protocol import redact
 
 DEFAULT_PORT = 8781
 MAX_JSON_BYTES = 200_000
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}\Z")
+_NODE_ROUTE = re.compile(r"/api/missions/([A-Za-z0-9][A-Za-z0-9_-]{0,63})/(nodes|placements)"
+                         r"(?:/(node_[0-9a-f]{32})/revoke)?\Z")
+_PREPARATION_ROUTE = re.compile(r"/api/missions/([A-Za-z0-9][A-Za-z0-9_-]{0,63})/prepare-placement\Z")
 
 
 def lead_mission(directory: Path, spec: dict[str, Any] | None = None) -> Any:
@@ -38,6 +62,35 @@ def safe_error(exc: Exception, *, token: str = "") -> dict[str, str]:
     if token:
         message = message.replace(token, "[REDACTED]")
     return {"type": type(exc).__name__, "message": message[:4000]}
+
+
+def _engineering_sidecar(cap: dict[str, Any], token: str) -> dict[str, Any]:
+    """Optional pure presentation of this exact capture; never a truth update."""
+    side = {"schema": "sisyfus.lead_console.engineering_result_sidecar.v1",
+            "mission_id": cap["id"], "status": "FAILED", "result": None,
+            "error": {"code": "PROJECTION_INTERNAL_ERROR"}}
+    try:
+        # Default reads do not import the projector. Import failures are local
+        # presentation errors too, without formatting arbitrary exception text.
+        from .lead_result import EngineeringResultInputError, project_engineering_result
+        try:
+            out = project_engineering_result(cap)
+        except EngineeringResultInputError as exc:
+            code = exc.code
+            if type(code) is str and re.fullmatch(r"[A-Z][A-Z0-9_]{0,31}", code):
+                side["status"] = "REJECTED"
+                side["error"] = {"code": code}
+            return side
+        # Do not deliver a changed value with pointers into the unchanged cap.
+        # Existing capture markers are inert; only an actual transform or the
+        # literal operator token fences the new result. The base is untouched.
+        if redact(out) != out or (token and token in json.dumps(out, ensure_ascii=False, allow_nan=False)):
+            side["error"] = {"code": "REDACTION_ALTERED"}
+            return side
+        side.update(status="OK", result=out, error=None)
+        return side
+    except Exception:
+        return side
 
 
 def approved_spec(directory: Path) -> dict[str, Any]:
@@ -63,14 +116,131 @@ def approved_spec(directory: Path) -> dict[str, Any]:
     return spec
 
 
+def _placements_in(db: Any, ident: str) -> dict[str, Any]:
+    """Use the caller's snapshot; same record/pin semantics as core, no writes."""
+    from .lead_journal import LeadJournal
+    prefix = LeadJournal.prefix
+    plans = prefix + "plans:"
+    rows = db.execute("SELECT value FROM metadata WHERE substr(key,1,?)=?",
+                      (len(plans), plans)).fetchall()
+    records = sorted((json.loads(row[0]) for row in rows),
+                     key=lambda record: (record["created_at"], record["key"]))
+    placements = []
+    for record in records:
+        for task in record["data"]["plan"]["tasks"]:
+            row = db.execute("SELECT value FROM metadata WHERE key=?",
+                             (prefix + "placement:" + task["id"],)).fetchone()
+            placements.append({"task_id": task["id"],
+                               "placement": json.loads(row[0]) if row else {"kind": "local"}})
+    return {"mission_id": ident, "placements": placements}
+
+
+def _placement_inode(path: Path, *, directory: bool = False) -> tuple[int, int]:
+    """Match the gateway's nofollow, regular/single-link identity discipline."""
+    info = path.lstat()
+    if directory:
+        if not stat.S_ISDIR(info.st_mode):
+            raise PermissionError("selected control directory must be non-symlink")
+    elif not stat.S_ISREG(info.st_mode):
+        # Preserve the existing initial missing/nonregular DB's 404 boundary.
+        raise FileNotFoundError("no regular autonomy.sqlite3 in the selected control directory")
+    elif info.st_nlink != 1:
+        raise PermissionError("selected control database must have exactly one link")
+    return info.st_dev, info.st_ino
+
+
+def _placement_identity(control: Path) -> tuple[tuple[int, int], tuple[int, int]]:
+    return (_placement_inode(control, directory=True),
+            _placement_inode(control / "autonomy.sqlite3"))
+
+
+def _check_placement_identity(control: Path, identity: Any, store: Any = None) -> None:
+    try:
+        selected = _placement_identity(control)
+        owner = _placement_inode(Path(store.path)) if store is not None else identity[1]
+    except OSError as exc:
+        raise PermissionError("selected control identity changed during placement readback") from exc
+    if selected != identity or owner != identity[1]:
+        raise PermissionError("selected control/store identity changed during placement readback")
+
+
+def _placement_binding_in(db: Any, control: Path, approved: dict[str, Any],
+                          cached: dict[str, Any] | None = None) -> None:
+    """Bind approval/schema/source/roles to the caller's task/pin snapshot."""
+    row = db.execute("SELECT value FROM metadata WHERE key='native_worker_spec'").fetchone()
+    spec = json.loads(row[0]) if row else None
+    if (not isinstance(spec, dict) or spec.get("schema_version") != SCHEMA
+            or not isinstance(spec.get("source"), str) or not isinstance(spec.get("roles"), dict)
+            or spec != approved or (cached is not None and spec != cached)):
+        raise PermissionError("selected mission binding changed during placement readback")
+    source, directory = Path(spec["source"]).expanduser().resolve(), control.resolve()
+    if source.is_relative_to(directory) or directory.is_relative_to(source):
+        raise PermissionError("selected mission source/control binding changed during placement readback")
+
+
 class _Session:
     def __init__(self, mission: Any):
         self.mission = mission
+        self.inbox = getattr(mission, "inbox", None) or MissionInbox(mission.journal)
         self.lock = threading.RLock()
         self.thread: threading.Thread | None = None
         self.error: dict[str, str] | None = None
         self.result: Any = None
         self.permission = False
+
+
+class _GatewayEntry:
+    """Ephemeral loop observation, separate from permission publication.
+
+    The witness runs only in the public service_actions hook. No frame, local
+    dictionary or exception is retained, and readiness never invokes it.
+    """
+    def __init__(self, gateway: Any, thread: threading.Thread, generation: int):
+        self.gateway, self.thread, self.generation = gateway, thread, generation
+        self.socket = gateway.socket
+        self.original = gateway.service_actions
+        self.entered = False  # Cleanup fact, not normal-return permission.
+        self.observed = False
+        self.failed = False
+        self.mismatch = False
+        self.changed = threading.Event()
+        self.url = gateway.url
+        self.host = str(gateway.server_address[0]) + ":" + str(gateway.server_address[1])
+
+        def actions() -> None:
+            try:
+                frame = sys._getframe(1)
+                try:
+                    direct = (frame.f_code is BaseServer.serve_forever.__code__
+                              and frame.f_locals.get("self") is gateway
+                              and threading.current_thread() is thread)
+                finally:
+                    del frame
+                if direct:
+                    self.entered = True
+                self.original()
+            except BaseException:
+                self.failed = True
+                self.changed.set()
+                raise
+            if direct:
+                self.observed = True
+            else:
+                self.mismatch = True
+            self.changed.set()
+
+        self.hook = actions
+
+    def live(self) -> bool:
+        # Only local, nonblocking observations. Valid inside a core write TX.
+        return (self.observed and not self.failed and not self.mismatch
+                and self.gateway.service_actions is self.hook
+                and self.gateway.socket is self.socket and self.socket.fileno() >= 0
+                and self.thread.is_alive())
+
+    def restore(self) -> None:
+        if self.gateway.service_actions is self.hook:
+            self.gateway.service_actions = self.original
 
 
 class MissionHub:
@@ -87,6 +257,92 @@ class MissionHub:
         self.mission_factory = mission_factory or lead_mission
         self._sessions: dict[str, _Session] = {}
         self._lock = threading.RLock()
+        self._closing = False
+        self._closed = False
+        self._close_done = threading.Event()
+        self._close_error: BaseException | None = None
+        self._close_owner: object | None = None
+        self._close_active: list[tuple[_Session, threading.Thread]] | None = None
+        self._close_changed = threading.Condition(self._lock)
+        self._gateway_generation = 0
+        self._gateway_entry: _GatewayEntry | None = None
+        self._gateway_binding: _GatewayEntry | None = None
+        self._gateway_observation: _GatewayEntry | None = None
+
+    def _require_open(self) -> None:
+        if self._closing or self._closed:
+            raise RuntimeError("mission hub is closing or closed; new admission rejected")
+
+    def _remote_execution_ready(self) -> bool:
+        entry = self._gateway_binding
+        return bool(not self._closing and not self._closed and entry is not None
+                    and entry.generation == self._gateway_generation and entry.live())
+
+    def attach_node_gateway(self, gateway: Any, *, serve_thread: threading.Thread) -> dict[str, Any]:
+        # The optional backend is imported only at explicit host attachment.
+        from .node_gateway import NodeGateway
+        with self._lock:
+            self._require_open()
+            if self._gateway_entry is not None:
+                raise RuntimeError("host gateway already attached or attachment pending")
+            if not isinstance(gateway, NodeGateway) or gateway.hub is not self:
+                raise ValueError("gateway must belong to this exact Hub")
+            if not isinstance(serve_thread, threading.Thread) or not serve_thread.is_alive():
+                raise ValueError("gateway requires an explicitly started live serving Thread")
+            if (gateway.server_address[0] != "127.0.0.1"
+                    or gateway.socket.fileno() < 0
+                    or gateway.socket.getsockname() != gateway.server_address
+                    or gateway.serve_forever.__func__ is not BaseServer.serve_forever):
+                raise ValueError("gateway requires the actual bound loopback stdlib listener")
+            self._gateway_generation += 1
+            entry = _GatewayEntry(gateway, serve_thread, self._gateway_generation)
+            self._gateway_entry = entry
+            self._gateway_observation = entry  # Cleanup fact survives failed publication.
+            gateway.service_actions = entry.hook
+        try:
+            # A started thread or a bound socket alone never proves loop entry.
+            # No lifecycle/session lock is held during the finite handshake.
+            deadline = time.monotonic() + 2.0
+            while not entry.observed:
+                if entry.failed or entry.mismatch or not serve_thread.is_alive():
+                    raise RuntimeError("gateway loop entry failed or serving Thread did not match")
+                if self._closing or entry.generation != self._gateway_generation:
+                    raise RuntimeError("mission hub closing or attachment revoked during loop entry")
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise RuntimeError("gateway loop entry was not observed within the host deadline")
+                entry.changed.wait(min(remaining, .02))
+            with self._lock:
+                self._require_open()
+                if (self._gateway_entry is not entry
+                        or entry.generation != self._gateway_generation or not entry.live()):
+                    raise RuntimeError("gateway attachment changed before permission publication")
+                self._gateway_binding = entry
+            return self.node_gateway_state()
+        except BaseException:
+            with self._lock:
+                if self._gateway_entry is entry:
+                    self._gateway_entry = None
+                    self._gateway_generation += 1
+                entry.restore()
+            raise
+
+    def detach_node_gateway(self) -> None:
+        with self._lock:
+            self._gateway_generation += 1
+            entry = self._gateway_entry
+            self._gateway_binding = None
+            self._gateway_entry = None
+            if entry is not None:
+                entry.restore()
+
+    def node_gateway_state(self) -> dict[str, Any]:
+        entry = self._gateway_binding
+        ready = self._remote_execution_ready()
+        return {"gateway": {"url": entry.url, "host": entry.host} if entry else None,
+                "effective_ready": ready,
+                "basis": "host loop entry verified; not node or model readiness" if ready
+                         else "no current live host gateway permission"}
 
     def path(self, mission_id: str) -> Path:
         if not isinstance(mission_id, str) or not _ID.fullmatch(mission_id):
@@ -133,6 +389,7 @@ class MissionHub:
             if not check.get("contract", {}).get("fail_if"):
                 raise ValueError("fixed check contract requires explicit pass_if and fail_if")
         with self._lock:
+            self._require_open()
             if self.single:
                 ident, control = "mission", self.directory
                 if directory is not None and Path(directory).expanduser().resolve() != control:
@@ -153,16 +410,20 @@ class MissionHub:
                 raise RuntimeError("controller already running; select existing mission")
             mission = self.mission_factory(control, normalized)
             approved_spec(control)  # Binding, not a JSON file, is the inventory gate.
+            mission.remote_execution_ready = self._remote_execution_ready
             self._sessions[ident] = _Session(mission)
         return {"id": ident, "directory": str(control), "status": "BOUND",
                 "started": False, "snapshot": self.snapshot(ident)}
 
     def _session(self, ident: str) -> _Session:
         with self._lock:
+            if ident not in self._sessions:
+                self._require_open()
             control = self.path(ident)
             approved_spec(control)
             if ident not in self._sessions:
                 self._sessions[ident] = _Session(self.mission_factory(control))
+            self._sessions[ident].mission.remote_execution_ready = self._remote_execution_ready
             return self._sessions[ident]
 
     def _record(self, session: _Session, ident: str, action: str) -> None:
@@ -197,10 +458,11 @@ class MissionHub:
 
     def snapshot(self, ident: str) -> dict[str, Any]:
         session = self._session(ident)
-        # Core snapshot is the only task/integration/RSI truth projection.
-        snap = session.mission.snapshot()
         with session.lock:
             running = bool(session.thread and session.thread.is_alive())
+            # Preserve this conservative runtime sample if the controller
+            # finishes during Core capture. Core still owns all task truth.
+            snap = session.mission.snapshot()
             runtime = {"running": running, "local_workers_acknowledged": session.permission,
                        "error": session.error, "stop_requested": session.mission.stop.is_set(),
                        "auto_start": False}
@@ -208,10 +470,144 @@ class MissionHub:
                 "controls": self.controls(ident)}
 
     def events(self, ident: str, cursor: int = 0) -> dict[str, Any]:
-        if type(cursor) is not int or cursor < 0:
-            raise ValueError("cursor must be a nonnegative integer")
+        validate_cursor(cursor)
         batch = self._session(ident).mission.journal.events(cursor)
         return {"events": redact(batch), "cursor": batch[-1]["seq"] if batch else cursor}
+
+    def messages(self, ident: str, cursor: int = 0, *, application_cursor: int = 0) -> dict[str, Any]:
+        validate_cursor(cursor)
+        validate_cursor(application_cursor)
+        return redact(self._session(ident).inbox.messages(cursor, application_cursor=application_cursor))
+
+    def message(self, ident: str, message: str, request_id: str, *, task_id: str | None = None) -> dict[str, Any]:
+        session = self._session(ident)
+        view = self.snapshot(ident)
+        return redact(session.inbox.submit(message, request_id, snapshot=view["snapshot"],
+                                          controller=view["controller"], task_id=task_id))
+
+    def nodes(self, ident: str) -> dict[str, Any]:
+        registry = self._session(ident).mission.node_claims.registry
+        return {"mission_id": ident, "nodes": registry.inventory(), "execution_ready": False}
+
+    def placements(self, ident: str) -> dict[str, Any]:
+        """Read all fixed task pins atomically; never load a cold controller."""
+        control = self.path(ident)
+        identity = _placement_identity(control)
+        approved = approved_spec(control)
+        with self._lock:
+            session = self._sessions.get(ident)
+        store = session.mission.journal.store if session is not None else None
+        cached = session.mission.spec if session is not None else None
+        _check_placement_identity(control, identity, store)
+        # _session/mission_factory initialize metadata and may reconcile runs,
+        # and a read-write store connection (even a cached one) can create or
+        # convert a substituted database before any fence. Observe read-only.
+        try:
+            db = sqlite3.connect((control / "autonomy.sqlite3").as_uri() + "?mode=ro",
+                                 uri=True, isolation_level=None, timeout=5)
+        except sqlite3.Error:
+            _check_placement_identity(control, identity, store)  # vanished: 403
+            raise
+        try:
+            db.execute("BEGIN")
+            _check_placement_identity(control, identity, store)
+            _placement_binding_in(db, control, approved, cached)
+            result = _placements_in(db, ident)
+            _check_placement_identity(control, identity, store)
+            db.execute("COMMIT")
+        except Exception:
+            if db.in_transaction:
+                db.execute("ROLLBACK")
+            raise
+        finally:
+            db.close()
+        _check_placement_identity(control, identity, store)
+        return result
+
+    def enroll_node(self, ident: str, request_id: str, name: str) -> dict[str, Any]:
+        # No caller-selected driver/model/path/operator permissions.
+        registry = self._session(ident).mission.node_claims.registry
+        return registry.enroll(request_id, name, ["codex"], ["gpt-6.1-sol"]) | {"execution_ready": False}
+
+    def revoke_node(self, ident: str, node_id: str) -> dict[str, Any]:
+        return self._session(ident).mission.node_claims.registry.revoke(node_id) | {"execution_ready": False}
+
+    def assign_placement(self, ident: str, task_id: str, node_id: str, request_id: str) -> dict[str, Any]:
+        return self._session(ident).mission.assign_placement(task_id, node_id, request_id)
+
+    def prepare_placement(self, ident: str, request_id: str, *, allow_planning: bool = False) -> dict[str, Any]:
+        """Explicit planning-only request, sharing Start's session/thread fence.
+
+        The core persists REQUESTED under its controller locks before any Hub
+        thread is admitted. Controls acknowledge acceptance, not completion.
+        Existing controls (including interrupted PENDING and ERROR) are only
+        read back; reopening a Hub never relaunches their uncertain operation.
+        """
+        if allow_planning is not True:
+            raise PermissionError("Preparation requires explicit planning permission")
+        from .node_registry import validate_request_id
+        validate_request_id(request_id)
+        session = self._session(ident)
+        cid = "prepare-placement:" + request_id
+        response = {"id": cid, "mission_id": ident, "request_id": request_id,
+                    "action": "prepare-placement", "status": "ACK", "accepted": True,
+                    "terminal": False, "scope": "planning_only"}
+
+        def recorded() -> bool:
+            # Do not depend on controls()'s bounded newest-100 UI projection.
+            with session.mission.journal.store._transaction(immediate=False) as db:
+                if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+                                  "AND name='lead_console_controls'").fetchone():
+                    return False
+                row = db.execute("SELECT action FROM lead_console_controls WHERE id=?", (cid,)).fetchone()
+                if row and row[0] != "prepare-placement":
+                    raise RuntimeError("preparation control identity conflicts with a different action")
+                return row is not None
+
+        with self._lock, session.lock:
+            if recorded():
+                return response
+            self._require_open()
+            if session.thread and session.thread.is_alive():
+                raise RuntimeError("controller already running; preparation and Start are exclusive")
+            if session.mission.stop.is_set() or session.mission.snapshot().get("stopped"):
+                raise RuntimeError("mission is durably stopped; preparation does not clear Stop")
+            preparation = session.mission._request_placement_preparation(request_id)
+            try:
+                self._record(session, cid, "prepare-placement")
+            except sqlite3.IntegrityError:
+                # A second Hub can observe REQUESTED before the first records
+                # its control. The unique durable control still admits one thread.
+                if recorded():
+                    return response
+                raise
+            try:
+                self._ack(session, cid, "ACK")
+                session.permission = False
+                session.error = None
+                session.result = None
+                if preparation["status"] == "REQUESTED":
+                    def prepare() -> None:
+                        try:
+                            session.result = session.mission.prepare_for_placement(request_id)
+                        except Exception as exc:
+                            session.error = safe_error(exc)
+                            try:
+                                self._ack(session, cid, "ERROR", session.error)
+                            except Exception as audit_exc:
+                                session.error["audit_error"] = safe_error(audit_exc)["message"]
+
+                    session.thread = threading.Thread(target=prepare, name="techlead-prepare-" + ident, daemon=False)
+                    session.thread.start()
+                else:
+                    # A direct core request may already be completed/fenced.
+                    # Recording operator acceptance adds no execution permission.
+                    session.result = session.mission.snapshot()
+            except Exception as exc:
+                session.error = safe_error(exc)
+                self._ack(session, cid, "ERROR", session.error)
+                raise
+            return response
 
     def control(self, ident: str, action: str, *, allow_local_workers: bool = False,
                 max_cycles: int | None = None) -> dict[str, Any]:
@@ -222,7 +618,9 @@ class MissionHub:
         if action == "start" and allow_local_workers is not True:
             raise PermissionError("Start requires explicit local-worker permission; CLI: --allow-local-workers")
         session = self._session(ident)
-        with session.lock:
+        with (self._lock if action == "start" else nullcontext()), session.lock:
+            if action == "start":
+                self._require_open()
             if action == "start" and session.thread and session.thread.is_alive():
                 raise RuntimeError("controller already running; duplicate Start rejected")
             if action == "start" and (session.mission.stop.is_set() or session.mission.snapshot().get("stopped")):
@@ -288,12 +686,113 @@ class MissionHub:
 
     def close(self) -> None:
         """Cooperative shutdown; no forced kills, deletions, or receipt invention."""
-        with self._lock:
-            active = [s for s in self._sessions.values() if s.thread and s.thread.is_alive()]
-        for session in active:
-            session.mission.request_stop()
-        for session in active:
-            session.thread.join()
+        errors: list[BaseException] = []
+        interrupted = False
+        owner = object()
+        active = None
+        try:
+            retry = threading.Event()
+            while True:
+                with self._close_changed:
+                    if self._closed:
+                        # Repair an interrupted completion signal, not a
+                        # missing drain. _closed requires the full capture dead.
+                        self._close_done.set()
+                        if self._close_error is not None:
+                            raise self._close_error
+                        if interrupted:
+                            raise KeyboardInterrupt
+                        return
+                    if self._close_owner is None:
+                        self._close_owner = owner
+                        if not self._closing:
+                            self._closing = True
+                            self._gateway_generation += 1
+                        if self._close_active is None:
+                            self._close_active = [(s, s.thread) for s in self._sessions.values()
+                                                  if s.thread and s.thread.is_alive()]
+                        active = self._close_active
+                        break
+                    try:
+                        # Public Condition wait releases the Hub lock. A timed
+                        # recheck also covers an interrupted handoff notify.
+                        self._close_changed.wait(.05)
+                    except KeyboardInterrupt:
+                        interrupted = True
+            # Closing intent never resets. Only the drain lease is handed off;
+            # stop requests and joins hold neither Hub nor Session locks.
+            for session, _ in active:
+                while True:
+                    try:
+                        session.mission.request_stop()
+                        break
+                    except KeyboardInterrupt:
+                        interrupted = True
+                    except BaseException as exc:
+                        errors.append(exc)
+                        break
+            for _, thread in active:
+                join_error = None
+                while True:
+                    try:
+                        thread.join()
+                        if not thread.is_alive():
+                            break
+                    except KeyboardInterrupt:
+                        # An interrupt is not controller completion. Keep
+                        # transport available until the captured Thread exits.
+                        interrupted = True
+                        continue
+                    except BaseException as exc:
+                        if join_error is None:
+                            join_error = exc
+                            errors.append(exc)
+                        if not thread.is_alive():
+                            break
+                    try:
+                        retry.wait(.05)
+                    except KeyboardInterrupt:
+                        interrupted = True
+        except KeyboardInterrupt:
+            raise
+        except BaseException as exc:
+            errors.append(exc)
+            raise
+        finally:
+            while True:
+                try:
+                    with self._close_changed:
+                        if self._close_owner is owner:
+                            try:
+                                if not self._closing:
+                                    self._closing = True
+                                    self._gateway_generation += 1
+                                if errors:
+                                    if self._close_error is None:
+                                        self._close_error = errors[0]
+                                    for extra in errors:
+                                        if extra is not self._close_error:
+                                            self._close_error.add_note("additional cooperative shutdown failure: " + type(extra).__name__)
+                                if self._close_active is None:
+                                    # None is an interrupted/incomplete capture,
+                                    # never evidence of an empty controller set.
+                                    self._close_active = [(s, s.thread) for s in self._sessions.values()
+                                                          if s.thread and s.thread.is_alive()]
+                                self._closed = all(not thread.is_alive() for _, thread in self._close_active)
+                                if self._closed:
+                                    self._close_done.set()
+                            finally:
+                                # Escaping capture/header/handler interruptions
+                                # relinquish the lease without reopening Start.
+                                self._close_owner = None
+                                self._close_changed.notify_all()
+                    break
+                except KeyboardInterrupt:
+                    interrupted = True
+        if self._close_error is not None:
+            raise self._close_error
+        if interrupted:
+            raise KeyboardInterrupt
 
 
 PAGE = r'''<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -427,13 +926,31 @@ class Handler(BaseHTTPRequestHandler):
             if len(values) != 1 or not hmac.compare_digest(values[0].encode(), ("Bearer " + self.server.token).encode()):
                 self.fail(PermissionError("bearer authorization required; open the printed token-fragment URL"), 401)
                 return False
+            if any(name.lower() == "x-sisyfus-node"
+                   or name.lower().startswith(("x-node-", "x-sisyfus-node-")) for name in self.headers):
+                self.fail(PermissionError("node identity headers do not grant operator access"), 403)
+                return False
         return True
 
+    def query(self, raw: str) -> dict[str, list[str]]:
+        if len(raw.encode()) > 16_384 or re.search(r"%(?![0-9A-Fa-f]{2})", raw):
+            raise ValueError("invalid or oversized URL query")
+        return parse_qs(raw, keep_blank_values=True, strict_parsing=True,
+                        errors="strict", max_num_fields=8)
+
+    def cursor(self, value: str) -> int:
+        if not re.fullmatch(r"[0-9]{1,19}", value):
+            raise ValueError("cursor must be bounded unsigned decimal text")
+        result = int(value)
+        validate_cursor(result)
+        return result
+
     def do_GET(self) -> None:
-        route = urlsplit(self.path)
-        if not self.boundary(auth=route.path not in {"/", "/console"}):
+        if not self.boundary(auth=self.path.split("?", 1)[0] not in {"/", "/console"}):
             return
         try:
+            route = urlsplit(self.path)
+            node_route = _NODE_ROUTE.fullmatch(route.path)
             if route.path in {"/", "/console"}:
                 nonce = secrets.token_urlsafe(18)
                 if route.path == "/":
@@ -445,24 +962,48 @@ class Handler(BaseHTTPRequestHandler):
             elif route.path == "/api/chats":
                 self.send(self.server.chats.inventory())
             elif route.path == "/api/chat":
-                query = parse_qs(route.query, keep_blank_values=True)
+                query = self.query(route.query)
                 if set(query) != {"chat_id"} or len(query["chat_id"]) != 1:
                     raise ValueError("chat query requires exactly one chat_id")
                 self.send(self.server.chats.get(query["chat_id"][0]))
             elif route.path == "/api/missions":
                 self.send(self.server.hub.inventory())
+            elif node_route and node_route[2] == "nodes" and node_route[3] is None:
+                if route.query:
+                    raise ValueError("node inventory accepts no query fields")
+                self.send(self.server.hub.nodes(node_route[1]))
+            elif node_route and node_route[2] == "placements" and node_route[3] is None:
+                if route.query or "?" in self.path:
+                    raise ValueError("placement readback accepts no query")
+                self.send(self.server.hub.placements(node_route[1]))
+            elif route.path == "/api/mission/messages":
+                query = self.query(route.query)
+                if set(query) - {"mission_id", "cursor", "application_cursor"} or any(len(v) != 1 for v in query.values()):
+                    raise ValueError("invalid mission message query")
+                ident = query.get("mission_id", ["mission" if self.server.hub.single else ""])[0]
+                self.send(self.server.hub.messages(ident, self.cursor(query.get("cursor", ["0"])[0]),
+                    application_cursor=self.cursor(query.get("application_cursor", ["0"])[0])))
             elif route.path in {"/api/snapshot", "/api/events"}:
-                query = parse_qs(route.query, keep_blank_values=True)
+                query = self.query(route.query)
                 if set(query) - {"mission_id", "cursor"} or any(len(v) != 1 for v in query.values()):
                     raise ValueError("invalid query fields")
                 ident = query.get("mission_id", ["mission" if self.server.hub.single else ""])[0]
                 if route.path == "/api/snapshot":
-                    self.send(self.server.hub.snapshot(ident))
+                    requested = self.headers.get_all("X-Sisyfus-Engineering-Result", [])
+                    if requested and (len(requested) != 1 or requested[0] != "1"):
+                        raise ValueError("engineering result header must be exactly one value 1")
+                    cap = self.server.hub.snapshot(ident)
+                    if requested:
+                        self.send({**cap, "engineering_result": _engineering_sidecar(cap, self.server.token)})
+                    else:
+                        self.send(cap)
                 else:
-                    self.send(self.server.hub.events(ident, int(query.get("cursor", ["0"])[0])))
+                    self.send(self.server.hub.events(ident, self.cursor(query.get("cursor", ["0"])[0])))
             else:
                 self.fail(ValueError("route not found"), 404)
-        except (ValueError, TypeError, KeyError) as exc:
+        except PermissionError as exc:
+            self.fail(exc, 403)
+        except (ValueError, TypeError, KeyError, UnicodeError, RecursionError, OverflowError) as exc:
             self.fail(exc, 400)
         except FileNotFoundError as exc:
             self.fail(exc, 404)
@@ -473,10 +1014,12 @@ class Handler(BaseHTTPRequestHandler):
         lengths = self.headers.get_all("Content-Length", [])
         if len(lengths) != 1 or self.headers.get("Transfer-Encoding"):
             raise ValueError("one Content-Length is required; streaming JSON is unsupported")
+        if not re.fullmatch(r"[0-9]{1,6}", lengths[0]):
+            raise ValueError("Content-Length must be bounded unsigned decimal text")
         length = int(lengths[0])
         if not 0 < length <= MAX_JSON_BYTES:
             raise ValueError(f"JSON body must be 1..{MAX_JSON_BYTES} bytes")
-        if self.headers.get_content_type() != "application/json":
+        if len(self.headers.get_all("Content-Type", [])) != 1 or self.headers.get_content_type() != "application/json":
             raise ValueError("Content-Type must be application/json")
         raw = self.rfile.read(length)
         if len(raw) != length:
@@ -499,11 +1042,45 @@ class Handler(BaseHTTPRequestHandler):
         if not self.boundary():
             return
         try:
-            if self.path not in {"/api/missions", "/api/control", "/api/chats", "/api/chat/context", "/api/chat/message", "/api/chat/start", "/api/chat/attach_mission", "/api/chat/prepare_directory"}:
+            route = urlsplit(self.path)
+            node_route = _NODE_ROUTE.fullmatch(route.path)
+            preparation_route = _PREPARATION_ROUTE.fullmatch(route.path)
+            if node_route and node_route[2] == "placements" and node_route[3] is not None:
+                node_route = None
+            if self.path not in {"/api/missions", "/api/control", "/api/chats", "/api/chat/context", "/api/chat/message", "/api/chat/start", "/api/chat/attach_mission", "/api/chat/prepare_directory", "/api/chat/prepare-placement", "/api/mission/message"} and node_route is None and preparation_route is None:
                 self.fail(ValueError("route not found"), 404)
                 return
+            if (node_route or preparation_route) and route.query:
+                raise ValueError("node operator routes accept no query fields")
             body = self.body()
-            if self.path == "/api/chats":
+            if preparation_route:
+                if set(body) != {"request_id", "allow_planning"}:
+                    raise ValueError("preparation requires exactly request_id and allow_planning")
+                if type(body["allow_planning"]) is not bool:
+                    raise ValueError("allow_planning must be boolean")
+                self.send(self.server.hub.prepare_placement(preparation_route[1], body["request_id"],
+                          allow_planning=body["allow_planning"]), 202)
+            elif node_route:
+                ident, resource, node_id = node_route.groups()
+                if resource == "placements":
+                    if set(body) != {"request_id", "task_id", "node_id"}:
+                        raise ValueError("placement requires exactly request_id, task_id and node_id")
+                    self.send(self.server.hub.assign_placement(ident, body["task_id"], body["node_id"], body["request_id"]))
+                elif node_id is not None:
+                    if body:
+                        raise ValueError("node revocation requires an empty object")
+                    self.send(self.server.hub.revoke_node(ident, node_id))
+                else:
+                    if set(body) != {"request_id", "name"}:
+                        raise ValueError("node enrollment requires exactly request_id and name")
+                    result = self.server.hub.enroll_node(ident, body["request_id"], body["name"])
+                    self.send(result, 201 if result["secret"] is not None else 200)
+            elif self.path == "/api/mission/message":
+                if set(body) - {"mission_id", "message", "request_id", "task_id"} or not {"mission_id", "message", "request_id"} <= set(body):
+                    raise ValueError("mission message requires mission_id, message, request_id and optional task_id")
+                self.send(self.server.hub.message(body["mission_id"], body["message"], body["request_id"],
+                                                  task_id=body.get("task_id")))
+            elif self.path == "/api/chats":
                 if body:
                     raise ValueError("new conversation requires an empty object")
                 self.send(self.server.chats.create(), 201)
@@ -512,10 +1089,18 @@ class Handler(BaseHTTPRequestHandler):
                 fields = {"context": {"chat_id", "source", "spec_path"}, "message": {"chat_id", "message", "request_id"},
                           "start": {"chat_id", "allow_local_workers", "request_id", "approval_hash"},
                           "attach_mission": {"chat_id", "mission_id"},
-                          "prepare_directory": {"chat_id", "request_id"}}[action]
+                          "prepare_directory": {"chat_id", "request_id"},
+                          "prepare-placement": {"chat_id", "allow_planning", "request_id", "approval_hash"}}[action]
                 if set(body) != fields:
                     raise ValueError("invalid conversation fields for " + action)
-                if action == "prepare_directory":
+                if action == "prepare-placement":
+                    if type(body["allow_planning"]) is not bool:
+                        raise ValueError("allow_planning must be boolean")
+                    if not body["allow_planning"]:
+                        raise PermissionError("explicit planning permission required")
+                    result = self.server.chats.prepare_placement(body["chat_id"], body["allow_planning"],
+                                                               body["request_id"], body["approval_hash"])
+                elif action == "prepare_directory":
                     result = self.server.chats.prepare_directory(body["chat_id"], body["request_id"])
                 elif action == "attach_mission":
                     result = self.server.chats.attach_mission(body["chat_id"], body["mission_id"])
@@ -525,7 +1110,7 @@ class Handler(BaseHTTPRequestHandler):
                     result = self.server.chats.message(body["chat_id"], body["message"], body["request_id"])
                 else:
                     result = self.server.chats.start(body["chat_id"], body["allow_local_workers"], body["request_id"], body["approval_hash"])
-                self.send(result, 202 if action in {"message", "start"} else 200)
+                self.send(result, 202 if action in {"message", "start", "prepare-placement"} else 200)
             elif self.path == "/api/missions":
                 if self.server.hub.single:
                     raise ValueError("single console is select-only; use hub or CLI new to create")
@@ -543,7 +1128,7 @@ class Handler(BaseHTTPRequestHandler):
                           max_cycles=body.get("max_cycles")), 202)
         except PermissionError as exc:
             self.fail(exc, 403)
-        except (ValueError, TypeError, KeyError, UnicodeError, RecursionError) as exc:
+        except (ValueError, TypeError, KeyError, UnicodeError, RecursionError, OverflowError, TimeoutError) as exc:
             self.fail(exc, 400)
         except FileNotFoundError as exc:
             self.fail(exc, 404)
