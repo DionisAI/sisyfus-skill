@@ -480,3 +480,10 @@
 - 新增 `tests/fixtures/frozen-baselines/node_claims.0073.py`（0073e15c）与 `node_claims.8302.py`（8302cf50），与 `artifacts/techlead/frozen-baselines/` 中的副本逐字节相同。两者都是旧版 `node_claims` 的源码，审计确认不含私人内容。这是 `artifacts/techlead/` 下的内容首次进入 git，由用户批准。
 - 测试要求路径为绝对路径、文件不可写（`st_mode & 0o222 == 0`），并核对 sha256。git 检出后文件可写，所以四个工作流在普通 pytest 步骤之前加了 `chmod a-w tests/fixtures/frozen-baselines/*.py`，并用 `${{ github.workspace }}` 设置两个变量。
 - `docs/TECHLEAD-RUNBOOK.md` 的本地配方改为指向新的已跟踪副本，并加入 `chmod a-w`。
+
+## 用户决定：CI 作业超时调到 25 分钟（2026-10-18）
+
+- 开启回环后，普通 pytest 步骤多跑约 560 项，用时增至 10–11 分钟。`native-workers.yml` 的 `timeout-minutes: 10` 因此在约 10 分 17 秒时取消了三个作业，后续的浏览器冒烟与源码快照步骤没有运行。
+- 更正：53cf54c 那一轮的两个"略过"同样是这个超时造成的，不是之前所说的 `fail-fast`；该工作流设置的是 `fail-fast: false`。
+- 用户批准：`native-workers.yml` 的 test 作业由 10 分钟调到 25 分钟；`release.yml` 的 validate 与 package 作业由 15 分钟调到 25 分钟。publish 作业不跑测试，保持 10 分钟。
+- e301212 的 CI 结果（未取消的作业）：4666 通过、109 失败、19 报错；保留式运行器步骤 43/43。缺基线的 25 项报错已消失；8 项 V1 claim-admission 测试拿到基线后按设计失败。
