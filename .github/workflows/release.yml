@@ -29,8 +29,12 @@ jobs:
           python-version: ${{ matrix.python }}
       - run: python -m pip install -e . pytest
       - run: python -m compileall -q src tests scripts
+      - name: Make the claims baselines read-only
+        run: chmod a-w tests/fixtures/frozen-baselines/*.py
       - env:
           SISYFUS_TEST_LOOPBACK: '1'
+          SISYFUS_GATEWAY_CLAIMS_BASELINE: ${{ github.workspace }}/tests/fixtures/frozen-baselines/node_claims.0073.py
+          SISYFUS_GATEWAY_RESPONSE_CLAIMS_BASELINE: ${{ github.workspace }}/tests/fixtures/frozen-baselines/node_claims.8302.py
         run: python -m pytest -q --junitxml=validation-tests.xml --ignore=tests/test_observatory_live_retention.py --ignore=tests/test_observatory_live_no_trash.py
       - name: Observatory retention tests (retained runner)
         if: ${{ !cancelled() }}

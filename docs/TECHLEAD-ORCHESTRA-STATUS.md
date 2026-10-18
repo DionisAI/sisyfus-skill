@@ -473,3 +473,10 @@
 - PR #7 的 CI 上约 560 项测试因缺少 `SISYFUS_TEST_LOOPBACK=1` 而报错（"explicit isolated fixture loopback opt-in required" 等）。用户批准在 CI 中设置它；GitHub runner 允许绑定 127.0.0.1。
 - 改动：`ci.yml`、`research-os.yml`、`native-workers.yml` 与 `release.yml` 的普通 pytest 步骤加环境变量 `SISYFUS_TEST_LOOPBACK=1`；保留式运行器步骤不需要它，未改。
 - 本机估计（前一提交 2b4a021 的干净工作树，保留式运行器，回环开启、无基线，模拟 Linux 单参数上限与无 Trash）：4674 通过、68 失败、52 报错、1 跳过，用时约 10 分钟，最慢单项约 6 秒，没有卡住。失败包含全部 47 项预期保持红；其余为 47 项网页守卫、26 项缺基线环境变量、2 项需要被忽略的 artifacts；另有 8 项 P 组测试只在保留式运行器下失败，在 CI 的普通 pytest 下通过。Linux 上另有约 43 项只在 macOS 成立的测试仍会失败。
+
+## 用户决定：提交 claims 基线并在 CI 中使用（2026-10-18）
+
+- PR #7 的 CI 上有 25 项测试因缺少 `SISYFUS_GATEWAY_CLAIMS_BASELINE` / `SISYFUS_GATEWAY_RESPONSE_CLAIMS_BASELINE` 而报错（`KeyError`）。用户批准把 B1 还原的两份基线提交进仓库。
+- 新增 `tests/fixtures/frozen-baselines/node_claims.0073.py`（0073e15c）与 `node_claims.8302.py`（8302cf50），与 `artifacts/techlead/frozen-baselines/` 中的副本逐字节相同。两者都是旧版 `node_claims` 的源码，审计确认不含私人内容。这是 `artifacts/techlead/` 下的内容首次进入 git，由用户批准。
+- 测试要求路径为绝对路径、文件不可写（`st_mode & 0o222 == 0`），并核对 sha256。git 检出后文件可写，所以四个工作流在普通 pytest 步骤之前加了 `chmod a-w tests/fixtures/frozen-baselines/*.py`，并用 `${{ github.workspace }}` 设置两个变量。
+- `docs/TECHLEAD-RUNBOOK.md` 的本地配方改为指向新的已跟踪副本，并加入 `chmod a-w`。

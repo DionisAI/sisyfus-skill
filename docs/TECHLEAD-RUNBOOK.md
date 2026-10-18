@@ -152,12 +152,14 @@ unlink a database must be excluded under the user's active deletion policy;
 their policy failure must be recorded rather than hidden.
 
 The gateway claim and response-admission tests import pinned NodeClaims
-sources. Export both before running them; the files are read-only and the tests
-check their sha256:
+sources, tracked under `tests/fixtures/frozen-baselines/`. Export both before
+running them; the tests require the files to be read-only (`chmod a-w`) and check
+their sha256. CI sets both variables itself:
 
 ```bash
-export SISYFUS_GATEWAY_CLAIMS_BASELINE="$PWD/artifacts/techlead/frozen-baselines/node_claims.0073.py"
-export SISYFUS_GATEWAY_RESPONSE_CLAIMS_BASELINE="$PWD/artifacts/techlead/frozen-baselines/node_claims.8302.py"
+chmod a-w tests/fixtures/frozen-baselines/*.py
+export SISYFUS_GATEWAY_CLAIMS_BASELINE="$PWD/tests/fixtures/frozen-baselines/node_claims.0073.py"
+export SISYFUS_GATEWAY_RESPONSE_CLAIMS_BASELINE="$PWD/tests/fixtures/frozen-baselines/node_claims.8302.py"
 ```
 
 `test_lead_engineering_result_web.py`, `test_share_gateway_http.py` and
