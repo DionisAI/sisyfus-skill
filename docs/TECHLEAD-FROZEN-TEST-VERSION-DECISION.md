@@ -1,6 +1,6 @@
 # Frozen-test version decision (signed 2026-10-13)
 
-- **Status:** SIGNED by the user on 2026-10-13: "approve all, WAL-aux, p16 no — apply it". Every item is approved with its recommended option: V1 keeps the 35 old-contract tests red and fixes the 24 agent-side tests; V10 keeps red; V11 is WAL-aux; for p16, the web `diagnostics50` cap does not cover task-level diagnostics. Application is recorded in the ledger under "用户决定：冻结测试版本（2026-10-13）".
+- **Status:** SIGNED by the user on 2026-10-13: "approve all, WAL-aux, p16 no — apply it". Every item is approved with its recommended option: V1 keeps the 35 old-contract tests red and fixes the 24 agent-side tests; V10 keeps red; V11 is WAL-aux; for p16, the web `diagnostics50` cap does not cover task-level diagnostics. Application is recorded in the ledger under "用户决定：冻结测试版本（2026-10-13）". A later ruling, V12 (2026-10-17), is in the addendum at the end.
 - **Date:** 2026-10-12
 - **Tree:** branch `codex/techlead-delivery-20261008` at `d03d58c`, plus the uncommitted working tree.
 - **Answers:** the pending "原冻结测试版本决定" / "旧冻结oracle版本决定" in [TECHLEAD-ORCHESTRA-STATUS.md](TECHLEAD-ORCHESTRA-STATUS.md) lines 34 and 104. It also settles the open sub-questions at lines 150, 159, 175 and 208.
@@ -712,3 +712,33 @@ Group IDs: `gw` gateway/claims, `ah` agent/host/CLI, `prc` placement/remote/orch
 - **p17** · 1 test · OPEN_SOURCE_BUG · ruling **S3** · after: green  
   Source fix: set `ShareGateway.request_queue_size` ≥ 64 (the stdlib backlog of 5 resets a 16-client burst).  
   Tests: `test_at_most_16_admitted_requests_with_real_blocked_console`
+
+## Addendum — rulings after signature
+
+### V12 — Observatory retention contract v2 (ratified 2026-10-17)
+
+This branch's Linux CI (PR #7) has no `/usr/bin/trash`. Under contract v1, every owned clear there raised `trash_missing`. As a result, `sisyfus research serve` exited 1 on every shutdown and left stale state, and two tests that pass on `main` failed on PR #7: `tests/test_observatory_live.py::test_clear_live_state_respects_newer_owner` and `::test_serve_falls_back_to_ephemeral_port_for_foreign_occupier`.
+
+The user was offered these options:
+
+| Option | Description |
+|---|---|
+| C | Contract v2 |
+| A | CI installs `trash-cli` |
+| B2 | A fake Trash for tests |
+| E | Accept the failures as known red |
+
+For the frozen file's plain-pytest errors, the options were F1 (run the file under the retained runner in CI), F2 (a one-line frozen edit) and leaving it as is.
+
+**Ruling.** On 2026-10-17 the user answered "C：合約 v2", "F1：CI 用保留式運行器跑它" and "放進 PR #7". This ratifies `docs/TECHLEAD-OBSERVATORY-RETENTION-CONTRACT.md` v2 at sha `f9cf0626`. With no Trash binary, clear still stages and verifies the state. It then keeps the stage, emits `RuntimeWarning("Live state retained: reason=trash_missing; path=<stage>")` and returns None. Nothing is deleted, and nothing else in v1 changes.
+
+**R0(b) edit.** In `tests/test_observatory_live_retention.py::test_trash_missing_before_stage`, lines 276–277 are replaced by 4 lines (276–279). The test now expects, in exact terms:
+- exactly that one warning text, naming the stage path;
+- a None return;
+- exactly one retained stage holding the original bytes;
+- no canonical file;
+- no Trash call.
+
+The test name is unchanged, to keep the diff minimal and keep node IDs stable.
+
+**CI (option F1).** Under plain pytest, the frozen file's own deletion tripwire collides with pytest's built-in `tmp_path` cleanup and causes 37 setup errors. The CI workflows therefore pass `--ignore` for that file in their plain pytest step and run it in a separate step through `scripts/test_retained.py`. The contract requires this: "Deletion tripwires and retained runner remain active". The file still runs in full; it is not skipped. The new non-frozen companion test `tests/test_observatory_live_no_trash.py` reuses its fixtures, so it runs in the same step.

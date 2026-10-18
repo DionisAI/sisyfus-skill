@@ -447,3 +447,23 @@
   - 探针：在每段经标准输入交给 Node 的脚本末尾追加 `throw`，223 项全部失败，证明脚本确实被执行。
   - 在模拟上限下的全量运行：4948 通过、47 失败、1 跳过，与 10-17 全量复跑逐项相同；失败恰为 `expected-red-47.txt` 中的 47 项，无任何参数长度错误。
 - `tests/test_reader_report.py` 也用 `node -e`，但脚本很小，CI 中通过，按最小改动未改。
+
+## 用户决定：观测页保留合约 v2 与 CI 中的保留式运行（2026-10-17）
+
+- 背景：PR #7 的 Linux CI 上，`tests/test_observatory_live.py` 中两项在 main 上通过的测试失败。合约 v1 要求先有可执行的 `/usr/bin/trash`，否则抛出 `trash_missing` 并保留文件；Linux 没有这个程序，因此每次清理都失败，`serve` 结束时退出码为 1，并留下指向已结束进程的旧状态。设计文件对此有明确记载（"no unlink fallback"）。
+- 用户选择方案 C（合约 v2）与 F1，并要求放进 PR #7。决定文件末尾的 V12 增补引用了用户原话，作为 R0(b) 的依据。修改前副本：`frozen-test-corrections-20261013/pre-edit-20261017-v2/`（清单 633d04b3）。
+
+| 文件 | 旧 → 新 | 改动 |
+|---|---|---|
+| docs/TECHLEAD-OBSERVATORY-RETENTION-CONTRACT.md | 93d206bf → f9cf0626 | v2：没有 Trash 时仍暂存并核验，随后保留暂存目录、发出警告并返回；其余条款不变 |
+| docs/TECHLEAD-FROZEN-TEST-VERSION-DECISION.md | f7374e71 → 493fff9a | 状态行加指向；末尾增补 V12 |
+| tests/test_observatory_live_retention.py | fb53ceb6 → 98cfb936 | R0(b)：`test_trash_missing_before_stage` 第 276–277 行换为 4 行（276–279）：恰好一条警告且文本逐字一致（含暂存目录路径）、返回 None、恰好一个保留暂存目录（内含原字节）、原文件不在、未调用 Trash；测试名不变 |
+| tests/test_observatory_live_no_trash.py | 新文件 → 29e132e4 | 非冻结：没有 Trash 时重放冻结文件的三种竞态，仍须抛出 `staged_mismatch`、无警告、无调用；另测重命名后的新发布在警告路径下保留 |
+| src/sisyfus/research_v2/live.py | f8dd7a6b → 1152bbf7 | `clear_live_state`：先记录 Trash 是否可用；在全部核验与执行前复核之后，若不可用则发出 `RuntimeWarning` 并返回；新增 `import warnings` |
+| .github/workflows/{ci,research-os,native-workers,release}.yml | — | 普通 pytest 步骤对上面两个文件加 `--ignore`；新增一步用 `scripts/test_retained.py` 运行它们（带 `if: ${{ !cancelled() }}`，并写 JUnit 文件、加入上传） |
+
+- 流程（按合约）：先冻结合约 v2 与测试的哈希，再对未改的 v1 源码复现红：冻结文件 1 项失败（DID NOT WARN）；在模拟无 Trash 的条件下，两项旧测试按 CI 的方式失败。然后改源码，在绿之前固定源码哈希 1152bbf7。
+- 绿：冻结文件与新文件在保留式运行器下 43/43，在 CI 环境变量下也是 43/43（JUnit 43 项）；旧测试在本机真实 Trash 下 18/18，在模拟无 Trash 下 18/18（含 2 条预期警告）。
+- 独立复核两份：源码复核 PASS。合约复核 FAIL 一项阻断：原先的 R0(b) 断言只匹配 `reason=trash_missing`，比被替换的 v1 断言弱（没有固定路径、没有排除状态内容）。已在同一行段内改为逐字比对，复核者的 4 个变异随即被捕获。复核指出的"无 Trash 路径的检查顺序没有测试"由新文件补上：在临时副本中，"核验前返回""复核前返回""警告写原路径""警告附状态内容""警告两次"这 5 个变异全部被捕获。
+- 记录的局限（未改）：没有 Trash 的主机上，每次正常关闭都会在 `.sisyfus` 里多留一个 `.observatory-retire-*` 目录，不会自动回收（合约禁止自动删除），用户可以自行移入回收站；若以 `-W error` 运行，这条警告会变成未捕获的异常，以退出码 1 结束，但暂存目录仍被保留。
+- 全量复跑（模拟 Linux 单参数上限与无 Trash；与两份复核同时运行，负载很高，用时 23 分钟，在冻结断言加严与新文件加入之前）：4946 通过、49 失败、1 跳过。其中 47 项为预期；另 2 项（`test_share_runtime` 的 `[exit]` 参数化、`test_orchestra_remote_pipeline` 的真实过期租约测试）在负载约 45–54 下各复跑 6 次（3 次带模拟、3 次不带），全部通过，属负载下的时序波动，与本次改动无关。

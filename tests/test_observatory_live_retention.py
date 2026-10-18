@@ -273,8 +273,10 @@ def test_trash_missing_before_stage(harness):
     h = harness
     data = h.seed()
     h.monkeypatch.setattr(live, "_TRASH_BIN", str(h.base / "missing-binary"))
-    retained(h, "trash_missing")
-    assert h.path.read_bytes() == data and not h.calls and not h.stages()
+    with pytest.warns(RuntimeWarning) as caught:
+        assert live.clear_live_state(h.root, pid=os.getpid()) is None
+    (stage,) = h.stages()
+    assert [str(w.message) for w in caught] == [f"Live state retained: reason=trash_missing; path={stage}"] and not h.path.exists() and (stage / "observatory.json").read_bytes() == data and not h.calls
 
 
 def test_no_dir_fd_before_open(harness, descriptor_tripwire):

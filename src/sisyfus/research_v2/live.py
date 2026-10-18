@@ -29,6 +29,7 @@ import stat
 import subprocess
 import sys
 import time
+import warnings
 import webbrowser
 from pathlib import Path
 from typing import Any
@@ -221,8 +222,7 @@ def clear_live_state(root: Path, *, pid: int | None = None) -> None:
             if pid is not None and state["pid"] != pid:
                 return
 
-            if not os.path.isabs(_TRASH_BIN) or not os.access(_TRASH_BIN, os.X_OK):
-                raise LiveStateRetained(reason="trash_missing", path=retained_path)
+            trash_ready = os.path.isabs(_TRASH_BIN) and os.access(_TRASH_BIN, os.X_OK)
             reason = "state_changed"
             pinned = _retire_state_pin(admitted)
             current = os.stat("observatory.json", dir_fd=dfd, follow_symlinks=False)
@@ -257,6 +257,11 @@ def clear_live_state(root: Path, *, pid: int | None = None) -> None:
             if (_retire_identity(os.stat(rp / ".sisyfus", follow_symlinks=False)) != _retire_identity(parent_pin)
                     or _retire_identity(os.stat(retained_path, follow_symlinks=False)) != _retire_identity(stage_pin)):
                 raise LiveStateRetained(reason=reason, path=retained_path)
+            if not trash_ready:
+                # No Trash on this host (e.g. Linux): the verified stage is the retained copy.
+                warnings.warn(f"Live state retained: reason=trash_missing; path={retained_path}",
+                              RuntimeWarning, stacklevel=2)
+                return
 
             reason = "trash_failed"
             try:

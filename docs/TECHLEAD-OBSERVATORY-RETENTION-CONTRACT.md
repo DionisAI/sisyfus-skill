@@ -1,8 +1,15 @@
-# Observatory live-state retention contract v1
+# Observatory live-state retention contract v2
 
 Status: frozen standalone acceptance before retained RED; source authoring is
 released only after valid RED. Candidate GREEN does not establish real Trash,
 independent review, integration, or formal delivery acceptance.
+
+v2 (ratified by the user on 2026-10-17; see the addendum in
+`docs/TECHLEAD-FROZEN-TEST-VERSION-DECISION.md`) changes only the missing-Trash
+outcome. v1 raised `trash_missing` before staging, so on a host without
+`/usr/bin/trash` (Linux) every owned clear failed, `serve` exited 1, and stale
+state stayed behind. v2 still stages and verifies the state, then retains the
+stage, emits a warning and returns. Every other v1 clause is unchanged.
 
 ## Authority and scope
 
@@ -31,7 +38,8 @@ Artifacts are retained under `artifacts/techlead/orchestra-20261008/full-deliver
    truthy port, exactly resolved root, and integer non-bool PID. Invalid present
    state raises; reader `None` is not clear permission. A valid foreign PID or
    missing root/parent/state is a normal no-op.
-3. Require an absolute executable Trash binary before staging. Check file identity
+3. Before staging, record whether `_TRASH_BIN` is an absolute executable Trash
+   binary; its absence is not an error (v2). Check file identity
    `(device, inode, size, mtime_ns)` against the admitted pin before rename.
 4. Exclusively create unpredictable `.observatory-retire-<pid>-<hex>` at mode
    0700, owned and same-device. Pin it. Rename the state relative to pinned source
@@ -39,7 +47,11 @@ Artifacts are retained under `artifacts/techlead/orchestra-20261008/full-deliver
 5. Verify staged metadata, single-link shape, and exact admitted bytes through a
    new no-follow descriptor. A mismatch is retained, reported, and never trashed
    or restored. Recheck parent/stage path identities just before external exec.
-6. Invoke `[_TRASH_BIN, absolute_stage_directory]` with stdin DEVNULL,
+6. If no Trash binary was recorded in step 3, do not exec anything: emit
+   `RuntimeWarning("Live state retained: reason=trash_missing; path=<stage>")`
+   and return None. The verified stage stays in `.sisyfus` as the recoverable
+   copy; the canonical name is never restored. Otherwise invoke
+   `[_TRASH_BIN, absolute_stage_directory]` with stdin DEVNULL,
    capture_output=True, check=False, timeout=30, no shell and no `--`.
    Success requires exit zero AND disappearance of that stage name relative to
    the pinned parent. Zero without a move is failure. Close every opened descriptor
@@ -54,7 +66,9 @@ no raw stderr, arbitrary state body, exception arguments, or command output.
 Internal translated exceptions suppress their raw traceback context.
 
 Pre-move reasons: `no_dir_fd`, `root_alias`, `parent_alias`, `state_symlink`,
-`state_unadmitted`, `trash_missing`, `state_changed`, `stage_failed`.
+`state_unadmitted`, `state_changed`, `stage_failed`. In v2, `trash_missing` is
+not raised: it is the fixed reason in the step-6 warning, whose path is the
+retained stage directory. The warning carries no state body or command output.
 `stage_failed` explicitly reports exclusive creation/open/rename failure; any
 empty created stage remains and canonical state is retained when rename failed.
 Post-move reasons: `staged_mismatch`, `trash_failed`; retain stage and never roll
@@ -104,7 +118,8 @@ sink. Deletion tripwires and retained runner remain active; fake subprocesses
 are scoped and log exact argv and device/inode/hash evidence.
 
 Acceptance includes scoped/unscoped clear, absence, foreign PID, invalid JSON and
-bindings, oversized/nonregular/aliased resources, missing Trash/dir-fd support,
+bindings, oversized/nonregular/aliased resources, missing dir-fd support,
+missing Trash (warning, None return, one retained stage, no exec),
 nonzero/no-move/timeout/exec failures, deterministic pre/post-rename races,
 path retargeting, immutable unrelated resources, descriptor closure, CLI error
 propagation, and exact byte/identity/argv/resource bounds.
