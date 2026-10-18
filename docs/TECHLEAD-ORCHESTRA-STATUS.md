@@ -487,3 +487,9 @@
 - 更正：53cf54c 那一轮的两个"略过"同样是这个超时造成的，不是之前所说的 `fail-fast`；该工作流设置的是 `fail-fast: false`。
 - 用户批准：`native-workers.yml` 的 test 作业由 10 分钟调到 25 分钟；`release.yml` 的 validate 与 package 作业由 15 分钟调到 25 分钟。publish 作业不跑测试，保持 10 分钟。
 - e301212 的 CI 结果（未取消的作业）：4666 通过、109 失败、19 报错；保留式运行器步骤 43/43。缺基线的 25 项报错已消失；8 项 V1 claim-admission 测试拿到基线后按设计失败。
+
+## 用户决定：浏览器冒烟测试在测试步骤失败时照常运行（2026-10-18）
+
+- 3549f4b 的 CI 中，`native-workers.yml` 的"Install browser test tooling"与"Native console browser smoke"两步都带 `if: matrix.python == '3.11'`，隐含"前面步骤都成功"的条件，因此测试步骤一失败就被略过。main 上测试步骤是绿的，这个冒烟测试平常会运行；在 PR #7 中则一直没有被验证。
+- 用户批准：两步的条件改为 `${{ !cancelled() && matrix.python == '3.11' }}`，仍只在 3.11 上运行，但不再依赖测试步骤成功。`release.yml` 的 package 作业依赖 validate 成功，未改（否则测试失败时也会打包）。
+- 3549f4b 的 CI 结果：七个作业全部跑完，无取消；测试步骤 9–11 分钟。CI 与 native-workers 六个作业 4666–4667 通过、109 失败、19 报错；保留式运行器步骤 43/43。Research OS 的 validate 作业（3.11）多 2 项失败，都是对时间敏感的 node_agent 测试（心跳状态、1.7 秒预算），在同一提交另一个 3.11 作业中通过，属共享 runner 的时序波动。

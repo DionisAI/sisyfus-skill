@@ -49,12 +49,12 @@ jobs:
           SISYFUS_AUTO_SERVE: '0'
         run: python scripts/test_retained.py tests/test_observatory_live_retention.py tests/test_observatory_live_no_trash.py -q --junitxml=retention-test-results.xml
       - name: Install browser test tooling
-        if: matrix.python == '3.11'
+        if: ${{ !cancelled() && matrix.python == '3.11' }}
         run: |
           python -m pip install playwright==1.57.0
           python -m playwright install --with-deps chromium
       - name: Native console browser smoke (no model calls)
-        if: matrix.python == '3.11'
+        if: ${{ !cancelled() && matrix.python == '3.11' }}
         run: python scripts/native_console_smoke.py --directory /tmp/native-console-smoke
       - name: Exact source snapshot
         if: always() && matrix.python == '3.11'
