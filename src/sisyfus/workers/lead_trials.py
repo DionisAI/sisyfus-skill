@@ -345,6 +345,9 @@ def run_trials(origin: LeadMission, candidate_id: str, evaluation_root: Path) ->
                 _parent_fence(origin)
                 before_request = True  # Inherited uncertainty was checked first.
             catalog = _catalog(root)
+            expected_manifest = origin.spec['rsi'].get('evaluation_manifest_hash')
+            if expected_manifest and catalog['manifest_hash'] != expected_manifest:
+                raise ProofUnavailable('operator-approved evaluation manifest changed before paired dispatch')
             if existing is not None:
                 if final["status"] in {"ELIGIBLE", "PROMOTED", "NONPROMOTION"}:
                     _global_trial_fence(origin)  # A cached success never clears another unsettled lab.

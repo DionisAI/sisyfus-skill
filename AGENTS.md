@@ -35,8 +35,29 @@
   still requires an operator-confirmed objective and existing immutable checks.
   Opening pages, attaching context and sending chat messages never dispatch Sol.
 
+- Bound planning drafts stay frozen. Runtime communication uses the separate
+  controller-owned mission inbox: `/btw` projects persisted controller facts;
+  supplementary messages are data, not changed acceptance or execution permission.
+  Bind context atomically with a new eligible native reservation. Show receipt,
+  binding and native prompt acceptance separately; cached or unknown calls are
+  never rebound or resent. Independent reviews and RSI evaluation children remain
+  outside this supplementary-context channel.
+
 - Explicit user chat directives may grant a controller-owned directory preparation
   capability: exclusive creation or explicit binding, no shell commands, overwrite,
   acceptance approval or worker dispatch. Prose supplies only a name inside the
   granted parent. Persist the request before mkdir and fence interrupted outcomes.
   Native chat remains read-only; report controller preparation back into its context.
+
+- Explicit user chat directives may configure RSI before mission binding. The
+  controller inspects only catalog metadata, pins its manifest, and excludes
+  evaluation paths/content from native planning. Chat configuration never
+  dispatches workers or establishes improvement. Separate confirmed Start and
+  canonical paired/holdout evidence still govern execution and promotion.
+
+- The opt-in phone portal requires an operator-set password and a fixed task
+  specification. Planning and Start remain separate confirmations; UNKNOWN
+  mutations are fenced rather than retried. Graph, progress and engineering
+  projection share one capture. Fixed HTML reports have a separate pinned
+  version; source review and viewport checks do not establish public or physical
+  device acceptance. Keep controller/NodeGateway endpoints private.

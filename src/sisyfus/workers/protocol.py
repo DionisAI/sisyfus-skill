@@ -44,7 +44,7 @@ class Request:
             raise ValueError("task_id, explicit model, and prompt are required")
         if len(self.prompt.encode()) > 200_000:
             raise ValueError("prompt exceeds 200KB")
-        if self.mode not in {"read-only", "workspace-write"}:
+        if self.mode not in {"read-only", "workspace-write", "no-tools"}:
             raise ValueError("unsupported permission mode")
         if not Path(self.cwd).is_absolute() or not Path(self.cwd).is_dir():
             raise ValueError("cwd must be an existing absolute directory")

@@ -1,0 +1,19 @@
+{
+  "schema_version": "sisyfus.reader-report.v1",
+  "basis": {"snapshot_hash": "sha256:fixture", "event_count": 3},
+  "language": "en",
+  "title": "Question-first report",
+  "question": "Does this strategy produce a completed profitable cycle?",
+  "answer": "No complete cycle in this sample; this is not proof of permanent impossibility.",
+  "scope_note": "A synthetic presentation fixture, not market evidence.",
+  "sections": [{
+    "heading": "What was measured",
+    "paragraphs": ["One retained sample, no live orders."],
+    "table": {"columns": ["Assumed net edge", "Conditional profit"], "rows": [["1 bp", "$500"]]},
+    "note": "Conditional arithmetic only, not daily returns."
+  }],
+  "process": [{"title": "Test a full cycle", "what": "Include opening and closing fills.", "finding": "No cycle completed.", "meaning": "Profit remains unestablished."}],
+  "claim_takeaways": {"profit": {"status": "INCONCLUSIVE", "text": "No complete cycle; profit remains unestablished."}},
+  "event_notes": {"3": {"event_type": "VERDICT_ISSUED", "feed": "No complete cycle found", "caster": "This sample did not establish profit."}},
+  "sources": [{"label": "Retained evidence", "href": "artifact/artifacts%2Freport.md"}]
+}

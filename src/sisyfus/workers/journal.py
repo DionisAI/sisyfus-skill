@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import secrets
-from typing import Any
+from typing import Any, Callable
 
 from ..autonomy.models import canonical_json, utc_now
 from ..autonomy.policy import IdempotencyConflictError, LeaseLost
@@ -23,6 +23,8 @@ class Journal:
 
     def __init__(self, store: AutonomyStore):
         self.store = store
+        self._context_admissions: dict[int, str] = {}
+        self.after_event: Callable[[Any, str, str, dict[str, Any]], None] | None = None
         with store._transaction() as db:
             db.execute("CREATE TABLE IF NOT EXISTS native_worker_runs ("
                        "key TEXT PRIMARY KEY, task_id TEXT NOT NULL, continuation_id TEXT, "
@@ -86,12 +88,13 @@ class Journal:
         return len(rows)
 
     def reserve(self, key: str, task_id: str, fingerprint: str, *, continuation_id: str | None = None,
-                lease_token: str | None = None) -> dict[str, Any] | None:
+                lease_token: str | None = None,
+                on_reserved: Callable[[Any], None] | None = None) -> dict[str, Any] | None:
         self.reconcile_expired()
         with self.store._transaction() as db:
             row = db.execute("SELECT * FROM native_worker_runs WHERE key=?", (key,)).fetchone()
             if row is not None:
-                if row["fingerprint"] != fingerprint:
+                if row["fingerprint"] != fingerprint or row["task_id"] != task_id:
                     raise IdempotencyConflictError("idempotency key reused for different worker input")
                 if row["receipt_json"] is not None:
                     return json.loads(row["receipt_json"])
@@ -102,6 +105,13 @@ class Journal:
                 raise DispatchBlocked("mission is paused")
             if db.execute("SELECT 1 FROM native_worker_runs WHERE status='UNKNOWN'").fetchone():
                 raise DispatchBlocked("unresolved worker result blocks shared spending")
+            # Transport uncertainty also fences NEW local/native spending in
+            # this store. Cached reads above keep their existing semantics;
+            # legacy missions need neither a sidecar table nor a schema change.
+            if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='remote_offers'").fetchone():
+                if db.execute("SELECT 1 FROM remote_offers WHERE status IN "
+                              "('UNKNOWN','RECONCILIATION_CANDIDATE') LIMIT 1").fetchone():
+                    raise DispatchBlocked("unresolved remote result blocks shared spending")
             if spec.get("max_calls") is not None and db.execute("SELECT count(*) FROM native_worker_runs").fetchone()[0] >= spec["max_calls"]:
                 raise DispatchBlocked("native call budget exhausted")
             if db.execute("SELECT count(*) FROM native_worker_runs WHERE status='IN_FLIGHT'").fetchone()[0] >= spec["parallelism"]:
@@ -111,18 +121,38 @@ class Journal:
             db.execute("INSERT INTO native_worker_runs VALUES(?,?,?,?,?,'IN_FLIGHT',NULL,?)",
                        (key, task_id, continuation_id, fingerprint, lease_token, utc_now()))
             self._event(db, "reserved", key, {"task_id": task_id, "fingerprint": fingerprint}, continuation_id)
+            if on_reserved is not None:
+                self._context_admissions[id(db)] = key
+                try:
+                    on_reserved(db)  # Context/transport handoff shares admission commit.
+                finally:
+                    self._context_admissions.pop(id(db), None)
         return None
 
     def event(self, key: str, kind: str, data: dict[str, Any]) -> None:
         with self.store._transaction() as db:
-            row = db.execute("SELECT * FROM native_worker_runs WHERE key=?", (key,)).fetchone()
-            if row is None or row["status"] != "IN_FLIGHT":
-                raise LeaseLost("worker run no longer accepts events")
-            self._fence(db, row)
-            self._event(db, kind, key, data, row["continuation_id"])
-            if kind == "control_ack":
-                db.execute("UPDATE native_worker_commands SET status=? WHERE id=? AND run_key=? AND status='SENT'",
-                           ("ACK" if data.get("accepted") else "REJECTED", data.get("command_id"), key))
+            self.event_in(db, key, kind, data)
+
+    def event_in(self, db: Any, key: str, kind: str, data: dict[str, Any]) -> None:
+        """Append in the caller's transaction; no nested transaction or commit.
+
+        Preserves event's active-run/continuation fences, redacted hash chain,
+        optional after_event(db, key, kind, data), then control_ack ordering.
+        Returns None; callback errors propagate so the owning transaction rolls
+        back all event, application and command writes. Store-only facades need
+        no after_event attribute. Receipt/settlement behavior is separate.
+        """
+        row = db.execute("SELECT * FROM native_worker_runs WHERE key=?", (key,)).fetchone()
+        if row is None or row["status"] != "IN_FLIGHT":
+            raise LeaseLost("worker run no longer accepts events")
+        self._fence(db, row)
+        self._event(db, kind, key, data, row["continuation_id"])
+        hook = getattr(self, "after_event", None)
+        if hook is not None:
+            hook(db, key, kind, data)  # Fenced event and context receipt commit together.
+        if kind == "control_ack":
+            db.execute("UPDATE native_worker_commands SET status=? WHERE id=? AND run_key=? AND status='SENT'",
+                       ("ACK" if data.get("accepted") else "REJECTED", data.get("command_id"), key))
 
     def complete(self, key: str, receipt: dict[str, Any]) -> dict[str, Any]:
         safe = redact(receipt)
@@ -139,6 +169,12 @@ class Journal:
             db.execute("UPDATE native_worker_runs SET status=?,receipt_json=? WHERE key=?",
                        (status, canonical_json(safe), key))
             self._event(db, "receipt", key, safe, row["continuation_id"])
+            # Store-only transaction facades intentionally bypass __init__.
+            hook = getattr(self, "after_event", None)
+            if hook is not None:
+                # Receipt, context outcome and incremental notifications share
+                # this fenced commit. Cached receipts return before this hook.
+                hook(db, key, "receipt", safe)
         return safe
 
     def pause(self, paused: bool) -> None:
@@ -202,7 +238,7 @@ class Journal:
                  "lease_token": "[REDACTED]", "receipt_json": None, "verification_json": None} for row in rows]
 
     def events(self, cursor: int = 0, limit: int = 200) -> list[dict[str, Any]]:
-        if cursor < 0 or not 1 <= limit <= 1000:
+        if type(cursor) is not int or not 0 <= cursor <= 2**63 - 1 or type(limit) is not int or not 1 <= limit <= 1000:
             raise ValueError("invalid event cursor/limit")
         with self.store._transaction(immediate=False) as db:
             rows = db.execute("SELECT seq,ts,entity_id,event_type,data_json FROM events WHERE seq>? ORDER BY seq LIMIT ?",

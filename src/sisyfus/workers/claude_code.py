@@ -30,12 +30,14 @@ class ClaudeCodeDriver:
         return {**probe(self.command), "driver": self.name, "controls": self.controls}
 
     def run(self, request: Request, emit: EventSink, controls: ControlSource = lambda: []) -> Receipt:
-        tools = "Read,Glob,Grep" + (",Write,Edit" if request.mode == "workspace-write" else "")
+        tools = "" if request.mode == "no-tools" else "Read,Glob,Grep" + (",Write,Edit" if request.mode == "workspace-write" else "")
         argv = [*self.command, "-p", "--output-format", "stream-json", "--verbose",
                 "--include-partial-messages", "--model", request.model,
                 "--permission-mode", "dontAsk", "--tools", tools, "--allowedTools", tools,
                 "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
-                "--setting-sources", "user,project,local"]
+                "--setting-sources", "" if request.mode == "no-tools" else "user,project,local"]
+        if request.mode == "no-tools":
+            argv += ["--bare", "--disable-slash-commands"]
         if request.max_turns is not None:
             argv += ["--max-turns", str(request.max_turns)]
         if request.session_id:
@@ -80,6 +82,9 @@ class ClaudeCodeDriver:
                         session = str(native_session)
                         emit("session_bound", {"session_id": session})
                 emit("native_event", message)
+                if (request.mode == "no-tools" and message.get("type") == "system"
+                        and message.get("subtype") == "init" and message.get("tools") != []):
+                    raise ProtocolError("no-tools native init reported a nonempty or missing tool inventory")
                 # Subagent telemetry does not attest the primary role's model.
                 if message.get("parent_tool_use_id") is None:
                     assistant = None

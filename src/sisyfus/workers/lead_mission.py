@@ -14,12 +14,13 @@ import shutil
 import subprocess
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack, contextmanager
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
-from ..autonomy.models import AssuranceLevel, CapabilityResult, Decision, OpportunitySignal, VerificationResult, Verdict, stable_id
-from ..autonomy.policy import AutonomyPolicy, CapabilityRegistry
+from ..autonomy.models import AssuranceLevel, CapabilityResult, Decision, OpportunitySignal, VerificationResult, Verdict, canonical_json, stable_id, utc_now
+from ..autonomy.policy import AutonomyPolicy, CapabilityRegistry, IdempotencyConflictError
 from ..autonomy.runtime import AutonomousRuntime
 from ..autonomy.supervisor import AutonomousSupervisor, SupervisorConfig
 from ..research_v2.verifier import classify_observation
@@ -28,7 +29,10 @@ from .lead_contracts import load_lead_spec, paths_overlap, validate_plan
 from .lead_journal import LeadJournal
 from .lead_learning import ProcedureLedger, ProofUnavailable
 from .mission import Mission, check_intact, copy_candidate, files
+from .mission_inbox import MissionInbox
 from .protocol import Receipt, Request, digest, environment, redact
+from . import remote_artifacts
+from .remote_driver import RemoteCodexDriver
 from .transport import Process
 
 
@@ -67,6 +71,48 @@ class ProposalInvalid(ValueError):
         self.run_key = run_key
 
 
+class RemotePlacementUnavailable(DispatchBlocked):
+    def __init__(self, placement: dict[str, Any]):
+        super().__init__("远端执行传输尚未接入")
+        self.placement = placement
+
+
+class RemoteCurrencyLost(DispatchBlocked):
+    """A transport identity change is uncertainty, not permission to settle."""
+
+
+def remote_output_paths(before: dict[str, str], write_paths: list[str], candidate: Path) -> list[str]:
+    """Pin exact v1 files; existing directory scopes never grant new descendants.
+
+    Validate even excluded directory names. The final union obeys the node's
+    size, strict relative-path and case-fold/file-parent collision boundaries.
+    This read-only helper neither creates files nor broadens task ownership.
+    """
+    from .node_claims import MAX_FILES, _path, _paths
+    if not isinstance(before, dict) or not isinstance(write_paths, list):
+        raise ValueError("remote outputs require prepared files and fixed write paths")
+    scopes = [_path(p) for p in write_paths]
+    # Directory/file overlap is legitimate in task ownership, but only actual
+    # directories may be excluded from the exact file allowlist below.
+    _paths([p for p in scopes if not (candidate / p).is_dir()])
+    for p in before:
+        _path(p)
+    outputs = sorted(set(before) | {p for p in scopes if not (candidate / p).is_dir()})
+    if len(outputs) > MAX_FILES:
+        raise ValueError("remote output path count exceeds 128-file bound")
+    _paths(outputs)
+    return outputs
+
+
+def _remote_tree(root: Path) -> dict[str, Any]:
+    """Read every entry, rejecting missing/incomplete/control/nonregular trees."""
+    report = remote_artifacts.full_tree_manifest(root)
+    _, errors = remote_artifacts._tree_integrity(report)
+    if errors:
+        raise remote_artifacts.ArtifactError({"valid": False, "errors": errors, "tree": report})
+    return report
+
+
 TRIAL_TERMINAL_STATUSES = frozenset({"ELIGIBLE", "PROMOTED", "NONPROMOTION", "BLOCKED_PARENT_BUDGET",
                                      "FIXTURE_NOT_EVALUATED"})
 
@@ -81,6 +127,13 @@ class LeadMission(Mission):
             raise ValueError("Tech Lead requires an operator-owned Lead specification")
         self.journal = LeadJournal(self.store)
         self.journal.stop_event = self.stop
+        self.inbox = MissionInbox(self.journal)
+        self.journal.after_event = self.inbox.observe_native_in
+        self._node_claims = None
+        self._node_lock = threading.Lock()
+        # Only the host may inject this process-local transport capability.
+        # Registration, staging pins and persisted specs never enable it.
+        self.remote_execution_ready: Callable[[], bool] = lambda: False
         self.registry = CapabilityRegistry()
         self.registry.register(LeadCapability(self), LeadVerifier(self))
         self.registry.register(IntegrationCapability(self), LeadVerifier(self))
@@ -96,6 +149,104 @@ class LeadMission(Mission):
         self.journal.on_control = self.sync_trial_children
         if self.journal.state()["stopped"]:
             self.stop.set()
+
+    @property
+    def node_claims(self):
+        """Lazy, same-store transport sidecar, not the capability registry.
+
+        Construction/inventory never offers, claims or dispatches native work.
+        Recheck trial policy even for a cached backend; trials stay local.
+        """
+        with self._node_lock:
+            with self.store._transaction(immediate=False) as db:
+                if not self.inbox.context_allowed(db):
+                    raise PermissionError("node placement is excluded for trial children")
+            if self._node_claims is None:
+                from .node_claims import NodeClaims
+                from .node_registry import NodeRegistry
+                self._node_claims = NodeClaims(self.journal, NodeRegistry(self.journal),
+                                               self.directory / "remote" / "artifacts")
+            return self._node_claims
+
+    def _placement_in(self, db, task_id: str) -> dict[str, Any]:
+        row = db.execute("SELECT value FROM metadata WHERE key=?",
+                         (self.journal.prefix + "placement:" + task_id,)).fetchone()
+        return json.loads(row[0]) if row else {"kind": "local"}
+
+    def placement(self, task_id: str) -> dict[str, Any]:
+        """No legacy backfill, backend construction or local fingerprint change."""
+        if not isinstance(task_id, str) or not task_id or len(task_id.encode()) > 100:
+            raise ValueError("task_id must be bounded nonempty text")
+        with self.store._transaction(immediate=False) as db:
+            return self._placement_in(db, task_id)
+
+    def assign_placement(self, task_id: str, node_id: str, request_id: str) -> dict[str, Any]:
+        """Explicit operator-only pin; every eligibility check shares one commit.
+
+        Request fingerprints cover operator input, not the evolving plan. Exact
+        retries read the original pin even after supersession/revocation or a
+        native reservation; a fresh request never rebinds such a reservation.
+        """
+        from .node_registry import validate_request_id
+        validate_request_id(request_id)
+        if not isinstance(task_id, str) or not task_id or len(task_id.encode()) > 100:
+            raise ValueError("task_id must identify an active frozen implementation task")
+        if not isinstance(node_id, str) or not node_id or len(node_id.encode()) > 100:
+            raise ValueError("node_id must identify a mission node")
+        fingerprint = digest({"task_id": task_id, "node_id": node_id})
+        request_key = self.journal.prefix + "placement_request:" + request_id
+
+        def cached(db):
+            row = db.execute("SELECT value FROM metadata WHERE key=?", (request_key,)).fetchone()
+            if row is None:
+                return None
+            saved = json.loads(row[0])
+            if saved["fingerprint"] != fingerprint:
+                raise IdempotencyConflictError("placement request_id reused for different input")
+            return saved["placement"]
+
+        with self.store._transaction(immediate=False) as db:
+            replay = cached(db)
+            if replay is not None:
+                return replay
+        registry = self.node_claims.registry  # Initialize outside the assignment transaction.
+        with self.store._transaction() as db:
+            replay = cached(db)
+            if replay is not None:
+                return replay
+            if not self.inbox.context_allowed(db):
+                raise PermissionError("node placement is excluded for trial children")
+            state = json.loads(db.execute("SELECT value FROM metadata WHERE key=?",
+                                          (self.journal.prefix + "state",)).fetchone()[0])
+            plans = db.execute("SELECT value FROM metadata WHERE substr(key,1,?)=?",
+                               (len(self.journal.prefix + "plans:"), self.journal.prefix + "plans:")).fetchall()
+            tasks = [t for p in plans for t in json.loads(p[0])["data"]["plan"]["tasks"]]
+            task = next((t for t in tasks if t["id"] == task_id), None)
+            if task is None or task_id not in state["active"]:
+                raise ValueError("placement requires an active frozen implementation task")
+            task_hash = digest(task)
+            prior = self._placement_in(db, task_id)
+            if prior["kind"] != "local" and (prior["node_id"] != node_id or prior["task_hash"] != task_hash):
+                raise IdempotencyConflictError("pinned placement node or task hash changed")
+            contexts = [json.loads(r[0]) for r in db.execute("SELECT context_json FROM continuations").fetchall()]
+            if not any(c.get("native_task") == task_id and c.get("lead_kind") == "implementation"
+                       and c.get("task_hash") == task_hash for c in contexts):
+                raise ValueError("placement requires a matching frozen implementation continuation")
+            if db.execute("SELECT 1 FROM native_worker_runs WHERE task_id=? LIMIT 1", (task_id,)).fetchone():
+                raise DispatchBlocked("existing native reservation fences new task placement")
+            registry._active(db, node_id)
+            placement = prior if prior["kind"] != "local" else {
+                "kind": "remote", "mission_id": registry.mission_id, "task_id": task_id,
+                "node_id": node_id, "task_hash": task_hash, "revision": state["revision"],
+                "request_id": request_id, "execution_ready": False, "created_at": utc_now()}
+            if prior["kind"] == "local":
+                db.execute("INSERT INTO metadata VALUES(?,?)",
+                           (self.journal.prefix + "placement:" + task_id, canonical_json(placement)))
+            db.execute("INSERT INTO metadata VALUES(?,?)", (request_key,
+                       canonical_json({"fingerprint": fingerprint, "placement": placement})))
+            self.journal._event(db, "node_placement_assigned" if prior["kind"] == "local" else "node_placement_readback",
+                                request_id, {"request_id": request_id, "placement": placement}, actor="operator")
+            return placement
 
     def tasks(self) -> list[dict[str, Any]]:
         return [t for p in self.journal.records("plans") for t in p["data"]["plan"]["tasks"]]
@@ -354,6 +505,7 @@ class LeadMission(Mission):
             raise ValueError("a mission cannot register itself as a trial child")
         key = digest(str(child.directory))
         self.journal.record("trial_children", key, {"directory": str(child.directory)})
+        child.journal.record("inbox_policy", "trial-child", {"operator_context": "excluded"})
         with self._children_lock:
             self._trial_children[str(child.directory)] = child
         self.sync_trial_children()
@@ -448,15 +600,24 @@ class LeadMission(Mission):
     def role_call(self, role: str, key: str, prompt: str, cwd: Path, *, metadata=None) -> dict[str, Any]:
         config = self.spec["roles"][role]
         pinned = self.journal.get("roles", key)
+        # Only ordinary orchestration may consume mission supplements. None is
+        # the legacy controller-owned direct-call API (no declared purpose), not
+        # a promotion purpose; preserve its context/replay compatibility. Every
+        # explicit purpose outside this allowlist, including future procedure
+        # generation/promotion purposes, stays outside the channel. A replay's
+        # pinned purpose wins over new/default caller metadata.
+        purpose = (pinned or metadata or {}).get("purpose")
+        context_eligible = role == "lead" and purpose in (None, "architecture", "diagnosis")
         if pinned:
             if pinned["prompt_hash"] != digest(prompt) or pinned["role"] != role or pinned["cwd"] != str(cwd):
                 raise ValueError("role call input drift under a reserved identity")
             request = Request(**pinned["request"])
         else:
             session = None
-            if role == "lead":
+            if context_eligible:
                 previous = [r for r in self.journal.runs() if r["role"] == "lead" and r["receipt"] and r["receipt"]["status"] == "COMPLETED"
-                            and (r["role_metadata"] or {}).get("procedure_hash") == self.procedure()["hash"]]
+                            and (r["role_metadata"] or {}).get("procedure_hash") == self.procedure()["hash"]
+                            and (r["role_metadata"] or {}).get("purpose") in (None, "architecture", "diagnosis")]
                 if previous:
                     session = previous[-1]["receipt"].get("session_id")
             request = Request("planner", prompt, str(cwd), config["model"], timeout=self.call_timeout(),
@@ -467,15 +628,28 @@ class LeadMission(Mission):
             self.journal.record("roles", key, pinned)
         if digest(files(cwd)) != pinned["read_hash"]:
             raise ValueError("read-only role input changed before dispatch")
-        receipt = self.journal.reserve(key, "planner", digest(pinned))
+        receipt = self.journal.reserve(key, "planner", digest(pinned),
+            on_reserved=(lambda db: self.inbox.bind(db, key, role=role, task_id=None, prompt=prompt))
+                        if context_eligible else None)
         if receipt is None:
+            context = self.inbox.for_run(key) if context_eligible else None
+            if context is not None:
+                request = Request(**{**asdict(request), "prompt": context["prompt"]})
+            elif role == "lead" and not context_eligible and request.session_id is not None:
+                # Also isolate a role record pinned before admission by older
+                # code: resuming an ordinary session would import its operator
+                # data even without a new binding. Cached/UNKNOWN runs never
+                # reach this branch and remain unmodified, never resent.
+                request = Request(**{**asdict(request), "session_id": None})
             try:
                 receipt = self.drivers[config["driver"]].run(request,
-                    lambda k, d: self.journal.event(key, k, d), lambda: self.controls(key)).as_dict()
+                    lambda k, d: self.native_event(key, k, d), lambda: self.controls(key)).as_dict()
                 if len(receipt.get("output", "").encode()) > request.max_output_bytes:
                     receipt = Receipt("ERROR", error="role output limit exceeded", requested_model=request.model).as_dict()
             except Exception as exc:
                 receipt = Receipt("UNKNOWN", error=f"role transport: {type(exc).__name__}: {exc}", requested_model=request.model).as_dict()
+            if context is not None:
+                receipt["context_binding_hash"] = digest(context)
             receipt["requested_model"] = receipt.get("requested_model") or request.model
             receipt = self.journal.complete(key, receipt)
         if receipt["status"] == "UNKNOWN":
@@ -487,6 +661,9 @@ class LeadMission(Mission):
         if receipt.get("actual_model") is not None and receipt["actual_model"] != request.model:
             raise ValueError("runtime-attested role model differs from requested model")
         return receipt
+
+    def native_event(self, key: str, kind: str, data: dict[str, Any]) -> None:
+        self.journal.event(key, kind, data)
 
     def planning_prompt(self) -> str:
         return ("You are the persistent Tech Lead. Propose architecture and interfaces BEFORE implementation. "
@@ -812,6 +989,147 @@ class LeadMission(Mission):
             phase = "NEEDS_OPERATOR"
         self.journal.phase(phase, str(exc))
 
+    @contextmanager
+    def _placement_controller(self):
+        """Preparation owns exactly the same exclusion boundaries as Start."""
+        if not self._run_lock.acquire(blocking=False):
+            raise DispatchBlocked("mission controller already running")
+        try:
+            with (self.directory / "lead-controller.lock").open("a+") as lock:
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError as exc:
+                    raise DispatchBlocked("another controller owns this mission") from exc
+                yield
+        finally:
+            self._run_lock.release()
+
+    def _placement_preparation(self) -> dict[str, Any] | None:
+        with self.store._transaction(immediate=False) as db:
+            row = db.execute("SELECT value FROM metadata WHERE key=?",
+                             (self.journal.prefix + "placement_preparation",)).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def _save_placement_preparation(self, saved, *, phase=None, superseded=None) -> dict[str, Any]:
+        """Request/state and their diagnostic event share the canonical commit."""
+        with self.store._transaction() as db:
+            if superseded is not None:
+                self.journal.record_in(db, "placement_preparation_history", superseded["request_id"],
+                                       {**superseded, "status": "SUPERSEDED"})
+            db.execute("INSERT OR REPLACE INTO metadata VALUES(?,?)",
+                       (self.journal.prefix + "placement_preparation", canonical_json(saved)))
+            state = json.loads(db.execute("SELECT value FROM metadata WHERE key=?",
+                                          (self.journal.prefix + "state",)).fetchone()[0])
+            paused = db.execute("SELECT value FROM metadata WHERE key='native_worker_paused'").fetchone()
+            if phase is not None:
+                state.update(phase="STOPPED" if state["stopped"] or self.stop.is_set() else
+                             "PAUSED" if paused and paused[0] == "1" else phase,
+                             reason=saved.get("reason", ""))
+                db.execute("UPDATE metadata SET value=? WHERE key=?",
+                           (canonical_json(state), self.journal.prefix + "state"))
+            self.journal._event(db, "placement_preparation", saved["request_id"],
+                                {"preparation": saved, "state": state}, actor="operator")
+        return saved
+
+    def _request_placement_preparation_locked(self, request_id) -> dict[str, Any]:
+        from .node_registry import validate_request_id
+        validate_request_id(request_id)
+        with self.store._transaction(immediate=False) as db:
+            if not self.inbox.context_allowed(db):
+                raise PermissionError("placement preparation is excluded for trial children")
+        saved = self._placement_preparation()
+        if saved is None or saved["request_id"] != request_id:
+            archived = self.journal.get("placement_preparation_history", request_id)
+            if archived is not None:
+                return archived
+        if saved and saved["status"] == "PLANNING":
+            # Owning both locks proves the previous planning owner is gone.
+            # Even the durable-before-reservation gap is uncertain, not retryable.
+            self.journal.reconcile_roles()
+            saved = self._save_placement_preparation({**saved, "status": "UNKNOWN",
+                "known_nonexecuted": False, "reason": "interrupted placement planning; reconcile before execution"},
+                phase="UNKNOWN")
+        if saved and saved["request_id"] == request_id:
+            return saved
+        if saved and not (saved["status"] in {"BLOCKED", "REQUESTED"} and
+                          saved.get("known_nonexecuted") is True):
+            raise IdempotencyConflictError("placement preparation request_id conflict")
+        runs = self.journal.runs()
+        state = self.journal.state()
+        if any(r["role"] != "lead" for r in runs) or self.integration_continuation() is not None:
+            raise DispatchBlocked("execution/review/integration already reserved; preparation rejected")
+        if state["phase"] in {"COMPLETED", "STALE", "BUDGET_EXHAUSTED", "TRIAL_FENCED", "TRIAL_RUNNING", "UNKNOWN"}:
+            raise DispatchBlocked("terminal or uncertain mission fences new placement preparation")
+        if any(r["status"] in {"UNKNOWN", "IN_FLIGHT"} for r in runs):
+            raise DispatchBlocked("UNKNOWN native execution fences placement preparation")
+        requested = {"request_id": request_id, "status": "REQUESTED", "known_nonexecuted": True,
+                     "acceptance_hash": self.spec["acceptance_hash"], "created_at": utc_now()}
+        if saved:
+            requested["previous_request_id"] = saved["request_id"]
+        if state["stopped"] or self.stop.is_set() or self.journal.paused():
+            requested.update(status="BLOCKED", reason="operator stopped or paused preparation")
+        return self._save_placement_preparation(requested, superseded=saved)
+
+    def _request_placement_preparation(self, request_id) -> dict[str, Any]:
+        """Hub's synchronous durable request, before releasing to its thread.
+
+        Returns the record, not completion or worker permission. Repeated
+        REQUESTED is a readback; only prepare_for_placement may continue it.
+        """
+        with self._placement_controller():
+            return self._request_placement_preparation_locked(request_id)
+
+    def prepare_for_placement(self, request_id) -> dict[str, Any]:
+        """Explicit planning/admission only; never enter the execution lifecycle."""
+        with self._placement_controller():
+            saved = self._request_placement_preparation_locked(request_id)
+            current = self._placement_preparation()
+            if saved["status"] != "REQUESTED" or current is None or current["request_id"] != request_id:
+                return {**self.snapshot(), "placement_preparation": saved}
+            if self.stop.is_set() or self.journal.state()["stopped"] or self.journal.paused():
+                self._save_placement_preparation({**saved, "status": "BLOCKED",
+                    "reason": "operator stopped or paused preparation"})
+                return self.snapshot()
+            needs_lead = not self.journal.state()["revision"] and not self.spec.get("initial_plan")
+            if needs_lead:
+                driver = self.spec["roles"]["lead"]["driver"]
+                try:
+                    probe = self.drivers[driver].probe()
+                    self.versions[driver] = probe
+                    if not probe["available"]:
+                        raise DispatchBlocked("native Lead preflight failed")
+                except Exception as exc:
+                    self._save_placement_preparation({**saved, "status": "BLOCKED",
+                        "reason": redact(f"Lead preflight: {type(exc).__name__}: {exc}")}, phase="PREFLIGHT_FAILED")
+                    return self.snapshot()
+            saved = self._save_placement_preparation({**saved, "status": "PLANNING",
+                "known_nonexecuted": False}, phase="PLANNING")
+            try:
+                self._initial_plan()
+                self.prepare()
+            except BaseException as exc:
+                # No diagnosis, repair trial or supervisor is part of this API.
+                # Interrupted native ownership and pre-reservation gaps fence
+                # identically; completed ERROR receipts remain explicit errors.
+                self.journal.reconcile_roles()
+                unknown = not isinstance(exc, Exception) or bool(self._unresolved())
+                self._save_placement_preparation({**saved, "status": "UNKNOWN" if unknown else "ERROR",
+                    "reason": redact(f"placement planning: {type(exc).__name__}: {exc}")},
+                    phase="UNKNOWN" if unknown else "NEEDS_OPERATOR")
+                if not isinstance(exc, Exception):
+                    raise
+                return self.snapshot()
+            plans = self.journal.records("plans")
+            lead_runs = [r for r in self.journal.runs() if r["role"] == "lead" and
+                         (r["role_metadata"] or {}).get("purpose") == "architecture"]
+            saved = {**saved, "status": "WAITING_PLACEMENT", "revision": self.journal.state()["revision"],
+                     "plan_hash": digest([p["data"] for p in plans]),
+                     "task_hashes": {t["id"]: digest(t) for t in self.active_tasks()},
+                     "lead_runs": [{"run_key": r["key"], "receipt_hash": digest(r["receipt"]) if r["receipt"] else None}
+                                   for r in lead_runs]}
+            self._save_placement_preparation(saved, phase="WAITING_PLACEMENT")
+            return self.snapshot()
+
     def run(self, max_cycles: int | None = None) -> dict[str, Any]:
         if max_cycles is not None and (type(max_cycles) is not int or max_cycles < 1):
             raise ValueError("max_cycles must be a positive integer or None")
@@ -823,8 +1141,39 @@ class LeadMission(Mission):
                     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 except BlockingIOError as exc:
                     raise DispatchBlocked("another controller owns this mission") from exc
+                preparation = self._placement_preparation()
+                if preparation and preparation["status"] == "PLANNING":
+                    self.journal.reconcile_roles()
+                    self._save_placement_preparation({**preparation, "status": "UNKNOWN",
+                        "known_nonexecuted": False, "reason": "interrupted placement planning; no Start redispatch"},
+                        phase="UNKNOWN")
+                    return self.snapshot()
+                if preparation and preparation["status"] in {"REQUESTED", "UNKNOWN", "ERROR", "BLOCKED"}:
+                    # In particular REQUESTED fences the Hub-to-thread gap.
+                    # This explicit Start grants workers, not preparation retry.
+                    return self.snapshot()
                 self.journal.reconcile_expired()
                 self.journal.reconcile_roles()
+                if self._unresolved():
+                    if not self.journal.state()["stopped"] and not self.journal.paused():
+                        self.journal.phase("UNKNOWN", "unresolved native execution; no redispatch")
+                    return self.snapshot()
+                # Read ORIGINAL canonical runs before current placement/readiness.
+                # Completed/unknown work is not a new transport grant. This also
+                # covers operator-supplied plans without a preparation session.
+                tasks, continuations = self.active_tasks(), self.continuations()
+                with self.store._transaction(immediate=False) as db:
+                    fresh_remote = any(
+                        not db.execute("SELECT 1 FROM native_worker_runs WHERE key=?",
+                            (stable_id("lead", continuations[t["id"]]["id"], 1),)).fetchone()
+                        and self._placement_in(db, t["id"])["kind"] == "remote"
+                        for t in tasks if t["id"] in continuations)
+                if fresh_remote and self.remote_execution_ready() is not True:
+                    # N2 pins are staging, not an execution capability. Do not
+                    # consume the task attempt or diagnose this known boundary.
+                    if not self.journal.state()["stopped"] and not self.journal.paused():
+                        self.journal.phase("WAITING_PLACEMENT", "remote execution transport is not ready")
+                    return self.snapshot()
                 self.prepare()
                 if self.stop.is_set():
                     return self.snapshot()
@@ -1008,7 +1357,7 @@ class LeadMission(Mission):
         if phase == "COMPLETED" and not verified:
             phase = "STALE"
         limits = {name: self.spec[name] for name in ("max_calls", "max_iterations", "max_tokens", "max_cost_usd", "max_wall_minutes", "max_turns")}
-        return {"objective": self.spec["objective"], "phase": phase, "reason": state.get("reason", ""), "paused": self.journal.paused(),
+        result = {"objective": self.spec["objective"], "phase": phase, "reason": state.get("reason", ""), "paused": self.journal.paused(),
             "stopped": state["stopped"], "revision": state["revision"], "resume_epoch": state.get("resume_epoch", 0), "nodes": nodes, "runs": runs,
             "plans": self.journal.records("plans"), "diagnoses": self.journal.records("diagnoses"),
             "format_errors": self.journal.records("format_errors"),
@@ -1017,6 +1366,7 @@ class LeadMission(Mission):
             "procedure": self.procedure(), "improvements": self.journal.records("improvements"),
             "improvement_errors": self.journal.records("improvement_errors"),
             "rsi": self.learning.history(),
+            "rsi_configuration": copy.deepcopy(self.spec["rsi"]),
             "procedure_trials": trials, "counters": counters, "budgets": limits,
             "budget_display": {k: "unlimited" if v is None else str(v) for k, v in limits.items()},
             "native_call_reservations": counters["total_calls"], "parent_native_call_reservations": len(runs),
@@ -1025,6 +1375,14 @@ class LeadMission(Mission):
             "project_verified": bool(verified), "all_verified": bool(verified) and trials["status"] == "IDLE",
             "controller_errors": self.journal.records("runtime_errors") + self.journal.records("diagnosis_errors"),
             "roles": self.spec["roles"], "validation_kind": self.spec["validation_kind"], "versions": self.versions}
+        preparation = self._placement_preparation()
+        if preparation is not None:
+            # Readback never competes for controller ownership. Only run or
+            # prepare, holding both actual locks, durably classifies an orphan.
+            result["placement_preparation"] = preparation
+            if preparation["status"] == "UNKNOWN" and phase not in {"STOPPED", "PAUSED"}:
+                result["phase"] = "UNKNOWN"
+        return result
 
 
 class LeadCapability:
@@ -1036,6 +1394,149 @@ class LeadCapability:
     def __init__(self, mission):
         self.mission = mission
 
+    def _admit_remote_in(self, db, placement, task, cont, claims) -> None:
+        """Recheck new remote eligibility in the SAME canonical reserve transaction.
+
+        No nested read, backend creation, lease renewal or dispatch. A rejected
+        admission rolls back the reservation, inbox binding and placement.
+        """
+        m = self.mission
+        if (m._placement_in(db, task["id"]) != placement or m.remote_execution_ready() is not True
+                or not m.inbox.context_allowed(db)):
+            raise RemotePlacementUnavailable(placement)
+        state = json.loads(db.execute("SELECT value FROM metadata WHERE key=?",
+                                      (m.journal.prefix + "state",)).fetchone()[0])
+        plans = db.execute("SELECT value FROM metadata WHERE substr(key,1,?)=?",
+                           (len(m.journal.prefix + "plans:"), m.journal.prefix + "plans:")).fetchall()
+        fixed = [t for row in plans for t in json.loads(row[0])["data"]["plan"]["tasks"]]
+        owner = db.execute("SELECT context_json FROM continuations WHERE id=?", (cont["id"],)).fetchone()
+        context = json.loads(owner[0]) if owner else {}
+        if (task not in fixed or task["id"] not in state["active"]
+                or placement.get("mission_id") != claims.registry.mission_id
+                or placement.get("task_id") != task["id"] or placement.get("task_hash") != digest(task)
+                or context.get("lead_kind") != "implementation" or context.get("native_task") != task["id"]
+                or context.get("task_hash") != digest(task)):
+            raise RemotePlacementUnavailable(placement)
+        try:
+            claims.registry._active(db, placement["node_id"])
+        except PermissionError as exc:
+            raise RemotePlacementUnavailable(placement) from exc
+        m.journal._fence(db, {"continuation_id": cont["id"], "lease_token": cont["lease_token"]})
+
+    def _remote_materialized(self, key, task, cont, fingerprint, placement_record, claims,
+                             request, native, materialization, prepared, artifact):
+        """Validate statusless independent before/candidate, then retain a fixed copy.
+
+        Read actual complete trees and bytes, not the ignore-list projection.
+        Core ownership and the durable terminal transport identity remain pinned
+        before/after IO; timely RECEIPTED needs no renewed node deadline. Reuse
+        the artifact substrate's descriptor-pinned IO, without touching its code.
+        This returns files/hash for the ORIGINAL verifier, never a PASS verdict.
+        """
+        m = self.mission
+        if (not isinstance(materialization, dict) or set(materialization) != {"candidate", "before", "delta"}
+                or not isinstance(materialization["delta"], dict) or materialization["delta"].get("valid") is not True):
+            raise ValueError("remote materialization requires exact independent candidate/before/valid delta")
+        envelope = Path(placement_record["candidate_root"])
+        if (materialization["candidate"] != str(envelope / "candidate")
+                or materialization["before"] != str(envelope / "before")):
+            raise ValueError("remote materialization changed the fixed independent paths")
+        candidate, before = envelope / "candidate", envelope / "before"
+        original, snapshot = Path(request.cwd), Path(placement_record["input_snapshot"])
+
+        def core():
+            with m.store._transaction(immediate=False) as db:
+                row = db.execute("SELECT * FROM native_worker_runs WHERE key=?", (key,)).fetchone()
+                if (row is None or row["status"] != "IN_FLIGHT" or row["receipt_json"] is not None
+                        or (row["task_id"], row["fingerprint"], row["continuation_id"], row["lease_token"])
+                        != (task["id"], fingerprint, cont["id"], cont["lease_token"])):
+                    raise RemoteCurrencyLost("remote canonical reservation identity changed")
+                m.journal._fence(db, row)
+                result = []
+                for name in (m.journal.prefix + "roles:" + key, m.journal.prefix + "run_placements:" + key):
+                    fixed = db.execute("SELECT value FROM metadata WHERE key=?", (name,)).fetchone()
+                    if fixed is None:
+                        raise RemoteCurrencyLost("remote fixed role/placement missing")
+                    result.append(fixed[0])
+                if json.loads(result[1])["data"] != placement_record:
+                    raise RemoteCurrencyLost("remote fixed placement changed")
+                binding = db.execute("SELECT binding_json FROM lead_mission_contexts WHERE run_key=?", (key,)).fetchone()
+                result.append(binding[0] if binding else None)
+                input_binding = db.execute("SELECT binding_json FROM remote_input_snapshots WHERE run_key=?", (key,)).fetchone()
+                if input_binding is None:
+                    raise RemoteCurrencyLost("remote fixed input binding missing")
+                result.append(input_binding[0])
+                return result
+
+        fixed_core = core()
+        basic = claims.get(key)
+        if not basic or not basic.get("claim_id") or basic.get("status") != "RECEIPTED":
+            raise RemoteCurrencyLost("remote materialization lacks a durable timely claim receipt")
+        view = claims.status(placement_record["placement"]["node_id"], basic["claim_id"], basic["epoch"])
+        if (any(view.get(k) != v for k, v in basic.items()) or view.get("receipt") != native
+                or view.get("status") != "RECEIPTED" or view.get("run_key") != key
+                or view.get("task_id") != task["id"] or view.get("request") != asdict(request)):
+            raise RemoteCurrencyLost("remote terminal receipt/identity changed")
+        manifest = remote_artifacts._input_manifest(view["input_manifest"])
+        fixed_input = json.loads(fixed_core[-1])
+        if (fixed_input != {"mission_id": claims.registry.mission_id, "run_key": key, "root": str(snapshot),
+                           "manifest": manifest, "manifest_hash": digest(manifest), "reservation_fingerprint": fingerprint}
+                or view["input_manifest_hash"] != digest(manifest)
+                or manifest["files"] != prepared["files"]):
+            raise RemoteCurrencyLost("remote terminal input binding changed")
+
+        def currency():
+            if core() != fixed_core:
+                raise RemoteCurrencyLost("remote fixed role/context/input changed")
+            current = claims.status(view["node_id"], view["claim_id"], view["epoch"])
+            if current != view:
+                raise RemoteCurrencyLost("remote terminal receipt/tree/owner/epoch changed during IO")
+            if core() != fixed_core:
+                raise RemoteCurrencyLost("remote core metadata changed during readback")
+
+        roots = (original, snapshot, before, candidate, claims.artifact_root, Path(m.spec["source"]))
+        # These copies must be actually disjoint, not merely distinct spellings.
+        for i, root in enumerate(roots[:4]):
+            for other in roots[i + 1:]:
+                if remote_artifacts._overlap(root, other):
+                    raise ValueError("remote materialization root_overlap")
+        with ExitStack() as stack:
+            boundary = remote_artifacts._IOBoundary(roots, stack)
+
+            def unchanged():
+                boundary.check()
+                currency()
+                for root in (original, snapshot, before):
+                    if _remote_tree(root) != prepared:
+                        raise ValueError("remote prepared/before/input tree changed: " + str(root))
+                currency()
+                boundary.check()
+
+            unchanged()
+            final = _remote_tree(candidate)
+            deleted = sorted({item["path"] for item in manifest["files"]} - {item["path"] for item in final["files"]})
+            delta = remote_artifacts.exact_delta(manifest, final, view["uploads"], deleted)
+            if (not delta["valid"] or delta != materialization["delta"] or final != view.get("tree")):
+                raise remote_artifacts.ArtifactError({**delta, "valid": False,
+                    "errors": [*delta["errors"], {"code": "materialization_tree_delta", "path": ""}]})
+            payloads = remote_artifacts._payloads(candidate, final["files"])
+            unchanged()
+            if _remote_tree(candidate) != final:
+                raise ValueError("remote candidate changed before artifact copy")
+            currency()
+            fd = remote_artifacts._exclusive_directory(artifact, protected_roots=roots)
+            pinned = boundary.adopt(fd, artifact)
+            for path, data in sorted(payloads.items()):
+                currency()
+                remote_artifacts._write_file(artifact, path, data, pinned=pinned)
+            unchanged()
+            if _remote_tree(candidate) != final or _remote_tree(artifact) != final:
+                raise ValueError("remote candidate/artifact changed during copy")
+            after = {item["path"]: item["sha256"] for item in final["files"]}
+            currency()
+            boundary.check()
+            return after, digest(after)
+
     def execute(self, arguments, *, idempotency_key) -> CapabilityResult:
         m = self.mission
         task = m.task(arguments["task_id"])
@@ -1046,45 +1547,128 @@ class LeadCapability:
             return CapabilityResult("INVALID", {"integrity_error": "immutable evaluator hash changed before dispatch"})
         base = m.directory / "attempts" / idempotency_key
         candidate, artifact = base / "candidate", base / "artifact"
-        fingerprint = digest({"arguments": arguments, "task": task, "spec": digest(m.spec)})
-        m.journal.record("roles", idempotency_key, {"role": "worker", "driver": "codex",
-            "model": m.spec["roles"]["worker"]["model"], "mode": "workspace-write", "cwd": str(candidate),
-            "procedure_hash": m.procedure()["hash"], "node": task["id"], "task_hash": digest(task)})
+        envelope = {"arguments": arguments, "task": task, "spec": digest(m.spec)}
+        with m.store._transaction(immediate=False) as db:
+            prior_run = db.execute("SELECT * FROM native_worker_runs WHERE key=?", (idempotency_key,)).fetchone()
+            saved = db.execute("SELECT value FROM metadata WHERE key=?",
+                               (m.journal.prefix + "run_placements:" + idempotency_key,)).fetchone()
+            placement_record = json.loads(saved[0])["data"] if saved else None
+            # Canonical replay is based on its ORIGINAL placement, never today's
+            # readiness, placement assignment, trial policy or node inventory.
+            placement = placement_record["placement"] if placement_record else (
+                {"kind": "local"} if prior_run else m._placement_in(db, task["id"]))
+        if placement["kind"] == "remote":
+            envelope["placement"] = placement
+        fingerprint = digest(envelope)
+        if placement_record is not None and prior_run is None:
+            raise IdempotencyConflictError("remote run placement lacks its canonical reservation")
+        if prior_run is not None and (prior_run["fingerprint"] != fingerprint or prior_run["task_id"] != task["id"]):
+            raise IdempotencyConflictError("idempotency key reused for different worker input")
+
+        def not_ready(placement):
+            error = "远端执行传输尚未接入"
+            data = {"status": "ERROR", "run_key": idempotency_key, "task_id": task["id"],
+                    "task_hash": digest(task), "fingerprint": fingerprint, "placement": placement, "error": error}
+            m.journal.record("placement_errors", idempotency_key, data)
+            return CapabilityResult("ERROR", data, error=error)
+
+        claims = None
+        if prior_run is None and placement["kind"] == "remote":
+            if m.remote_execution_ready() is not True:
+                return not_ready(placement)
+            try:
+                claims = m.node_claims  # Never initialize a sidecar inside reserve.
+            except PermissionError:
+                return not_ready(placement)
+            placement_record = {"placement": placement, "role": "worker", "driver": "codex",
+                "model": m.spec["roles"]["worker"]["model"], "mode": "workspace-write", "cwd": str(candidate),
+                "node": placement["node_id"], "task_id": task["id"], "task_hash": digest(task),
+                "input_snapshot": str(base / "remote-input"), "candidate_root": str(base / "remote-candidate")}
+
+        def on_reserved(db):
+            # Close the local-lookup/assignment race in the canonical admission
+            # transaction. Raising here rolls back the new run and its events.
+            current = m._placement_in(db, task["id"])
+            if current != placement:
+                raise RemotePlacementUnavailable(current)
+            if placement["kind"] == "remote":
+                self._admit_remote_in(db, placement, task, cont, claims)
+            m.inbox.bind(db, idempotency_key, role="worker", task_id=task["id"], prompt=arguments["prompt"])
+            if placement["kind"] == "remote":
+                m.journal.record_in(db, "run_placements", idempotency_key, placement_record)
+                # Hooks must not commit context/placement after currency loss.
+                self._admit_remote_in(db, placement, task, cont, claims)
+
+        if prior_run is None or placement["kind"] != "remote":
+            m.journal.record("roles", idempotency_key, {"role": "worker", "driver": "codex",
+                "model": m.spec["roles"]["worker"]["model"], "mode": "workspace-write", "cwd": str(candidate),
+                "procedure_hash": m.procedure()["hash"], "node": task["id"], "task_hash": digest(task)})
         try:
             receipt = m.journal.reserve(idempotency_key, task["id"], fingerprint,
-                continuation_id=cont["id"], lease_token=cont["lease_token"])
+                continuation_id=cont["id"], lease_token=cont["lease_token"],
+                on_reserved=on_reserved)
+        except RemotePlacementUnavailable as exc:
+            return not_ready(exc.placement)
         except DispatchBlocked as exc:
             return CapabilityResult("UNKNOWN" if m._unresolved() else "ERROR", {"run_key": idempotency_key}, error=str(exc))
         if receipt is None:
             started = False
             native_receipt = None
+            native_materialization = None
             try:
                 before = m.build_candidate(candidate, task["depends_on"])
                 config = m.spec["roles"]["worker"]
-                request = Request(task["id"], arguments["prompt"], str(candidate), config["model"], mode="workspace-write",
+                context = m.inbox.for_run(idempotency_key)
+                request = Request(task["id"], context["prompt"] if context else arguments["prompt"], str(candidate), config["model"], mode="workspace-write",
                                   timeout=m.call_timeout(), max_turns=m.spec["max_turns"])
+                if placement["kind"] == "remote":
+                    prepared = _remote_tree(candidate)
+                    if {f["path"]: f["sha256"] for f in prepared["files"]} != before:
+                        raise ValueError("remote prepared input differs from original before")
+                    outputs = remote_output_paths(before, task["write_paths"], candidate)
+                    driver = RemoteCodexDriver(claims, idempotency_key, placement["node_id"],
+                        input_snapshot=placement_record["input_snapshot"], candidate_root=placement_record["candidate_root"],
+                        output_paths=outputs)
+                else:
+                    driver = m.drivers["codex"]
                 m.journal.event(idempotency_key, "driver", {"driver": "codex", "requested_model": request.model, "task_hash": digest(task)})
                 started = True
-                receipt = m.drivers["codex"].run(request, lambda k, d: m.journal.event(idempotency_key, k, d),
+                receipt = driver.run(request, lambda k, d: m.native_event(idempotency_key, k, d),
                     lambda: m.controls(idempotency_key)).as_dict()
-                native_receipt = receipt
-                after = files(candidate)
-                if any((candidate / name).exists() for name in (".git", ".sisyfus")):
-                    raise ValueError("worker wrote candidate control directories")
-                patch = {p: {"before": before.get(p), "after": after.get(p)} for p in sorted(before.keys() | after.keys())
-                         if before.get(p) != after.get(p)}
-                outside = [p for p in patch if not any(paths_overlap(p, scope) and (p == scope or Path(scope) in Path(p).parents)
-                                                       for scope in task["write_paths"])]
-                if outside:
-                    receipt.update(scope_error="writes outside frozen ownership: " + ", ".join(outside))
-                if len(receipt.get("output", "").encode()) > request.max_output_bytes:
-                    receipt.update(status="ERROR", error="worker output limit exceeded")
-                sha = copy_candidate(candidate, artifact)
-                receipt.update(candidate=str(artifact), candidate_hash=sha, patch=patch, dependencies=arguments["dependencies"],
-                               task_hash=digest(task), requested_model=receipt.get("requested_model") or request.model)
+                native_receipt = copy.deepcopy(receipt)
+                if placement["kind"] == "remote":
+                    native_materialization = copy.deepcopy(driver.materialization)
+                if placement["kind"] == "remote" and receipt["status"] == "UNKNOWN":
+                    # Unknown outcomes never enter materialization or a local
+                    # fallback. Canonical complete persists the original fence.
+                    if native_materialization is not None:
+                        receipt["materialization"] = native_materialization
+                else:
+                    if placement["kind"] == "remote":
+                        after, sha = self._remote_materialized(idempotency_key, task, cont, fingerprint, placement_record,
+                            claims, request, native_receipt, native_materialization, prepared, artifact)
+                    else:
+                        after = files(candidate)
+                        if any((candidate / name).exists() for name in (".git", ".sisyfus")):
+                            raise ValueError("worker wrote candidate control directories")
+                        sha = None
+                    patch = {p: {"before": before.get(p), "after": after.get(p)} for p in sorted(before.keys() | after.keys())
+                             if before.get(p) != after.get(p)}
+                    outside = [p for p in patch if not any(paths_overlap(p, scope) and (p == scope or Path(scope) in Path(p).parents)
+                                                           for scope in task["write_paths"])]
+                    if outside:
+                        receipt.update(scope_error="writes outside frozen ownership: " + ", ".join(outside))
+                    if len(receipt.get("output", "").encode()) > request.max_output_bytes:
+                        receipt.update(status="ERROR", error="worker output limit exceeded")
+                    if sha is None:
+                        sha = copy_candidate(candidate, artifact)
+                    receipt.update(candidate=str(artifact), candidate_hash=sha, patch=patch, dependencies=arguments["dependencies"],
+                                   task_hash=digest(task), requested_model=receipt.get("requested_model") or request.model)
             except Exception as exc:
                 error = f"worker boundary: {type(exc).__name__}: {exc}"
-                if native_receipt is not None:
+                if isinstance(exc, RemoteCurrencyLost):
+                    receipt = Receipt("UNKNOWN", error=error, requested_model=m.spec["roles"]["worker"]["model"]).as_dict()
+                elif native_receipt is not None:
                     # A known terminal native receipt remains known even when
                     # local scope/snapshot validation fails afterward.
                     receipt = {**native_receipt, "integrity_error": error,
@@ -1092,6 +1676,16 @@ class LeadCapability:
                 else:
                     receipt = Receipt("UNKNOWN" if started else "ERROR", error=error,
                                       requested_model=m.spec["roles"]["worker"]["model"]).as_dict()
+                if placement["kind"] == "remote" and native_materialization is not None:
+                    # Persist the observed driver diagnostic, not an inferred
+                    # successful candidate or a fabricated recovery location.
+                    receipt["materialization"] = {"status": "UNKNOWN" if isinstance(exc, RemoteCurrencyLost) else "INVALID",
+                        "error": error, "driver_report": native_materialization}
+                if placement["kind"] == "remote" and isinstance(exc, remote_artifacts.ArtifactError):
+                    receipt["materialization"] = {"status": "INVALID", "report": exc.report}
+            context = m.inbox.for_run(idempotency_key)
+            if context is not None:
+                receipt["context_binding_hash"] = digest(context)
             receipt = m.journal.complete(idempotency_key, receipt)
         return CapabilityResult(receipt["status"], {**receipt, "run_key": idempotency_key})
 
