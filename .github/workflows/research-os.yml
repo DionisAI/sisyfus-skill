@@ -28,7 +28,12 @@ jobs:
         run: |
           mkdir -p validation
           python -m compileall -q src
-          python -m pytest -q --junitxml=validation/junit.xml
+          python -m pytest -q --junitxml=validation/junit.xml --ignore=tests/test_observatory_live_retention.py --ignore=tests/test_observatory_live_no_trash.py
+      - name: Observatory retention tests (retained runner)
+        if: ${{ !cancelled() }}
+        env:
+          SISYFUS_AUTO_SERVE: '0'
+        run: python scripts/test_retained.py tests/test_observatory_live_retention.py tests/test_observatory_live_no_trash.py -q --junitxml=validation/retention-junit.xml
       - name: Research OS demonstration
         env:
           SISYFUS_AUTO_SERVE: '0'

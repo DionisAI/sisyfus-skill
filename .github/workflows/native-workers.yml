@@ -36,7 +36,12 @@ jobs:
           python-version: ${{ matrix.python }}
       - run: python -m pip install -e . pytest
       - name: Regression suite
-        run: python -m pytest -q --junitxml=test-results.xml
+        run: python -m pytest -q --junitxml=test-results.xml --ignore=tests/test_observatory_live_retention.py --ignore=tests/test_observatory_live_no_trash.py
+      - name: Observatory retention tests (retained runner)
+        if: ${{ !cancelled() }}
+        env:
+          SISYFUS_AUTO_SERVE: '0'
+        run: python scripts/test_retained.py tests/test_observatory_live_retention.py tests/test_observatory_live_no_trash.py -q --junitxml=retention-test-results.xml
       - name: Install browser test tooling
         if: matrix.python == '3.11'
         run: |
@@ -60,6 +65,7 @@ jobs:
             source-commit.txt
             source.sha256
             test-results.xml
+            retention-test-results.xml
             /tmp/native-console-smoke/browser-validation.json
             /tmp/native-console-smoke/desktop.png
             /tmp/native-console-smoke/mobile.png

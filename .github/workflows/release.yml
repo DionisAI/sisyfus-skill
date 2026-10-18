@@ -29,12 +29,19 @@ jobs:
           python-version: ${{ matrix.python }}
       - run: python -m pip install -e . pytest
       - run: python -m compileall -q src tests scripts
-      - run: python -m pytest -q --junitxml=validation-tests.xml
+      - run: python -m pytest -q --junitxml=validation-tests.xml --ignore=tests/test_observatory_live_retention.py --ignore=tests/test_observatory_live_no_trash.py
+      - name: Observatory retention tests (retained runner)
+        if: ${{ !cancelled() }}
+        env:
+          SISYFUS_AUTO_SERVE: '0'
+        run: python scripts/test_retained.py tests/test_observatory_live_retention.py tests/test_observatory_live_no_trash.py -q --junitxml=validation-retention-tests.xml
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: release-tests-${{ matrix.python }}
-          path: validation-tests.xml
+          path: |
+            validation-tests.xml
+            validation-retention-tests.xml
   package:
     needs: validate
     runs-on: ubuntu-latest
