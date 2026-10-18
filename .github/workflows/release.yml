@@ -29,7 +29,9 @@ jobs:
           python-version: ${{ matrix.python }}
       - run: python -m pip install -e . pytest
       - run: python -m compileall -q src tests scripts
-      - run: python -m pytest -q --junitxml=validation-tests.xml --ignore=tests/test_observatory_live_retention.py --ignore=tests/test_observatory_live_no_trash.py
+      - env:
+          SISYFUS_TEST_LOOPBACK: '1'
+        run: python -m pytest -q --junitxml=validation-tests.xml --ignore=tests/test_observatory_live_retention.py --ignore=tests/test_observatory_live_no_trash.py
       - name: Observatory retention tests (retained runner)
         if: ${{ !cancelled() }}
         env:
